@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+import logging
+import sqlite3
+from datetime import datetime
+
+from options_advisor.alerts import dedup, narrator, notifier
+from options_advisor.config import Settings
+from options_advisor.indicators.pipeline import SymbolAnalysis
+from options_advisor.storage import repository as repo
+from options_advisor.storage.models import Alert, CandidateContract
+from options_advisor.strategy import candidates as candidate_builder
+from options_advisor.strategy import scoring
+from options_advisor.strategy.selector import select_candidate_strategies
+
+logger = logging.getLogger(__name__)
+
+
+def _resolve_risk_profile(conn: sqlite3.Connection, settings: Settings) -> tuple[str, int]:
+    """El perfil guardado en la DB (editable desde el dashboard) tiene prioridad sobre el
+    default de settings.yaml; conviction_threshold_override, si está seteado, pisa el umbral
+    por perfil de riesgo (Sección 6.1)."""
+    profile = repo.get_investor_profile(conn)
+    if profile is None:
+        risk_level = settings.investor_profile.risk_level
+        return risk_level, settings.conviction_thresholds.for_risk_level(risk_level)
+    threshold = profile.conviction_threshold_override or settings.conviction_thresholds.for_risk_level(profile.risk_level)
+    return profile.risk_level, threshold
+
+
+def process_symbol_alerts(
+    conn: sqlite3.Connection,
+    analysis: SymbolAnalysis,
+    settings: Settings,
+    has_open_assigned_position: bool = False,
+    anthropic_api_key: str | None = None,
+) -> list[dict]:
+    """Corre selector → candidatos → scoring → filtro de umbral → dedup → narrador → persistencia
+    para un símbolo ya analizado (Sección 6 de la hoja de ruta). Devuelve las alertas nuevas
+    efectivamente generadas en esta corrida (lista vacía si no hubo ninguna)."""
+    snap = analysis.snapshot
+    risk_level, threshold = _resolve_risk_profile(conn, settings)
+
+    if snap.iv_rank is None:
+        logger.info("%s: IV Rank no disponible todavía, sin candidatos posibles", snap.symbol)
+        return []
+
+    strategy_types = select_candidate_strategies(snap.iv_rank, risk_level, has_open_assigned_position)
+    generated: list[dict] = []
+
+    for strategy_type in strategy_types:
+        build = candidate_builder.build_candidate(strategy_type, analysis.chain)
+        if build is None:
+            continue
+
+        score, breakdown = scoring.compute_conviction_score(
+            strategy_type=strategy_type,
+            strikes=build.strikes,
+            iv_rank=snap.iv_rank,
+            iv_rank_source=snap.iv_rank_source,
+            rsi=snap.rsi_14,
+            supports=snap.support_levels,
+            resistances=snap.resistance_levels,
+        )
+        if score < threshold:
+            continue  # filtro de exclusión: no alcanza el umbral mínimo del perfil (Sección 6.3)
+
+        dedup_key = dedup.build_dedup_key(snap.symbol, strategy_type, build.expiration_date, build.strikes, snap.snapshot_date)
+        if repo.alert_exists(conn, dedup_key):
+            continue  # mismo candidato ya alertado hoy
+
+        candidate_id = repo.insert_candidate_contract(
+            conn,
+            CandidateContract(
+                symbol=snap.symbol,
+                snapshot_date=snap.snapshot_date,
+                strategy_type=strategy_type,
+                expiration_date=build.expiration_date,
+                strikes=build.strikes,
+                delta=build.net_greeks.get("delta"),
+                gamma=build.net_greeks.get("gamma"),
+                theta=build.net_greeks.get("theta"),
+                vega=build.net_greeks.get("vega"),
+                rho=build.net_greeks.get("rho"),
+                greeks_source=build.greeks_source,
+                conviction_score=score,
+                scoring_breakdown=breakdown,
+            ),
+        )
+
+        context = narrator.build_narration_context(
+            symbol=snap.symbol,
+            strategy_type=strategy_type,
+            conviction_score=score,
+            breakdown=breakdown,
+            iv_rank=snap.iv_rank,
+            iv_rank_source=snap.iv_rank_source,
+            rsi=snap.rsi_14,
+            supports=snap.support_levels,
+            resistances=snap.resistance_levels,
+            strikes=build.strikes,
+            expiration_date=build.expiration_date,
+        )
+        narrative_text, narrative_source = narrator.narrate_alert(context, settings.llm, anthropic_api_key)
+
+        alert_id = repo.insert_alert(
+            conn,
+            Alert(
+                symbol=snap.symbol,
+                alert_date=snap.snapshot_date,
+                alert_ts=datetime.now(),
+                candidate_contract_id=candidate_id,
+                conviction_score=score,
+                risk_profile=risk_level,
+                threshold_applied=threshold,
+                was_notified=True,
+                narrative_text=narrative_text,
+                narrative_source=narrative_source,
+                dedup_key=dedup_key,
+            ),
+        )
+        if alert_id is not None:
+            notifier.notify(snap.symbol, strategy_type, score, narrative_text)
+            generated.append(
+                {
+                    "symbol": snap.symbol,
+                    "strategy_type": strategy_type,
+                    "score": score,
+                    "strikes": build.strikes,
+                    "narrative": narrative_text,
+                }
+            )
+
+    return generated

@@ -1,0 +1,20 @@
+# Lista editable de símbolos a monitorear en Fase 1 (escenario Ingreso a Largo Plazo).
+# Agregar o quitar tickers acá no requiere tocar código.
+
+symbols:
+  # ETFs de índice — liquidez altísima, ideales para Iron Condor / Bull Put Spread
+  - SPY
+  - QQQ
+  - IWM
+  # Large caps ultra-líquidos — buenos para Cash-Secured Put / Covered Call
+  - AAPL
+  - MSFT
+  - NVDA
+  - AMZN
+  - GOOGL
+  - META
+  # Blue chips de dividendo — perfil conservador
+  - JPM
+  - KO
+  - JNJ
+  - PG

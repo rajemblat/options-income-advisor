@@ -1,0 +1,510 @@
+{
+  "symbol": "META",
+  "bid_ask_spread_pct": 0.025,
+  "contracts": [
+    {
+      "dte": 7,
+      "strike_offset_pct": -0.1,
+      "iv_skew": 0.015,
+      "option_type": "call"
+    },
+    {
+      "dte": 7,
+      "strike_offset_pct": -0.1,
+      "iv_skew": 0.015,
+      "option_type": "put"
+    },
+    {
+      "dte": 7,
+      "strike_offset_pct": -0.05,
+      "iv_skew": 0.0075,
+      "option_type": "call"
+    },
+    {
+      "dte": 7,
+      "strike_offset_pct": -0.05,
+      "iv_skew": 0.0075,
+      "option_type": "put"
+    },
+    {
+      "dte": 7,
+      "strike_offset_pct": -0.025,
+      "iv_skew": 0.0037,
+      "option_type": "call"
+    },
+    {
+      "dte": 7,
+      "strike_offset_pct": -0.025,
+      "iv_skew": 0.0037,
+      "option_type": "put"
+    },
+    {
+      "dte": 7,
+      "strike_offset_pct": 0.0,
+      "iv_skew": -0.0,
+      "option_type": "call"
+    },
+    {
+      "dte": 7,
+      "strike_offset_pct": 0.0,
+      "iv_skew": -0.0,
+      "option_type": "put"
+    },
+    {
+      "dte": 7,
+      "strike_offset_pct": 0.025,
+      "iv_skew": -0.0037,
+      "option_type": "call"
+    },
+    {
+      "dte": 7,
+      "strike_offset_pct": 0.025,
+      "iv_skew": -0.0037,
+      "option_type": "put"
+    },
+    {
+      "dte": 7,
+      "strike_offset_pct": 0.05,
+      "iv_skew": -0.0075,
+      "option_type": "call"
+    },
+    {
+      "dte": 7,
+      "strike_offset_pct": 0.05,
+      "iv_skew": -0.0075,
+      "option_type": "put"
+    },
+    {
+      "dte": 7,
+      "strike_offset_pct": 0.1,
+      "iv_skew": -0.015,
+      "option_type": "call"
+    },
+    {
+      "dte": 7,
+      "strike_offset_pct": 0.1,
+      "iv_skew": -0.015,
+      "option_type": "put"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": -0.1,
+      "iv_skew": 0.015,
+      "option_type": "call"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": -0.1,
+      "iv_skew": 0.015,
+      "option_type": "put"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": -0.05,
+      "iv_skew": 0.0075,
+      "option_type": "call"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": -0.05,
+      "iv_skew": 0.0075,
+      "option_type": "put"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": -0.025,
+      "iv_skew": 0.0037,
+      "option_type": "call"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": -0.025,
+      "iv_skew": 0.0037,
+      "option_type": "put"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": 0.0,
+      "iv_skew": -0.0,
+      "option_type": "call"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": 0.0,
+      "iv_skew": -0.0,
+      "option_type": "put"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": 0.025,
+      "iv_skew": -0.0037,
+      "option_type": "call"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": 0.025,
+      "iv_skew": -0.0037,
+      "option_type": "put"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": 0.05,
+      "iv_skew": -0.0075,
+      "option_type": "call"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": 0.05,
+      "iv_skew": -0.0075,
+      "option_type": "put"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": 0.1,
+      "iv_skew": -0.015,
+      "option_type": "call"
+    },
+    {
+      "dte": 14,
+      "strike_offset_pct": 0.1,
+      "iv_skew": -0.015,
+      "option_type": "put"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": -0.1,
+      "iv_skew": 0.015,
+      "option_type": "call"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": -0.1,
+      "iv_skew": 0.015,
+      "option_type": "put"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": -0.05,
+      "iv_skew": 0.0075,
+      "option_type": "call"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": -0.05,
+      "iv_skew": 0.0075,
+      "option_type": "put"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": -0.025,
+      "iv_skew": 0.0037,
+      "option_type": "call"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": -0.025,
+      "iv_skew": 0.0037,
+      "option_type": "put"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": 0.0,
+      "iv_skew": -0.0,
+      "option_type": "call"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": 0.0,
+      "iv_skew": -0.0,
+      "option_type": "put"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": 0.025,
+      "iv_skew": -0.0037,
+      "option_type": "call"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": 0.025,
+      "iv_skew": -0.0037,
+      "option_type": "put"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": 0.05,
+      "iv_skew": -0.0075,
+      "option_type": "call"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": 0.05,
+      "iv_skew": -0.0075,
+      "option_type": "put"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": 0.1,
+      "iv_skew": -0.015,
+      "option_type": "call"
+    },
+    {
+      "dte": 21,
+      "strike_offset_pct": 0.1,
+      "iv_skew": -0.015,
+      "option_type": "put"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": -0.1,
+      "iv_skew": 0.015,
+      "option_type": "call"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": -0.1,
+      "iv_skew": 0.015,
+      "option_type": "put"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": -0.05,
+      "iv_skew": 0.0075,
+      "option_type": "call"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": -0.05,
+      "iv_skew": 0.0075,
+      "option_type": "put"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": -0.025,
+      "iv_skew": 0.0037,
+      "option_type": "call"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": -0.025,
+      "iv_skew": 0.0037,
+      "option_type": "put"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": 0.0,
+      "iv_skew": -0.0,
+      "option_type": "call"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": 0.0,
+      "iv_skew": -0.0,
+      "option_type": "put"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": 0.025,
+      "iv_skew": -0.0037,
+      "option_type": "call"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": 0.025,
+      "iv_skew": -0.0037,
+      "option_type": "put"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": 0.05,
+      "iv_skew": -0.0075,
+      "option_type": "call"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": 0.05,
+      "iv_skew": -0.0075,
+      "option_type": "put"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": 0.1,
+      "iv_skew": -0.015,
+      "option_type": "call"
+    },
+    {
+      "dte": 30,
+      "strike_offset_pct": 0.1,
+      "iv_skew": -0.015,
+      "option_type": "put"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": -0.1,
+      "iv_skew": 0.015,
+      "option_type": "call"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": -0.1,
+      "iv_skew": 0.015,
+      "option_type": "put"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": -0.05,
+      "iv_skew": 0.0075,
+      "option_type": "call"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": -0.05,
+      "iv_skew": 0.0075,
+      "option_type": "put"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": -0.025,
+      "iv_skew": 0.0037,
+      "option_type": "call"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": -0.025,
+      "iv_skew": 0.0037,
+      "option_type": "put"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": 0.0,
+      "iv_skew": -0.0,
+      "option_type": "call"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": 0.0,
+      "iv_skew": -0.0,
+      "option_type": "put"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": 0.025,
+      "iv_skew": -0.0037,
+      "option_type": "call"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": 0.025,
+      "iv_skew": -0.0037,
+      "option_type": "put"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": 0.05,
+      "iv_skew": -0.0075,
+      "option_type": "call"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": 0.05,
+      "iv_skew": -0.0075,
+      "option_type": "put"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": 0.1,
+      "iv_skew": -0.015,
+      "option_type": "call"
+    },
+    {
+      "dte": 45,
+      "strike_offset_pct": 0.1,
+      "iv_skew": -0.015,
+      "option_type": "put"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": -0.1,
+      "iv_skew": 0.015,
+      "option_type": "call"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": -0.1,
+      "iv_skew": 0.015,
+      "option_type": "put"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": -0.05,
+      "iv_skew": 0.0075,
+      "option_type": "call"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": -0.05,
+      "iv_skew": 0.0075,
+      "option_type": "put"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": -0.025,
+      "iv_skew": 0.0037,
+      "option_type": "call"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": -0.025,
+      "iv_skew": 0.0037,
+      "option_type": "put"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": 0.0,
+      "iv_skew": -0.0,
+      "option_type": "call"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": 0.0,
+      "iv_skew": -0.0,
+      "option_type": "put"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": 0.025,
+      "iv_skew": -0.0037,
+      "option_type": "call"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": 0.025,
+      "iv_skew": -0.0037,
+      "option_type": "put"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": 0.05,
+      "iv_skew": -0.0075,
+      "option_type": "call"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": 0.05,
+      "iv_skew": -0.0075,
+      "option_type": "put"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": 0.1,
+      "iv_skew": -0.015,
+      "option_type": "call"
+    },
+    {
+      "dte": 60,
+      "strike_offset_pct": 0.1,
+      "iv_skew": -0.015,
+      "option_type": "put"
+    }
+  ]
+}

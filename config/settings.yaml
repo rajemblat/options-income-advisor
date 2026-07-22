@@ -1,0 +1,45 @@
+# Configuración de Fase 1. Editar libremente sin tocar código.
+
+broker:
+  mode: mock            # "mock" | "schwab" — cambiar a "schwab" solo cuando lleguen las credenciales
+  fixtures_dir: data/fixtures
+
+# Usado solo por el fallback de cálculo de griegos (Black-Scholes-Merton) cuando el broker no los provee.
+# Simplificación aceptable para Fase 1: tasa fija actualizable a mano, sin dividendos por símbolo (yield 0 por defecto).
+market:
+  risk_free_rate: 0.045
+
+database:
+  path: data/app.db
+
+llm:
+  model: claude-haiku-4-5-20251001
+  max_tokens: 300
+
+scheduler:
+  timezone: America/New_York
+  poll_interval_minutes: 30
+  market_open_snapshot_time: "09:35"
+  market_close_snapshot_time: "15:55"
+  market_hours_start: "09:30"
+  market_hours_end: "16:00"
+
+# Perfil de inversor por defecto (Sección 2 de la hoja de ruta). Se puede sobreescribir vía dashboard.
+investor_profile:
+  capital_available: 50000.0
+  loss_tolerance_pct: 2.0
+  experience_level: intermedio      # principiante | intermedio | avanzado
+  risk_preference: defined          # defined | undefined
+  risk_level: moderado              # conservador | moderado | agresivo
+
+# Umbral mínimo de puntaje de convicción (0-100) para notificar, por perfil de riesgo (Sección 6.1).
+conviction_thresholds:
+  conservador: 75
+  moderado: 65
+  agresivo: 55
+
+# Mínimo de sesiones de IV acumuladas para empezar a usar IV Rank real en vez del proxy de HV (Sección 4 del plan).
+iv_rank:
+  min_sessions_for_real_iv: 20
+  full_window_sessions: 252
+  hv_window_days: 20
