@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 import os
+from datetime import date
 
 import streamlit as st
 
-from options_advisor.dashboard.components import get_broker, get_connection, get_settings, get_symbols, inject_theme, render_header, render_macro_panel
+from options_advisor.dashboard.components import (
+    get_broker,
+    get_connection,
+    get_settings,
+    get_symbols,
+    inject_theme,
+    render_header,
+    render_macro_panel,
+    render_portfolio_summary_panel,
+)
 from options_advisor.scheduler.jobs import job_poll_and_analyze
 
 st.set_page_config(page_title="Options Income Advisor — Fase 1", page_icon="📈", layout="wide")
@@ -41,6 +51,9 @@ if st.button("🔄 Correr análisis ahora", type="primary"):
     st.success("Listo. Revisá la página de Alertas.")
 
 st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
+render_portfolio_summary_panel(conn, date.today())
+
+st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
 render_macro_panel(conn)
 
 st.markdown(
@@ -51,5 +64,6 @@ st.markdown(
     - **Indicadores**: detalle histórico de un símbolo (IV Rank, RSI, precio).
     - **Configuración**: perfil de inversor y umbrales de convicción.
     - **Noticias**: últimas noticias por símbolo (Finnhub).
+    - **Eventos de riesgo**: calendario de volatilidad esperada (FOMC, CPI, empleo, earnings).
     """
 )

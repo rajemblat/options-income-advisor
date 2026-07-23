@@ -12,6 +12,7 @@ from options_advisor.alerts.formatting import strategy_label
 from options_advisor.broker import get_broker_client
 from options_advisor.broker.base import BrokerClient
 from options_advisor.config import PROJECT_ROOT, Settings, load_settings, load_symbols
+from options_advisor.dashboard.portfolio_summary import summarize_portfolio
 from options_advisor.storage import db
 from options_advisor.storage import repository as repo
 
@@ -172,6 +173,16 @@ def score_pill_html(score: int) -> str:
     else:
         color = CRITICAL
     return f"<span class='oia-pill' style='color:{color}; border-color:{color}44; background:{color}1a;'>● {score}</span>"
+
+
+_RISK_LEVEL_COLORS = {"alto": CRITICAL, "medio": WARNING, "bajo": GOOD}
+_RISK_LEVEL_LABELS = {"alto": "🔴 Alto", "medio": "🟡 Medio", "bajo": "🟢 Bajo"}
+
+
+def risk_level_pill_html(level: str) -> str:
+    color = _RISK_LEVEL_COLORS.get(level, TEXT_MUTED)
+    label = _RISK_LEVEL_LABELS.get(level, level)
+    return f"<span class='oia-pill' style='color:{color}; border-color:{color}44; background:{color}1a;'>{label}</span>"
 
 
 def risk_badge(score: int) -> str:
@@ -370,6 +381,56 @@ def render_macro_panel(conn: sqlite3.Connection) -> None:
         html.append(f"<div style='margin-top:0.6rem; color:{TEXT_MUTED}; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.04em;'>Próximos eventos</div>")
         for event in events[:6]:
             html.append(f"<div class='oia-leg-row'><span>{event.get('event', '')}</span><span>{event.get('date', '')}</span></div>")
+
+    html.append("</div>")
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+
+def render_portfolio_summary_panel(conn: sqlite3.Connection, alert_date) -> None:
+    """Estado agregado de las alertas de un día: cuántas hay, distribución por estrategia,
+    exposición direccional (a partir del delta neto que ya calcula strategy/candidates.py) y
+    riesgo total si todas se ejecutaran (Sección 'resumen de portafolio', punto #2)."""
+    rows = [dict(r) for r in repo.get_alerts_for_date(conn, alert_date)]
+    summary = summarize_portfolio(rows)
+
+    html = ["<div class='oia-card'>", "<div style='font-size:1.1rem; font-weight:700;'>📋 Resumen de oportunidades de hoy</div>"]
+
+    if summary["total_alerts"] == 0:
+        html.append(f"<div style='color:{TEXT_MUTED}; margin-top:0.4rem;'>Todavía no hay alertas hoy ({alert_date}).</div>")
+        html.append("</div>")
+        st.markdown("".join(html), unsafe_allow_html=True)
+        return
+
+    html.append("<div class='oia-metric-grid'>")
+    html.append(f"<div class='oia-metric-tile'><div class='label'>🔔 Alertas hoy</div><div class='value'>{summary['total_alerts']}</div></div>")
+
+    directional = summary["directional"]
+    html.append(f"<div class='oia-metric-tile'><div class='label'>📈 Alcistas</div><div class='value'>{directional['bullish']}</div></div>")
+    html.append(f"<div class='oia-metric-tile'><div class='label'>📉 Bajistas</div><div class='value'>{directional['bearish']}</div></div>")
+    html.append(f"<div class='oia-metric-tile'><div class='label'>➡️ Neutrales</div><div class='value'>{directional['neutral']}</div></div>")
+
+    net_delta = summary["net_delta"]
+    net_delta_str = f"{net_delta:+.2f}" if net_delta is not None else "N/D"
+    html.append(f"<div class='oia-metric-tile'><div class='label'>⚖️ Delta neto total</div><div class='value'>{net_delta_str}</div></div>")
+
+    bounded_risk = summary["bounded_risk_total"]
+    risk_str = _fmt_money(bounded_risk) if bounded_risk is not None else "N/D"
+    html.append(f"<div class='oia-metric-tile'><div class='label'>📉 Riesgo total (acotado)</div><div class='value'>{risk_str}</div></div>")
+    html.append("</div>")
+
+    if summary["unbounded_risk_count"] > 0:
+        html.append(
+            f"<div class='oia-caveat'>⚠️ {summary['unbounded_risk_count']} estrategia(s) de riesgo no acotado (short naked) "
+            "entre las alertas de hoy — no están incluidas en el riesgo total de arriba, podrían perder más.</div>"
+        )
+
+    strategy_bits = " · ".join(f"{strategy_label(s)}: {n}" for s, n in sorted(summary["by_strategy"].items(), key=lambda kv: -kv[1]))
+    html.append(f"<div style='margin-top:0.6rem; color:{TEXT_SECONDARY}; font-size:0.85rem;'>Por estrategia: {strategy_bits}</div>")
+
+    html.append(
+        f"<div style='color:{TEXT_MUTED}; font-size:0.75rem; margin-top:0.5rem;'>Delta neto total y clasificación alcista/bajista/neutral "
+        "vienen del delta ya calculado por candidato (no una nueva estimación); banda neutral: |delta| ≤ 0.05.</div>"
+    )
 
     html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)

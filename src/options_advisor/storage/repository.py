@@ -232,6 +232,20 @@ def get_alerts(conn: sqlite3.Connection, symbol: str | None = None, limit: int =
     return conn.execute("SELECT * FROM alerts ORDER BY alert_ts DESC LIMIT ?", (limit,)).fetchall()
 
 
+def get_alerts_for_date(conn: sqlite3.Connection, alert_date: date) -> list[sqlite3.Row]:
+    """Alertas de un día con los campos de riesgo/dirección del candidato ya unidos (delta,
+    max_loss, strategy_type) — usado por el panel de resumen de portafolio."""
+    return conn.execute(
+        """
+        SELECT a.*, c.strategy_type AS strategy_type, c.delta AS delta, c.max_loss AS max_loss
+        FROM alerts a
+        LEFT JOIN candidate_contracts c ON c.id = a.candidate_contract_id
+        WHERE a.alert_date = ?
+        """,
+        (alert_date.isoformat(),),
+    ).fetchall()
+
+
 def get_investor_profile(conn: sqlite3.Connection) -> InvestorProfile | None:
     row = conn.execute("SELECT * FROM investor_profile WHERE id = 1").fetchone()
     if row is None:
