@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import date
 
+from options_advisor.alerts import notifier
+from options_advisor.alerts.digest import build_premarket_digest_text
 from options_advisor.alerts.engine import process_symbol_alerts
 from options_advisor.broker.base import BrokerClient
 from options_advisor.config import Settings
@@ -69,26 +72,24 @@ def _refresh_news_for_symbol(conn: sqlite3.Connection, symbol: str, today: date,
         logger.exception("Fallo al refrescar noticias de %s; se continúa con el resto del análisis", symbol)
 
 
-def job_poll_and_analyze(
+def _run_full_analysis(
     broker: BrokerClient,
     conn: sqlite3.Connection,
     symbols: list[str],
     settings: Settings,
+    today: date,
     anthropic_api_key: str | None,
-    finnhub_api_key: str | None = None,
-    fred_api_key: str | None = None,
-) -> None:
-    """Job principal del scheduler: por cada símbolo, calcula indicadores y evalúa alertas.
-    Un fallo en un símbolo no debe tumbar el resto (Sección 6 del plan de Fase 1). El mismo
-    job corre en cada disparo programado (apertura, cada 30 min, cierre) — la última corrida
-    del día deja el snapshot "oficial" gracias al upsert por (symbol, snapshot_date)."""
-    today = date.today()
-    if not is_market_day(today):
-        logger.info("%s no es día de mercado, se salta el polling", today)
-        return
-
+    finnhub_api_key: str | None,
+    fred_api_key: str | None,
+) -> list[dict]:
+    """Macro + noticias + indicadores + alertas para todos los símbolos — el cuerpo real de una
+    corrida, compartido por el polling regular y el digest pre-apertura (job_premarket_digest
+    necesita saber qué alertas salieron de SU corrida, no solo que el job terminó). Un fallo en
+    un símbolo no tumba el resto (Sección 6 del plan de Fase 1). Devuelve las alertas nuevas
+    generadas en esta corrida (lista vacía si no hubo ninguna)."""
     _refresh_macro_snapshot(conn, today, finnhub_api_key, fred_api_key)
 
+    new_alerts: list[dict] = []
     for symbol in symbols:
         try:
             open_positions = repo.get_open_assigned_positions(conn, symbol)
@@ -103,5 +104,59 @@ def job_poll_and_analyze(
                 finnhub_api_key=finnhub_api_key,
             )
             logger.info("%s: iv_rank=%s, %d alerta(s) nueva(s)", symbol, analysis.snapshot.iv_rank, len(alerts))
+            new_alerts.extend(alerts)
         except Exception:
             logger.exception("Fallo al procesar %s; se continúa con el resto de los símbolos", symbol)
+
+    return new_alerts
+
+
+def job_poll_and_analyze(
+    broker: BrokerClient,
+    conn: sqlite3.Connection,
+    symbols: list[str],
+    settings: Settings,
+    anthropic_api_key: str | None,
+    finnhub_api_key: str | None = None,
+    fred_api_key: str | None = None,
+) -> None:
+    """Job principal del scheduler: calcula indicadores y evalúa alertas para todos los
+    símbolos. El mismo job corre en cada disparo programado (apertura, cada 30 min, cierre) —
+    la última corrida del día deja el snapshot "oficial" gracias al upsert por
+    (symbol, snapshot_date)."""
+    today = date.today()
+    if not is_market_day(today):
+        logger.info("%s no es día de mercado, se salta el polling", today)
+        return
+
+    _run_full_analysis(broker, conn, symbols, settings, today, anthropic_api_key, finnhub_api_key, fred_api_key)
+
+
+def job_premarket_digest(
+    broker: BrokerClient,
+    conn: sqlite3.Connection,
+    symbols: list[str],
+    settings: Settings,
+    anthropic_api_key: str | None,
+    finnhub_api_key: str | None = None,
+    fred_api_key: str | None = None,
+) -> None:
+    """Corre antes de la apertura (hora configurable en settings.scheduler.premarket_digest_time):
+    hace la misma corrida completa que job_poll_and_analyze (así detecta alertas nuevas de esta
+    ventana, no solo repite el cierre del día anterior) y además envía un resumen a Telegram con
+    los eventos de riesgo de HOY (FOMC/CPI/empleo/earnings) y las alertas nuevas — pensado para
+    leerlo antes de que abra el mercado. Sin TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID configurados,
+    el análisis igual corre pero no se envía nada (mismo comportamiento no-op que notifier.notify)."""
+    today = date.today()
+    if not is_market_day(today):
+        logger.info("%s no es día de mercado, se salta el digest pre-apertura", today)
+        return
+
+    new_alerts = _run_full_analysis(broker, conn, symbols, settings, today, anthropic_api_key, finnhub_api_key, fred_api_key)
+
+    macro = repo.get_latest_macro_snapshot(conn)
+    upcoming_events = json.loads(macro["upcoming_events_json"]) if macro and macro["upcoming_events_json"] else []
+    earnings_by_symbol = {symbol: repo.get_latest_next_earnings_date(conn, symbol) for symbol in symbols}
+
+    text = build_premarket_digest_text(upcoming_events, earnings_by_symbol, new_alerts, today)
+    notifier.send_text(text)

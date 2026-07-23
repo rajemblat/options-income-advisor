@@ -5,8 +5,8 @@ from datetime import date
 
 import streamlit as st
 
+from options_advisor.alerts.risk_calendar import build_risk_calendar
 from options_advisor.dashboard.components import get_connection, get_symbols, inject_theme, render_header, risk_level_pill_html
-from options_advisor.dashboard.risk_calendar import build_risk_calendar
 from options_advisor.storage import repository as repo
 
 LOOKAHEAD_DAYS = 30
@@ -22,13 +22,7 @@ today = date.today()
 macro = repo.get_latest_macro_snapshot(conn)
 upcoming_events = json.loads(macro["upcoming_events_json"]) if macro and macro["upcoming_events_json"] else []
 
-earnings_by_symbol: dict[str, date | None] = {}
-for symbol in symbols:
-    row = conn.execute(
-        "SELECT next_earnings_date FROM indicator_snapshots WHERE symbol = ? ORDER BY snapshot_date DESC LIMIT 1",
-        (symbol,),
-    ).fetchone()
-    earnings_by_symbol[symbol] = date.fromisoformat(row["next_earnings_date"]) if row and row["next_earnings_date"] else None
+earnings_by_symbol = {symbol: repo.get_latest_next_earnings_date(conn, symbol) for symbol in symbols}
 
 events = build_risk_calendar(upcoming_events, earnings_by_symbol, today, lookahead_days=LOOKAHEAD_DAYS)
 

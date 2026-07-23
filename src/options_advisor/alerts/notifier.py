@@ -13,7 +13,7 @@ _TRUNCATION_SUFFIX = "\n\n[…continúa en el dashboard]"
 _TIMEOUT = 10.0
 
 
-def _send_telegram_message(text: str) -> None:
+def send_text(text: str) -> None:
     """Envía `text` al chat configurado. Sin parse_mode: `narrative_text` ya viene formateado en
     texto plano (emojis, saltos de línea) por alerts/formatting.py, y HTML/Markdown de Telegram
     rompería con caracteres sin escapar. Nunca lanza: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID
@@ -43,4 +43,4 @@ def notify(symbol: str, strategy_type: str, conviction_score: int, narrative_tex
     si TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID están configurados en .env, se envía la misma alerta
     al chat de Telegram — sin canal configurado, esta función se comporta como antes (solo log)."""
     logger.info("ALERTA %s | %s | score=%d | %s", symbol, strategy_type, conviction_score, narrative_text)
-    _send_telegram_message(narrative_text)
+    send_text(narrative_text)

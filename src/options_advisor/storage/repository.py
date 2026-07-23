@@ -67,6 +67,18 @@ def get_indicator_snapshot(conn: sqlite3.Connection, symbol: str, snapshot_date:
     ).fetchone()
 
 
+def get_latest_next_earnings_date(conn: sqlite3.Connection, symbol: str) -> date | None:
+    """Próxima fecha de earnings conocida del snapshot más reciente de `symbol` — usado por
+    Watchlist, Eventos de riesgo y el digest pre-apertura, antes solo duplicado en cada uno."""
+    row = conn.execute(
+        "SELECT next_earnings_date FROM indicator_snapshots WHERE symbol = ? ORDER BY snapshot_date DESC LIMIT 1",
+        (symbol,),
+    ).fetchone()
+    if row is None or row["next_earnings_date"] is None:
+        return None
+    return date.fromisoformat(row["next_earnings_date"])
+
+
 def upsert_macro_snapshot(conn: sqlite3.Connection, snap: MacroSnapshot) -> None:
     conn.execute(
         """

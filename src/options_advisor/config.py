@@ -46,6 +46,7 @@ class SchedulerSettings(BaseModel):
     market_close_snapshot_time: str
     market_hours_start: str
     market_hours_end: str
+    premarket_digest_time: str
 
 
 class InvestorProfileSettings(BaseModel):

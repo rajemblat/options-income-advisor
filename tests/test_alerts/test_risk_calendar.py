@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from options_advisor.dashboard.risk_calendar import RISK_HIGH, RISK_LOW, RISK_MEDIUM, build_risk_calendar
+from options_advisor.alerts.risk_calendar import RISK_HIGH, RISK_LOW, RISK_MEDIUM, build_risk_calendar
 
 TODAY = date(2026, 7, 23)
 
