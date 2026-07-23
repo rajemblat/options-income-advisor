@@ -8,10 +8,10 @@ from options_advisor.alerts.engine import process_symbol_alerts
 from options_advisor.broker.base import BrokerClient
 from options_advisor.config import Settings
 from options_advisor.indicators.pipeline import analyze_symbol
-from options_advisor.market_context import economic_calendar, fred_client, kalshi_client
+from options_advisor.market_context import economic_calendar, finnhub_client, fred_client, kalshi_client
 from options_advisor.scheduler.market_calendar import is_market_day
 from options_advisor.storage import repository as repo
-from options_advisor.storage.models import MacroSnapshot
+from options_advisor.storage.models import MacroSnapshot, NewsItem
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +46,29 @@ def _refresh_macro_snapshot(conn: sqlite3.Connection, today: date, finnhub_api_k
         logger.exception("Fallo al refrescar el contexto macro; se continúa con el análisis por símbolo")
 
 
+def _refresh_news_for_symbol(conn: sqlite3.Connection, symbol: str, today: date, finnhub_api_key: str | None) -> None:
+    """Noticias recientes por símbolo. Falla aislada (igual que el contexto macro): un
+    problema con Finnhub nunca debe tumbar el análisis de indicadores/alertas del símbolo."""
+    try:
+        rows = finnhub_client.get_recent_news(symbol, today, finnhub_api_key)
+        items = [
+            NewsItem(
+                symbol=symbol,
+                published_at=row.get("published_at"),
+                headline=row["headline"],
+                source=row.get("source"),
+                url=row["url"],
+                summary=row.get("summary"),
+                fetched_date=today,
+            )
+            for row in rows
+            if row.get("headline") and row.get("url")
+        ]
+        repo.insert_news_items(conn, items)
+    except Exception:
+        logger.exception("Fallo al refrescar noticias de %s; se continúa con el resto del análisis", symbol)
+
+
 def job_poll_and_analyze(
     broker: BrokerClient,
     conn: sqlite3.Connection,
@@ -70,6 +93,7 @@ def job_poll_and_analyze(
         try:
             open_positions = repo.get_open_assigned_positions(conn, symbol)
             analysis = analyze_symbol(broker, conn, symbol, settings, finnhub_api_key=finnhub_api_key)
+            _refresh_news_for_symbol(conn, symbol, today, finnhub_api_key)
             alerts = process_symbol_alerts(
                 conn,
                 analysis,

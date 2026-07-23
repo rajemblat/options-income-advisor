@@ -16,6 +16,8 @@ symbols = ["Todos"] + get_symbols()
 selected = st.selectbox("Símbolo", symbols)
 
 alerts = repo.get_alerts(conn, symbol=None if selected == "Todos" else selected, limit=200)
+macro = repo.get_latest_macro_snapshot(conn)
+fed_meeting_date = macro["fed_meeting_date"] if macro else None
 
 if not alerts:
     st.info("Todavía no hay alertas generadas. Andá a la página principal y corré el análisis.")
@@ -26,4 +28,4 @@ else:
         ).fetchone()
         snapshot = repo.get_indicator_snapshot(conn, alert["symbol"], date.fromisoformat(alert["alert_date"]))
         next_earnings_date = snapshot["next_earnings_date"] if snapshot else None
-        render_alert_card(alert, candidate, next_earnings_date=next_earnings_date)
+        render_alert_card(alert, candidate, next_earnings_date=next_earnings_date, fed_meeting_date=fed_meeting_date)

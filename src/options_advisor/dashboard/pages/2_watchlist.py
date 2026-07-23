@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import pandas as pd
 import streamlit as st
 
 from options_advisor.dashboard.components import get_connection, get_symbols, inject_theme, render_header
+from options_advisor.storage import repository as repo
+
+WARNING_WINDOW_DAYS = 7  # ventana para marcar earnings/reunión Fed como "próximos" (Sección 4 del pedido)
 
 st.set_page_config(page_title="Watchlist", page_icon="👀", layout="wide")
 inject_theme()
@@ -12,6 +17,21 @@ render_header("👀", "Watchlist", "Último snapshot de indicadores por símbolo
 conn = get_connection()
 symbols = get_symbols()
 
+macro = repo.get_latest_macro_snapshot(conn)
+fed_meeting_date = date.fromisoformat(macro["fed_meeting_date"]) if macro and macro["fed_meeting_date"] else None
+today = date.today()
+warning_cutoff = today + timedelta(days=WARNING_WINDOW_DAYS)
+
+
+def _warning_icon(next_earnings_date: str | None) -> str:
+    flags = []
+    if next_earnings_date and today <= date.fromisoformat(next_earnings_date) <= warning_cutoff:
+        flags.append(f"📅 Earnings {next_earnings_date}")
+    if fed_meeting_date and today <= fed_meeting_date <= warning_cutoff:
+        flags.append(f"🏦 FOMC {fed_meeting_date.isoformat()}")
+    return "⚠️ " + " · ".join(flags) if flags else ""
+
+
 rows = []
 for symbol in symbols:
     row = conn.execute(
@@ -19,7 +39,9 @@ for symbol in symbols:
         (symbol,),
     ).fetchone()
     if row:
-        rows.append(dict(row))
+        row_dict = dict(row)
+        row_dict["warning"] = _warning_icon(row_dict.get("next_earnings_date"))
+        rows.append(row_dict)
 
 if not rows:
     st.info("Todavía no hay snapshots. Andá a la página principal y corré el análisis.")
@@ -27,6 +49,7 @@ else:
     df = pd.DataFrame(rows)[
         [
             "symbol",
+            "warning",
             "snapshot_date",
             "price",
             "iv_rank",
@@ -42,7 +65,7 @@ else:
         ]
     ]
     df.columns = [
-        "Símbolo", "Fecha", "Precio", "IV Rank", "Fuente IV Rank", "RSI", "ATR", "Std Dev (20d)",
+        "Símbolo", "⚠️ Próximo evento", "Fecha", "Precio", "IV Rank", "Fuente IV Rank", "RSI", "ATR", "Std Dev (20d)",
         "Net GEX", "SMA20", "SMA50", "Cruce MA", "Próx. Earnings",
     ]
     st.dataframe(

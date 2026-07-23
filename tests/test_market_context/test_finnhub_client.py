@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import httpx
 import pytest
@@ -58,6 +58,17 @@ def test_get_recent_news_sorts_by_datetime_desc(monkeypatch):
     result = finnhub_client.get_recent_news("AAPL", AS_OF, api_key="fake-key")
     assert result[0]["headline"] == "new"
     assert result[1]["headline"] == "old"
+    assert result[0]["published_at"] == datetime.fromtimestamp(200, tz=timezone.utc)
+
+
+def test_get_recent_news_published_at_none_when_missing_datetime(monkeypatch):
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        _mock_response([{"headline": "no date", "source": "S", "url": "u1", "summary": "s1"}]),
+    )
+    result = finnhub_client.get_recent_news("AAPL", AS_OF, api_key="fake-key")
+    assert result[0]["published_at"] is None
 
 
 def test_get_recent_news_returns_empty_on_failure(monkeypatch):

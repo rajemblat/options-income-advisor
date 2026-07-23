@@ -79,6 +79,21 @@ CREATE TABLE IF NOT EXISTS candidate_contracts (
     payoff_is_estimate INTEGER
 );
 
+-- Noticias recientes por símbolo (Finnhub /company-news). UNIQUE(symbol, url) para poder
+-- refrescar en cada corrida del job sin acumular duplicados cuando el mismo artículo sigue
+-- apareciendo en el rango de lookback.
+CREATE TABLE IF NOT EXISTS news_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    published_at TEXT,
+    headline TEXT NOT NULL,
+    source TEXT,
+    url TEXT NOT NULL,
+    summary TEXT,
+    fetched_date TEXT NOT NULL,
+    UNIQUE(symbol, url)
+);
+
 -- Historial de alertas generadas (notificadas o descartadas por umbral)
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,3 +139,4 @@ CREATE TABLE IF NOT EXISTS assigned_positions (
 CREATE INDEX IF NOT EXISTS idx_iv_snapshots_symbol_date ON iv_snapshots(symbol, snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_indicator_snapshots_symbol_date ON indicator_snapshots(symbol, snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_alerts_symbol_date ON alerts(symbol, alert_date);
+CREATE INDEX IF NOT EXISTS idx_news_items_symbol_published ON news_items(symbol, published_at);

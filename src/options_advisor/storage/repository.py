@@ -10,6 +10,7 @@ from options_advisor.storage.models import (
     IndicatorSnapshot,
     InvestorProfile,
     MacroSnapshot,
+    NewsItem,
 )
 
 
@@ -100,6 +101,36 @@ def upsert_macro_snapshot(conn: sqlite3.Connection, snap: MacroSnapshot) -> None
 
 def get_latest_macro_snapshot(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM macro_snapshot ORDER BY snapshot_date DESC LIMIT 1").fetchone()
+
+
+def insert_news_items(conn: sqlite3.Connection, items: list[NewsItem]) -> None:
+    """UNIQUE(symbol, url) evita duplicados cuando el mismo artículo sigue apareciendo en
+    corridas sucesivas del job dentro de la ventana de lookback de Finnhub."""
+    for item in items:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO news_items (symbol, published_at, headline, source, url, summary, fetched_date)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item.symbol,
+                item.published_at.isoformat() if item.published_at else None,
+                item.headline,
+                item.source,
+                item.url,
+                item.summary,
+                item.fetched_date.isoformat(),
+            ),
+        )
+    conn.commit()
+
+
+def get_recent_news(conn: sqlite3.Connection, symbol: str | None = None, limit: int = 20) -> list[sqlite3.Row]:
+    if symbol:
+        return conn.execute(
+            "SELECT * FROM news_items WHERE symbol = ? ORDER BY published_at DESC LIMIT ?", (symbol, limit)
+        ).fetchall()
+    return conn.execute("SELECT * FROM news_items ORDER BY published_at DESC LIMIT ?", (limit,)).fetchall()
 
 
 def insert_iv_snapshot(conn: sqlite3.Connection, symbol: str, snapshot_date: date, iv_atm: float, source: str) -> None:

@@ -87,6 +87,16 @@ class MacroSnapshot(BaseModel):
     upcoming_events: list[dict] = []
 
 
+class NewsItem(BaseModel):
+    symbol: str
+    published_at: datetime | None = None
+    headline: str
+    source: str | None = None
+    url: str
+    summary: str | None = None
+    fetched_date: date
+
+
 class InvestorProfile(BaseModel):
     capital_available: float
     loss_tolerance_pct: float

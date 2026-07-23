@@ -219,7 +219,21 @@ def _earnings_caveat_html(next_earnings_date: str | None, expiration_date: str |
     return f"<div style='color:{GOOD}; font-size:0.82rem; margin-top:0.3rem;'>✅ Sin earnings antes del vencimiento (próximo: {next_earnings_date}).</div>"
 
 
-def render_alert_card(alert: sqlite3.Row, candidate: sqlite3.Row | None, next_earnings_date: str | None = None) -> None:
+def _fed_event_caveat_html(fed_meeting_date: str | None, expiration_date: str | None) -> str | None:
+    if not fed_meeting_date or not expiration_date or fed_meeting_date > expiration_date:
+        return None
+    return (
+        f"<div class='oia-caveat' style='color:{CRITICAL};'>🚨 Reunión FOMC el {fed_meeting_date} — "
+        "CAE DENTRO del vencimiento de esta posición, riesgo de gap por decisión de tasas.</div>"
+    )
+
+
+def render_alert_card(
+    alert: sqlite3.Row,
+    candidate: sqlite3.Row | None,
+    next_earnings_date: str | None = None,
+    fed_meeting_date: str | None = None,
+) -> None:
     """Tarjeta premium de una alerta: patas, prima, beneficio/pérdida máxima, breakevens,
     probabilidad de beneficio y el comentario del narrador — mismos datos que el bloque de
     texto que arma `alerts/formatting.py` para las notificaciones, con estructura HTML."""
@@ -250,6 +264,9 @@ def render_alert_card(alert: sqlite3.Row, candidate: sqlite3.Row | None, next_ea
     if underlying_price is not None:
         html.append(f"<div style='margin-top:0.5rem; color:{TEXT_SECONDARY};'>💲 Precio actual del subyacente: ${underlying_price:,.2f}</div>")
     html.append(_earnings_caveat_html(next_earnings_date, expiration_date))
+    fed_caveat = _fed_event_caveat_html(fed_meeting_date, expiration_date)
+    if fed_caveat:
+        html.append(fed_caveat)
 
     if legs:
         html.append("<div style='margin-top:0.8rem;'>")
@@ -284,6 +301,28 @@ def render_alert_card(alert: sqlite3.Row, candidate: sqlite3.Row | None, next_ea
     html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.75rem; margin-top:0.6rem;'>fuente de la narración: {alert['narrative_source']}</div>")
     html.append("</div>")
 
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+
+def render_news_card(item: sqlite3.Row) -> None:
+    """Tarjeta compacta de una noticia (Finnhub /company-news): headline enlazado, fuente y
+    fecha de publicación, resumen corto — mismo lenguaje visual que las tarjetas de alerta."""
+    published = item["published_at"][:10] if item["published_at"] else "fecha N/D"
+    source = item["source"] or "fuente N/D"
+    headline = item["headline"]
+    url = item["url"]
+    summary = item["summary"] or ""
+
+    html = ["<div class='oia-card'>"]
+    html.append(
+        "<div style='display:flex; justify-content:space-between; align-items:baseline; gap:1rem;'>"
+        f"<a href='{url}' target='_blank' style='color:{TEXT_PRIMARY}; font-size:1.05rem; font-weight:700; text-decoration:none;'>📰 {headline}</a>"
+        "</div>"
+    )
+    html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.8rem; margin-top:0.25rem;'>{source} · {published}</div>")
+    if summary:
+        html.append(f"<div class='oia-comment'>{summary}</div>")
+    html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)
 
 

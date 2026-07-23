@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 
@@ -64,6 +64,7 @@ def get_recent_news(symbol: str, as_of: date, api_key: str | None, lookback_days
                 "source": row.get("source"),
                 "url": row.get("url"),
                 "summary": row.get("summary"),
+                "published_at": datetime.fromtimestamp(row["datetime"], tz=timezone.utc) if row.get("datetime") else None,
             }
             for row in rows[:limit]
         ]

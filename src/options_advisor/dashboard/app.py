@@ -50,5 +50,6 @@ st.markdown(
     - **Watchlist**: último snapshot de indicadores por símbolo.
     - **Indicadores**: detalle histórico de un símbolo (IV Rank, RSI, precio).
     - **Configuración**: perfil de inversor y umbrales de convicción.
+    - **Noticias**: últimas noticias por símbolo (Finnhub).
     """
 )
