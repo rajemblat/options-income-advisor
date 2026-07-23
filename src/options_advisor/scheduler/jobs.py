@@ -24,7 +24,7 @@ def _refresh_macro_snapshot(conn: sqlite3.Connection, today: date, finnhub_api_k
         target_range = fred_client.get_fed_funds_target_range(fred_api_key)
         macro = fred_client.get_macro_snapshot(fred_api_key)
         fed_probs = kalshi_client.get_fed_decision_probabilities(target_range[1]) if target_range else None
-        events = economic_calendar.get_upcoming_macro_events(finnhub_api_key, today)
+        events = economic_calendar.get_upcoming_macro_events(finnhub_api_key, fred_api_key, today)
 
         repo.upsert_macro_snapshot(
             conn,

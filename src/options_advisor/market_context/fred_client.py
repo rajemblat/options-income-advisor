@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 import logging
+from datetime import date, timedelta
 
 import httpx
 
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
+RELEASE_DATES_URL = "https://api.stlouisfed.org/fred/release/dates"
 _TIMEOUT = 10.0
+
+# release_id de FRED (no series_id) para el calendario oficial de publicación de cada dato —
+# distinto del valor en sí (get_macro_snapshot). Finnhub `/calendar/economic` requiere el plan
+# pago (verificado con la key real: 403), así que estas son la única fuente gratis con fecha
+# exacta de "cuándo sale el próximo CPI/empleo/PBI", no solo "cuál fue el último valor".
+_RELEASE_LABELS = {
+    10: ("Publicación de CPI (inflación)", "high"),
+    50: ("Reporte de empleo (Nonfarm Payrolls)", "high"),
+    53: ("Publicación de PBI (GDP)", "medium"),
+}
 
 # Series de FRED (Federal Reserve Economic Data) usadas como referencia macro — todas ya son
 # la cifra "final" publicada por la fuente oficial, sin cálculos propios encima (Sección de
@@ -63,3 +75,37 @@ def get_macro_snapshot(api_key: str | None) -> dict:
         "unemployment_rate_pct": _latest_value(SERIES_UNEMPLOYMENT, api_key),
         "gdp_growth_annualized_pct": _latest_value(SERIES_GDP_GROWTH, api_key),
     }
+
+
+def get_upcoming_release_dates(api_key: str | None, as_of: date, lookahead_days: int = 30) -> list[dict]:
+    """Próximas fechas oficiales de publicación (CPI, empleo, PBI) vía FRED `/release/dates`
+    — a diferencia de `get_macro_snapshot` (el ÚLTIMO valor ya publicado), esto da CUÁNDO sale
+    el PRÓXIMO dato, con fecha exacta del calendario oficial BLS/BEA que FRED espeja. Una
+    consulta que falla no tumba las demás — cada release se resuelve independiente."""
+    if not api_key:
+        return []
+    horizon = as_of + timedelta(days=lookahead_days)
+    events: list[dict] = []
+    for release_id, (label, impact) in _RELEASE_LABELS.items():
+        try:
+            response = httpx.get(
+                RELEASE_DATES_URL,
+                params={
+                    "release_id": release_id,
+                    "api_key": api_key,
+                    "file_type": "json",
+                    "sort_order": "asc",
+                    "include_release_dates_with_no_data": "true",
+                    "realtime_start": as_of.isoformat(),
+                    "realtime_end": horizon.isoformat(),
+                },
+                timeout=_TIMEOUT,
+            )
+            response.raise_for_status()
+            for row in response.json().get("release_dates", []):
+                release_date = row.get("date")
+                if release_date and as_of.isoformat() <= release_date <= horizon.isoformat():
+                    events.append({"date": release_date, "event": label, "country": "US", "impact": impact})
+        except Exception:
+            logger.warning("FRED release dates no disponible para release_id=%s; se omite", release_id, exc_info=True)
+    return events

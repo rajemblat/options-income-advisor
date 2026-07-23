@@ -5,6 +5,8 @@ from datetime import date, timedelta
 
 import httpx
 
+from options_advisor.market_context import fred_client
+
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://finnhub.io/api/v1"
@@ -31,26 +33,34 @@ def _fomc_dates_fallback(as_of: date, lookahead_days: int) -> list[dict]:
     ]
 
 
-def get_upcoming_macro_events(api_key: str | None, as_of: date, lookahead_days: int = 30) -> list[dict]:
+def get_upcoming_macro_events(
+    finnhub_api_key: str | None, fred_api_key: str | None, as_of: date, lookahead_days: int = 30
+) -> list[dict]:
     """Próximos eventos macro relevantes (FOMC, CPI, empleo, PBI) en los próximos
-    `lookahead_days`, vía Finnhub `/calendar/economic`. Si Finnhub no responde o el endpoint
-    no está disponible en el plan actual, cae al calendario oficial de reuniones FOMC (ver
-    `_FOMC_MEETING_DATES_FALLBACK`) — cubre menos eventos pero nunca deja el dato en blanco
-    para lo más importante de esta lista."""
-    if api_key:
+    `lookahead_days`. Intenta primero Finnhub `/calendar/economic` (el más completo cuando el
+    plan lo incluye). Si no responde o el endpoint no está disponible en el plan actual
+    (confirmado 403 en el plan free al momento de escribir esto), arma el calendario con dos
+    fuentes gratis: el calendario oficial de reuniones FOMC (`_FOMC_MEETING_DATES_FALLBACK`) +
+    fechas exactas de publicación de CPI/empleo/PBI vía FRED `/release/dates`
+    (`fred_client.get_upcoming_release_dates`) — cubre lo mismo que pedía el plan original sin
+    depender de un endpoint pago."""
+    if finnhub_api_key:
         try:
             response = httpx.get(
                 f"{BASE_URL}/calendar/economic",
                 params={
                     "from": as_of.isoformat(),
                     "to": (as_of + timedelta(days=lookahead_days)).isoformat(),
-                    "token": api_key,
+                    "token": finnhub_api_key,
                 },
                 timeout=_TIMEOUT,
             )
             response.raise_for_status()
             rows = response.json().get("economicCalendar", [])
-            relevant = [r for r in rows if r.get("country") == "US" and r.get("impact") in ("high", "medium")]
+            # Incluye impacto "low" también (Sección 'Eventos de riesgo' punto #1): el filtro
+            # anterior (solo high/medium) escondía eventos reales del panorama completo; el
+            # nivel de riesgo bajo ya se refleja visualmente en risk_calendar._classify_macro_event.
+            relevant = [r for r in rows if r.get("country") == "US" and r.get("impact") in ("high", "medium", "low")]
             if relevant:
                 return sorted(
                     (
@@ -68,6 +78,9 @@ def get_upcoming_macro_events(api_key: str | None, as_of: date, lookahead_days: 
                     key=lambda e: e["date"],
                 )
         except Exception:
-            logger.warning("Finnhub economic calendar no disponible; se usa el calendario FOMC de respaldo", exc_info=True)
+            logger.warning("Finnhub economic calendar no disponible; se arma el calendario con FOMC + FRED", exc_info=True)
 
-    return _fomc_dates_fallback(as_of, lookahead_days)
+    events = _fomc_dates_fallback(as_of, lookahead_days) + fred_client.get_upcoming_release_dates(
+        fred_api_key, as_of, lookahead_days
+    )
+    return sorted(events, key=lambda e: e["date"])
