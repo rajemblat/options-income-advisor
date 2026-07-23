@@ -45,6 +45,15 @@ class CandidateContract(BaseModel):
     greeks_source: GreeksSource
     conviction_score: int
     scoring_breakdown: dict
+    legs: list[dict] = []
+    net_premium: float | None = None
+    max_profit: float | None = None
+    max_loss: float | None = None
+    breakevens: list[float] = []
+    probability_of_profit: float | None = None
+    dte: int | None = None
+    underlying_price: float | None = None
+    payoff_is_estimate: bool = False
 
 
 class Alert(BaseModel):

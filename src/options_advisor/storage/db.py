@@ -5,6 +5,30 @@ from pathlib import Path
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
+# `CREATE TABLE IF NOT EXISTS` no agrega columnas nuevas a una tabla ya existente en un
+# data/app.db previo — sin ORM/migraciones formales (Sección 5, herramienta de un solo
+# usuario), este es el mecanismo mínimo para que las columnas de payoff (Fase 1, cálculo de
+# P&L) aparezcan también en bases creadas antes de que existieran.
+_CANDIDATE_CONTRACTS_NEW_COLUMNS = {
+    "legs_json": "TEXT",
+    "net_premium": "REAL",
+    "max_profit": "REAL",
+    "max_loss": "REAL",
+    "breakevens_json": "TEXT",
+    "probability_of_profit": "REAL",
+    "dte": "INTEGER",
+    "underlying_price": "REAL",
+    "payoff_is_estimate": "INTEGER",
+}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(candidate_contracts)")}
+    for column, col_type in _CANDIDATE_CONTRACTS_NEW_COLUMNS.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE candidate_contracts ADD COLUMN {column} {col_type}")
+    conn.commit()
+
 
 def connect(db_path: Path | str) -> sqlite3.Connection:
     """Abre (y si hace falta inicializa) la base SQLite en modo WAL, para permitir
@@ -22,4 +46,5 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA_PATH.read_text())
     conn.commit()
+    _migrate(conn)
     return conn

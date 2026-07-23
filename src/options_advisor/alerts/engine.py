@@ -10,6 +10,7 @@ from options_advisor.indicators.pipeline import SymbolAnalysis
 from options_advisor.storage import repository as repo
 from options_advisor.storage.models import Alert, CandidateContract
 from options_advisor.strategy import candidates as candidate_builder
+from options_advisor.strategy import payoff as payoff_calc
 from options_advisor.strategy import scoring
 from options_advisor.strategy.selector import select_candidate_strategies
 
@@ -69,6 +70,12 @@ def process_symbol_alerts(
         if repo.alert_exists(conn, dedup_key):
             continue  # mismo candidato ya alertado hoy
 
+        try:
+            payoff = payoff_calc.compute_payoff(build, analysis.quote.last_price, snap.snapshot_date, settings.market.risk_free_rate)
+        except Exception:
+            logger.exception("Fallo al calcular payoff de %s/%s; se omite este candidato", snap.symbol, strategy_type)
+            continue
+
         candidate_id = repo.insert_candidate_contract(
             conn,
             CandidateContract(
@@ -85,6 +92,15 @@ def process_symbol_alerts(
                 greeks_source=build.greeks_source,
                 conviction_score=score,
                 scoring_breakdown=breakdown,
+                legs=payoff.legs,
+                net_premium=payoff.net_premium,
+                max_profit=payoff.max_profit,
+                max_loss=payoff.max_loss,
+                breakevens=payoff.breakevens,
+                probability_of_profit=payoff.probability_of_profit,
+                dte=payoff.dte,
+                underlying_price=payoff.underlying_price,
+                payoff_is_estimate=payoff.is_estimate,
             ),
         )
 
@@ -100,6 +116,15 @@ def process_symbol_alerts(
             resistances=snap.resistance_levels,
             strikes=build.strikes,
             expiration_date=build.expiration_date,
+            underlying_price=payoff.underlying_price,
+            legs=payoff.legs,
+            net_premium=payoff.net_premium,
+            max_profit=payoff.max_profit,
+            max_loss=payoff.max_loss,
+            breakevens=payoff.breakevens,
+            probability_of_profit=payoff.probability_of_profit,
+            dte=payoff.dte,
+            payoff_is_estimate=payoff.is_estimate,
         )
         narrative_text, narrative_source = narrator.narrate_alert(context, settings.llm, anthropic_api_key)
 

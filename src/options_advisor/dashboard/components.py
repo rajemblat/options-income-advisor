@@ -1,17 +1,34 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 
 import streamlit as st
 from dotenv import load_dotenv
 
+from options_advisor.alerts.formatting import strategy_label
 from options_advisor.broker import get_broker_client
 from options_advisor.broker.base import BrokerClient
 from options_advisor.config import PROJECT_ROOT, Settings, load_settings, load_symbols
 from options_advisor.storage import db
 
 load_dotenv(PROJECT_ROOT / ".env")
+
+# Paleta oscura premium (Sección "estilo oscuro elegante"). Mismos valores que
+# .streamlit/config.toml — repetidos acá porque el theme.* de config.toml no es legible
+# desde Python en runtime, y estos componentes HTML necesitan los hex directamente.
+SURFACE = "#161615"
+SURFACE_RAISED = "#1e1e1d"
+PAGE_PLANE = "#0d0d0d"
+BORDER = "rgba(255,255,255,0.10)"
+TEXT_PRIMARY = "#ffffff"
+TEXT_SECONDARY = "#c3c2b7"
+TEXT_MUTED = "#898781"
+ACCENT = "#3987e5"
+GOOD = "#0ca30c"
+WARNING = "#fab219"
+CRITICAL = "#d03b3b"
 
 
 @st.cache_resource
@@ -39,9 +56,212 @@ def get_anthropic_api_key() -> str | None:
     return os.environ.get("ANTHROPIC_API_KEY")
 
 
+def inject_theme() -> None:
+    """CSS compartido por las 5 páginas del dashboard: tipografía, tarjetas, separadores y
+    limpieza del chrome por defecto de Streamlit, para un look oscuro consistente."""
+    st.markdown(
+        f"""
+        <style>
+        #MainMenu, footer, [data-testid="stToolbar"] {{ visibility: hidden; height: 0; }}
+
+        html, body, [class*="css"] {{
+            -webkit-font-smoothing: antialiased;
+        }}
+
+        [data-testid="stAppViewContainer"] {{
+            background: radial-gradient(120% 120% at 50% -10%, #17181c 0%, {PAGE_PLANE} 55%);
+        }}
+
+        h1, h2, h3 {{
+            letter-spacing: -0.01em;
+            font-weight: 700;
+        }}
+
+        [data-testid="stMetric"] {{
+            background: {SURFACE};
+            border: 1px solid {BORDER};
+            border-radius: 0.75rem;
+            padding: 0.9rem 1.1rem;
+        }}
+        [data-testid="stMetricLabel"] {{ color: {TEXT_MUTED}; }}
+
+        .oia-divider {{
+            height: 1px;
+            border: none;
+            margin: 1.75rem 0;
+            background: linear-gradient(90deg, transparent, {BORDER} 20%, {BORDER} 80%, transparent);
+        }}
+
+        .oia-card {{
+            background: {SURFACE};
+            border: 1px solid {BORDER};
+            border-radius: 1rem;
+            padding: 1.25rem 1.4rem;
+            margin-bottom: 1rem;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+        }}
+
+        .oia-pill {{
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.15rem 0.65rem;
+            border-radius: 999px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            border: 1px solid transparent;
+        }}
+
+        .oia-leg-row {{
+            display: flex;
+            justify-content: space-between;
+            gap: 0.75rem;
+            padding: 0.4rem 0;
+            border-bottom: 1px dashed {BORDER};
+            font-size: 0.92rem;
+            color: {TEXT_SECONDARY};
+        }}
+        .oia-leg-row:last-child {{ border-bottom: none; }}
+
+        .oia-metric-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 0.6rem;
+            margin: 0.9rem 0;
+        }}
+        .oia-metric-tile {{
+            background: {SURFACE_RAISED};
+            border: 1px solid {BORDER};
+            border-radius: 0.65rem;
+            padding: 0.55rem 0.8rem;
+        }}
+        .oia-metric-tile .label {{ color: {TEXT_MUTED}; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }}
+        .oia-metric-tile .value {{ color: {TEXT_PRIMARY}; font-size: 1.05rem; font-weight: 700; margin-top: 0.15rem; }}
+
+        .oia-comment {{
+            color: {TEXT_SECONDARY};
+            font-size: 0.95rem;
+            line-height: 1.5;
+            margin-top: 0.6rem;
+        }}
+
+        .oia-caveat {{
+            color: {WARNING};
+            font-size: 0.82rem;
+            margin-top: 0.3rem;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_header(icon: str, title: str, subtitle: str | None = None) -> None:
+    st.markdown(f"## {icon} {title}")
+    if subtitle:
+        st.markdown(f"<div style='color:{TEXT_MUTED}; margin-top:-0.6rem;'>{subtitle}</div>", unsafe_allow_html=True)
+
+
+def score_pill_html(score: int) -> str:
+    if score >= 80:
+        color = GOOD
+    elif score >= 65:
+        color = WARNING
+    else:
+        color = CRITICAL
+    return f"<span class='oia-pill' style='color:{color}; border-color:{color}44; background:{color}1a;'>● {score}</span>"
+
+
 def risk_badge(score: int) -> str:
     if score >= 80:
         return f"🟢 {score}"
     if score >= 65:
         return f"🟡 {score}"
     return f"🔴 {score}"
+
+
+def _leg_row_html(leg: dict) -> str:
+    is_sell = leg["side"] == "sell"
+    side_color = CRITICAL if is_sell else GOOD
+    side_label = "🔴 Venta" if is_sell else "🟢 Compra"
+    option_label = "Put" if leg["option_type"] == "put" else "Call"
+    return (
+        "<div class='oia-leg-row'>"
+        f"<span style='color:{side_color}; font-weight:600;'>{side_label} · 1 {option_label}</span>"
+        f"<span>Strike ${leg['strike']:.2f} · Vence {leg['expiration']} · Prima ${leg['premium']:.2f}</span>"
+        "</div>"
+    )
+
+
+def _fmt_money(value) -> str:
+    if value is None:
+        return "N/D"
+    sign = "-" if value < 0 else ""
+    return f"{sign}${abs(value):,.2f}"
+
+
+def render_alert_card(alert: sqlite3.Row, candidate: sqlite3.Row | None) -> None:
+    """Tarjeta premium de una alerta: patas, prima, beneficio/pérdida máxima, breakevens,
+    probabilidad de beneficio y el comentario del narrador — mismos datos que el bloque de
+    texto que arma `alerts/formatting.py` para las notificaciones, con estructura HTML."""
+    strategy_type = candidate["strategy_type"] if candidate else None
+    label = strategy_label(strategy_type) if strategy_type else "Estrategia desconocida"
+
+    legs = json.loads(candidate["legs_json"]) if candidate and candidate["legs_json"] else []
+    breakevens = json.loads(candidate["breakevens_json"]) if candidate and candidate["breakevens_json"] else []
+    underlying_price = candidate["underlying_price"] if candidate else None
+    is_estimate = bool(candidate["payoff_is_estimate"]) if candidate else False
+
+    narrative = alert["narrative_text"] or ""
+    if "💡 Comentario:" in narrative:
+        comment = narrative.split("💡 Comentario:", 1)[1].strip()
+    else:
+        comment = narrative or "Sin comentario disponible."
+
+    html = ["<div class='oia-card'>"]
+    html.append(
+        "<div style='display:flex; justify-content:space-between; align-items:flex-start; gap:1rem;'>"
+        f"<div><div style='font-size:1.3rem; font-weight:700;'>📌 {alert['symbol']} — {label}</div>"
+        f"<div style='color:{TEXT_MUTED}; font-size:0.85rem; margin-top:0.15rem;'>"
+        f"{alert['alert_date']} · perfil {alert['risk_profile']} · umbral {alert['threshold_applied']}</div></div>"
+        f"<div>{score_pill_html(alert['conviction_score'])}</div>"
+        "</div>"
+    )
+    if underlying_price is not None:
+        html.append(f"<div style='margin-top:0.5rem; color:{TEXT_SECONDARY};'>💲 Precio actual del subyacente: ${underlying_price:,.2f}</div>")
+    html.append(f"<div class='oia-caveat'>⚠️ No se verificaron fechas de earnings — confirmá manualmente antes de operar.</div>")
+
+    if legs:
+        html.append("<div style='margin-top:0.8rem;'>")
+        html.extend(_leg_row_html(leg) for leg in legs)
+        if strategy_type == "covered_call":
+            html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.85rem; margin-top:0.4rem;'>📎 Requiere 100 acciones de {alert['symbol']} en cartera (o asignación previa).</div>")
+        html.append("</div>")
+
+        net_premium = candidate["net_premium"]
+        premium_kind = "crédito" if (net_premium or 0) >= 0 else "débito"
+        breakevens_str = " / ".join(f"${b:,.2f}" for b in breakevens) if breakevens else "N/D"
+        pop = candidate["probability_of_profit"]
+        pop_str = f"{pop * 100:.0f}%" if pop is not None else "N/D"
+
+        html.append("<div class='oia-metric-grid'>")
+        html.append(f"<div class='oia-metric-tile'><div class='label'>💵 Prima neta</div><div class='value'>{_fmt_money(abs(net_premium) if net_premium is not None else None)} <span style='font-size:0.7rem; color:{TEXT_MUTED};'>({premium_kind})</span></div></div>")
+        html.append(f"<div class='oia-metric-tile'><div class='label'>🏆 Beneficio máximo</div><div class='value'>{_fmt_money(candidate['max_profit'])}</div></div>")
+        html.append(f"<div class='oia-metric-tile'><div class='label'>📉 Pérdida máxima</div><div class='value'>{_fmt_money(candidate['max_loss'])}</div></div>")
+        html.append(f"<div class='oia-metric-tile'><div class='label'>⚖️ Breakeven(s)</div><div class='value' style='font-size:0.9rem;'>{breakevens_str}</div></div>")
+        html.append(f"<div class='oia-metric-tile'><div class='label'>📊 Prob. de beneficio</div><div class='value'>{pop_str}</div></div>")
+        html.append(f"<div class='oia-metric-tile'><div class='label'>⏳ DTE</div><div class='value'>{candidate['dte'] if candidate['dte'] is not None else 'N/D'} días</div></div>")
+        html.append("</div>")
+
+        if is_estimate:
+            html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.8rem;'>ℹ️ Beneficio máximo, pérdida máxima y breakeven(s) son una estimación por modelo (vencimientos combinados).</div>")
+    elif candidate:
+        strikes = json.loads(candidate["strikes_json"])
+        html.append(f"<div style='margin-top:0.6rem; color:{TEXT_SECONDARY};'>Strikes: {strikes}</div>")
+        html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.8rem; margin-top:0.3rem;'>Alerta generada antes de esta actualización — sin datos de P&L calculados.</div>")
+
+    html.append(f"<div class='oia-comment'>💡 <b>Comentario:</b> {comment}</div>")
+    html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.75rem; margin-top:0.6rem;'>fuente de la narración: {alert['narrative_source']}</div>")
+    html.append("</div>")
+
+    st.markdown("".join(html), unsafe_allow_html=True)

@@ -6,19 +6,28 @@ from datetime import date
 
 import anthropic
 
+from options_advisor.alerts import formatting
 from options_advisor.config import LlmSettings
 
 logger = logging.getLogger(__name__)
 
 # Sección 6.2: la narración es puramente descriptiva sobre datos ya calculados por el motor
 # de reglas (Sección 6.1) — el LLM nunca decide ni pondera, solo redacta en lenguaje simple.
-SYSTEM_PROMPT = """Sos un asistente que redacta explicaciones breves de alertas de trading de opciones.
+# El bloque con patas, prima, beneficio/pérdida máxima, breakevens y probabilidad de beneficio
+# ya se le muestra al usuario armado por `alerts/formatting.py` con datos 100% determinísticos
+# (`strategy/payoff.py`); acá el LLM solo escribe el párrafo final de "Comentario".
+SYSTEM_PROMPT = """Sos un asistente que redacta el comentario final de una alerta de trading de opciones.
 
-Se te da un JSON con los factores ya calculados por un motor de reglas determinístico
-(IV Rank, RSI, niveles técnicos, puntaje de convicción y su desglose). Tu única tarea es
-narrar esos datos en 2-4 frases claras, en español, en el estilo: "COF muestra IV Rank de 68
-(prima cara), soporte técnico fuerte en 195, y RSI en zona neutral. Oportunidad de Cash-Secured
-Put en el strike 195."
+Se te da un JSON con los datos de la estrategia ya armada por un motor de reglas determinístico:
+símbolo, estrategia, patas (strike/prima/vencimiento de cada leg), precio del subyacente, las
+métricas de riesgo/retorno ya calculadas (prima neta, beneficio máximo, pérdida máxima,
+breakevens, probabilidad de beneficio, DTE) y los factores técnicos (IV Rank, RSI, soportes/
+resistencias, puntaje de convicción y su desglose). Todos esos datos YA se le muestran al
+usuario en un bloque separado antes de tu texto — no los repitas ni los vuelvas a listar.
+
+Tu única tarea es escribir el "Comentario" final: 2-4 frases en español explicando POR QUÉ esta
+oportunidad tiene sentido dado el contexto técnico (IV Rank, RSI, niveles, probabilidad de
+beneficio). No agregues saludo, título ni la palabra "Comentario" — solo el texto.
 
 Reglas estrictas:
 - Nunca inventes cifras que no estén en el JSON.
@@ -26,54 +35,46 @@ Reglas estrictas:
 - Nunca sugerís una acción distinta a la estrategia y los strikes que vienen en el JSON.
 - Si `iv_rank_source` es "historical_volatility_proxy", mencioná que el IV Rank es una
   aproximación (todavía no hay suficiente historial de IV real).
-- Siempre cerrá con una nota de que no se verificaron fechas de earnings (limitación conocida
-  de esta fase) y que conviene confirmarlo manualmente antes de operar.
+- Si `payoff_is_estimate` es true, aclará que el beneficio máximo y los breakevens son una
+  estimación por modelo (vencimientos combinados), no una fórmula cerrada.
 """
 
-FALLBACK_TEMPLATE = (
-    "{symbol}: oportunidad de {strategy_type} (score de convicción {score}/100). "
-    "IV Rank {iv_rank:.0f} ({iv_rank_source}), RSI {rsi}. Strikes propuestos: {strikes}. "
-    "Nota: no se verificaron fechas de earnings ni se generó explicación narrativa (fallback "
-    "por error del narrador) — confirmar manualmente antes de operar."
-)
 
-
-def _fallback_text(context: dict) -> str:
-    rsi = context.get("rsi")
-    return FALLBACK_TEMPLATE.format(
-        symbol=context["symbol"],
-        strategy_type=context["strategy_type"],
-        score=context["conviction_score"],
-        iv_rank=context["iv_rank"] or 0.0,
-        iv_rank_source=context["iv_rank_source"],
-        rsi=f"{rsi:.1f}" if rsi is not None else "N/D",
-        strikes=context["strikes"],
+def _fallback_comment(context: dict) -> str:
+    return (
+        f"Score de convicción {context['conviction_score']}/100. No se generó comentario narrativo "
+        "(fallback por error del narrador) — revisar los datos numéricos de arriba y confirmar "
+        "manualmente antes de operar."
     )
 
 
 def narrate_alert(context: dict, llm_settings: LlmSettings, api_key: str | None) -> tuple[str, str]:
-    """Devuelve (texto, fuente). fuente es 'claude' o 'fallback_template'. Una alerta nunca
-    se pierde por un fallo del LLM: si algo falla, se usa la plantilla local (Sección 6.2 /
-    riesgo de fallo de Anthropic API documentado en el plan de Fase 1)."""
+    """Devuelve (texto completo de la alerta, fuente). fuente es 'claude' o 'fallback_template'
+    según de dónde salió el párrafo de comentario — el resto del texto (patas, prima, P&L) es
+    siempre determinístico. Una alerta nunca se pierde por un fallo del LLM: si algo falla, se
+    usa un comentario de fallback local (Sección 6.2 / riesgo de fallo de Anthropic API
+    documentado en el plan de Fase 1)."""
     if not api_key:
-        logger.warning("ANTHROPIC_API_KEY no configurada; usando plantilla local para la alerta de %s", context["symbol"])
-        return _fallback_text(context), "fallback_template"
+        logger.warning("ANTHROPIC_API_KEY no configurada; usando comentario de fallback para la alerta de %s", context["symbol"])
+        comment, source = _fallback_comment(context), "fallback_template"
+    else:
+        try:
+            client = anthropic.Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model=llm_settings.model,
+                max_tokens=llm_settings.max_tokens,
+                system=SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": json.dumps(context, default=str, ensure_ascii=False)}],
+            )
+            text = "".join(block.text for block in response.content if block.type == "text").strip()
+            if not text:
+                raise ValueError("Respuesta vacía de Claude")
+            comment, source = text, "claude"
+        except Exception:
+            logger.exception("Fallo al narrar la alerta de %s con Claude; usando comentario de fallback", context["symbol"])
+            comment, source = _fallback_comment(context), "fallback_template"
 
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=llm_settings.model,
-            max_tokens=llm_settings.max_tokens,
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": json.dumps(context, default=str, ensure_ascii=False)}],
-        )
-        text = "".join(block.text for block in response.content if block.type == "text").strip()
-        if not text:
-            raise ValueError("Respuesta vacía de Claude")
-        return text, "claude"
-    except Exception:
-        logger.exception("Fallo al narrar la alerta de %s con Claude; usando plantilla local", context["symbol"])
-        return _fallback_text(context), "fallback_template"
+    return formatting.format_alert_message(context, comment), source
 
 
 def build_narration_context(
@@ -88,6 +89,15 @@ def build_narration_context(
     resistances: list[float],
     strikes: dict,
     expiration_date: date,
+    underlying_price: float | None = None,
+    legs: list[dict] | None = None,
+    net_premium: float | None = None,
+    max_profit: float | None = None,
+    max_loss: float | None = None,
+    breakevens: list[float] | None = None,
+    probability_of_profit: float | None = None,
+    dte: int | None = None,
+    payoff_is_estimate: bool = False,
 ) -> dict:
     return {
         "symbol": symbol,
@@ -101,4 +111,13 @@ def build_narration_context(
         "resistance_levels": resistances,
         "strikes": strikes,
         "expiration_date": expiration_date.isoformat(),
+        "underlying_price": underlying_price,
+        "legs": legs or [],
+        "net_premium": net_premium,
+        "max_profit": max_profit,
+        "max_loss": max_loss,
+        "breakevens": breakevens or [],
+        "probability_of_profit": probability_of_profit,
+        "dte": dte,
+        "payoff_is_estimate": payoff_is_estimate,
     }

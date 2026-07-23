@@ -4,12 +4,13 @@ from datetime import datetime
 
 import streamlit as st
 
-from options_advisor.dashboard.components import get_connection, get_settings, get_symbols
+from options_advisor.dashboard.components import get_connection, get_settings, get_symbols, inject_theme, render_header
 from options_advisor.storage import repository as repo
 from options_advisor.storage.models import InvestorProfile
 
 st.set_page_config(page_title="Configuración", page_icon="⚙️", layout="wide")
-st.title("⚙️ Configuración")
+inject_theme()
+render_header("⚙️", "Configuración")
 
 conn = get_connection()
 settings = get_settings()
@@ -67,7 +68,7 @@ with st.form("investor_profile_form"):
         st.success("Perfil guardado.")
         st.rerun()
 
-st.divider()
+st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
 st.subheader("Umbrales de convicción por defecto (config/settings.yaml)")
 st.table(
     {
@@ -80,7 +81,7 @@ st.table(
     }
 )
 
-st.divider()
+st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
 st.subheader("Símbolos monitoreados (config/symbols.yaml)")
 st.write(", ".join(get_symbols()))
 st.caption("Para agregar o quitar símbolos, editá config/symbols.yaml directamente — no hace falta tocar código.")

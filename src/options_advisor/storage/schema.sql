@@ -47,7 +47,16 @@ CREATE TABLE IF NOT EXISTS candidate_contracts (
     rho REAL,
     greeks_source TEXT NOT NULL,
     conviction_score INTEGER NOT NULL,
-    scoring_breakdown_json TEXT NOT NULL
+    scoring_breakdown_json TEXT NOT NULL,
+    legs_json TEXT,
+    net_premium REAL,
+    max_profit REAL,
+    max_loss REAL,
+    breakevens_json TEXT,
+    probability_of_profit REAL,
+    dte INTEGER,
+    underlying_price REAL,
+    payoff_is_estimate INTEGER
 );
 
 -- Historial de alertas generadas (notificadas o descartadas por umbral)

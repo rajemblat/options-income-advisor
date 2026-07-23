@@ -3,10 +3,11 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from options_advisor.dashboard.components import get_connection, get_symbols
+from options_advisor.dashboard.components import get_connection, get_symbols, inject_theme, render_header
 
 st.set_page_config(page_title="Watchlist", page_icon="👀", layout="wide")
-st.title("👀 Watchlist — último snapshot por símbolo")
+inject_theme()
+render_header("👀", "Watchlist", "Último snapshot de indicadores por símbolo")
 
 conn = get_connection()
 symbols = get_symbols()
@@ -38,7 +39,18 @@ else:
         ]
     ]
     df.columns = ["Símbolo", "Fecha", "Precio", "IV Rank", "Fuente IV Rank", "RSI", "ATR", "SMA20", "SMA50", "Cruce MA"]
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(
+        df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Precio": st.column_config.NumberColumn(format="$%.2f"),
+            "IV Rank": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+            "RSI": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+            "SMA20": st.column_config.NumberColumn(format="$%.2f"),
+            "SMA50": st.column_config.NumberColumn(format="$%.2f"),
+        },
+    )
     st.caption(
         "iv_rank_source = 'historical_volatility_proxy' significa que todavía no hay 12 meses "
         "de historial de IV real acumulado; se usa volatilidad histórica realizada como aproximación."

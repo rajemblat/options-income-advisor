@@ -22,7 +22,7 @@ def test_narrate_alert_without_api_key_uses_fallback():
     text, source = narrate_alert(context, LlmSettings(model="claude-haiku-4-5-20251001", max_tokens=300), api_key=None)
     assert source == "fallback_template"
     assert "AAPL" in text
-    assert "cash_secured_put" in text
+    assert "Cash-Secured Put" in text
 
 
 def test_narrate_alert_never_raises_when_api_call_fails(monkeypatch):

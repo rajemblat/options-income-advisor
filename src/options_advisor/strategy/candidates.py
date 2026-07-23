@@ -13,12 +13,18 @@ FAR_LEG_DTE_RANGE = (45, 60)
 SINGLE_LEG_DTE_RANGE = (25, 50)
 
 
+class Leg(NamedTuple):
+    side: str  # "sell" | "buy"
+    contract: OptionContract
+
+
 class CandidateBuild(NamedTuple):
     strategy_type: str
     expiration_date: date
     strikes: dict
     net_greeks: dict
     greeks_source: str
+    legs: list[Leg]
 
 
 def _contracts_for(chain: OptionChain, option_type: OptionType, expiration: date) -> list[OptionContract]:
@@ -85,6 +91,7 @@ def _build_single_short_leg(strategy_type: str, chain: OptionChain, option_type:
         strikes={"short_strike": short.strike},
         net_greeks=_position_greeks(short, is_short=True),
         greeks_source=_greeks_source(short),
+        legs=[Leg("sell", short)],
     )
 
 
@@ -105,6 +112,7 @@ def _build_vertical_spread(strategy_type: str, chain: OptionChain, option_type: 
         strikes={"short_strike": short.strike, "long_strike": long.strike},
         net_greeks=_sum_greeks(_position_greeks(short, True), _position_greeks(long, False)),
         greeks_source=_greeks_source(short, long),
+        legs=[Leg("sell", short), Leg("buy", long)],
     )
 
 
@@ -138,6 +146,7 @@ def _build_iron_condor(chain: OptionChain) -> CandidateBuild | None:
             _position_greeks(long_call, False),
         ),
         greeks_source=put_spread.greeks_source if put_spread.greeks_source == "calculated" else _greeks_source(short_call, long_call),
+        legs=[*put_spread.legs, Leg("sell", short_call), Leg("buy", long_call)],
     )
 
 
@@ -171,6 +180,7 @@ def _build_calendar_or_diagonal(strategy_type: str, chain: OptionChain, same_str
         },
         net_greeks=_sum_greeks(_position_greeks(short_near, True), _position_greeks(long_far, False)),
         greeks_source=_greeks_source(short_near, long_far),
+        legs=[Leg("sell", short_near), Leg("buy", long_far)],
     )
 
 
