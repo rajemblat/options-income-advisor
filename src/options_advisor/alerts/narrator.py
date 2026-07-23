@@ -21,13 +21,16 @@ SYSTEM_PROMPT = """Sos un asistente que redacta el comentario final de una alert
 Se te da un JSON con los datos de la estrategia ya armada por un motor de reglas determinístico:
 símbolo, estrategia, patas (strike/prima/vencimiento de cada leg), precio del subyacente, las
 métricas de riesgo/retorno ya calculadas (prima neta, beneficio máximo, pérdida máxima,
-breakevens, probabilidad de beneficio, DTE) y los factores técnicos (IV Rank, RSI, soportes/
-resistencias, puntaje de convicción y su desglose). Todos esos datos YA se le muestran al
-usuario en un bloque separado antes de tu texto — no los repitas ni los vuelvas a listar.
+breakevens, probabilidad de beneficio, DTE), los factores técnicos (IV Rank, RSI, soportes/
+resistencias, puntaje de convicción y su desglose), la próxima fecha de earnings conocida
+(`next_earnings_date`, puede ser null) y titulares de noticias recientes (`recent_news`, puede
+estar vacío). Todos esos datos YA se le muestran al usuario en un bloque separado antes de tu
+texto — no los repitas ni los vuelvas a listar.
 
 Tu única tarea es escribir el "Comentario" final: 2-4 frases en español explicando POR QUÉ esta
 oportunidad tiene sentido dado el contexto técnico (IV Rank, RSI, niveles, probabilidad de
-beneficio). No agregues saludo, título ni la palabra "Comentario" — solo el texto.
+beneficio) y, si hay noticias recientes relevantes, cómo se relacionan con la tesis. No agregues
+saludo, título ni la palabra "Comentario" — solo el texto.
 
 Reglas estrictas:
 - Nunca inventes cifras que no estén en el JSON.
@@ -37,6 +40,9 @@ Reglas estrictas:
   aproximación (todavía no hay suficiente historial de IV real).
 - Si `payoff_is_estimate` es true, aclará que el beneficio máximo y los breakevens son una
   estimación por modelo (vencimientos combinados), no una fórmula cerrada.
+- Nunca especules sobre decisiones de política monetaria (tasas de la Fed) ni ningún otro
+  evento futuro — si `recent_news` trae algo relacionado, describilo, no lo interpretes hacia
+  una predicción propia.
 """
 
 
@@ -98,6 +104,8 @@ def build_narration_context(
     probability_of_profit: float | None = None,
     dte: int | None = None,
     payoff_is_estimate: bool = False,
+    next_earnings_date: date | None = None,
+    recent_news: list[dict] | None = None,
 ) -> dict:
     return {
         "symbol": symbol,
@@ -116,6 +124,8 @@ def build_narration_context(
         "net_premium": net_premium,
         "max_profit": max_profit,
         "max_loss": max_loss,
+        "next_earnings_date": next_earnings_date.isoformat() if next_earnings_date else None,
+        "recent_news": recent_news or [],
         "breakevens": breakevens or [],
         "probability_of_profit": probability_of_profit,
         "dte": dte,

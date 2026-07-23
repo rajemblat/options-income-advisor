@@ -19,7 +19,27 @@ CREATE TABLE IF NOT EXISTS indicator_snapshots (
     support_levels TEXT,
     resistance_levels TEXT,
     raw_indicators_json TEXT,
+    next_earnings_date TEXT,
+    price_std_20 REAL,
+    net_gex REAL,
     UNIQUE(symbol, snapshot_date)
+);
+
+-- Contexto macro, una fila por día (no es por símbolo): tasa de la Fed vigente, indicadores
+-- FRED más recientes, y probabilidad de la próxima decisión de tasas a partir de precios
+-- reales de mercado (Kalshi) — nunca una especulación del narrador de IA.
+CREATE TABLE IF NOT EXISTS macro_snapshot (
+    snapshot_date TEXT PRIMARY KEY,
+    fed_funds_lower REAL,
+    fed_funds_upper REAL,
+    cpi_yoy_pct REAL,
+    unemployment_rate_pct REAL,
+    gdp_growth_annualized_pct REAL,
+    fed_meeting_date TEXT,
+    fed_hike_probability REAL,
+    fed_hold_probability REAL,
+    fed_cut_probability REAL,
+    upcoming_events_json TEXT
 );
 
 -- Historial dedicado de IV, usado para el bootstrap de IV Rank (Sección 4 del plan)

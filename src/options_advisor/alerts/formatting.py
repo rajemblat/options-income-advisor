@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from datetime import date
 
 STRATEGY_LABELS = {
     "cash_secured_put": "Cash-Secured Put",
@@ -24,15 +25,26 @@ STRATEGY_LABELS = {
     "short_put_condor": "Short Put Condor",
 }
 
-# Fase 1 no verifica fechas de earnings (es Fase 3) — la alerta siempre lo advierte
-# explícitamente en vez de arriesgar una detección de "jugada de earnings" no implementada.
-EARNINGS_CAVEAT = "No se verificaron fechas de earnings — confirmá manualmente antes de operar."
+# Cuando no se conoce la fecha de earnings (símbolo sin fixture en modo mock, o modo Schwab —
+# todavía no soportado ahí, ver market_context/finnhub_client.py), la alerta lo advierte
+# explícitamente en vez de asumir que no hay earnings próximos.
+EARNINGS_CAVEAT_UNKNOWN = "No se pudo verificar la fecha de earnings — confirmá manualmente antes de operar."
 
 SEPARATOR = "──────────"
 
 
 def strategy_label(strategy_type: str) -> str:
     return STRATEGY_LABELS.get(strategy_type, strategy_type)
+
+
+def _earnings_line(context: dict) -> str:
+    next_earnings = context.get("next_earnings_date")
+    if not next_earnings:
+        return f"⚠️ {EARNINGS_CAVEAT_UNKNOWN}"
+    expiration = context.get("expiration_date")
+    if expiration and next_earnings <= expiration:
+        return f"🚨 Earnings el {next_earnings} — CAE DENTRO del vencimiento de esta posición, riesgo de gap."
+    return f"✅ Sin earnings antes del vencimiento (próximo: {next_earnings})."
 
 
 def _fmt_money(value: float | None) -> str:
@@ -65,7 +77,7 @@ def format_alert_message(context: dict, comment: str) -> str:
     comentario). Todo lo numérico viene ya calculado por `strategy/payoff.py` — el único
     texto libre es `comment`, escrito por el narrador (Claude o plantilla de fallback)."""
     label = strategy_label(context["strategy_type"])
-    lines = ["🔔 Alerta de Opción", f"⚠️ {EARNINGS_CAVEAT}", f"📌 {context['symbol']} — {label}"]
+    lines = ["🔔 Alerta de Opción", _earnings_line(context), f"📌 {context['symbol']} — {label}"]
 
     if context.get("underlying_price") is not None:
         lines.append(f"💲 Precio actual del subyacente: ${context['underlying_price']:,.2f}")
@@ -104,6 +116,12 @@ def format_alert_message(context: dict, comment: str) -> str:
             "ℹ️ Beneficio máximo, pérdida máxima y breakeven(s) son una estimación por modelo "
             "(vencimientos combinados) — no una fórmula cerrada."
         )
+
+    news = context.get("recent_news") or []
+    if news:
+        lines.append(SEPARATOR)
+        lines.append("📰 Noticias recientes:")
+        lines.extend(f"  • {item['headline']} ({item.get('source', 'N/D')})" for item in news)
 
     lines.append(SEPARATOR)
     lines.append(f"💡 Comentario: {comment}")

@@ -61,6 +61,17 @@ def compute_sma(price_bars: list[PriceBar], period: int) -> float | None:
     return None if pd.isna(value) else round(float(value), 2)
 
 
+def compute_stddev(price_bars: list[PriceBar], period: int = 20) -> float | None:
+    """Desviación estándar del precio de cierre sobre una ventana móvil (bandas de 1σ/2σ:
+    `sma_20 ± 1*std` / `± 2*std`, derivadas al mostrar en vez de duplicar columnas)."""
+    df = _to_frame(price_bars)
+    if len(df) < period:
+        return None
+    value = df["close"].rolling(period).std()
+    latest = value.iloc[-1]
+    return None if pd.isna(latest) else round(float(latest), 2)
+
+
 def detect_ma_cross(price_bars: list[PriceBar], short_period: int, long_period: int) -> str | None:
     """Detecta si la media corta cruzó a la larga en la barra más reciente.
     Devuelve p.ej. 'golden_cross_8_20' / 'death_cross_8_20', o None si no hubo cruce hoy."""

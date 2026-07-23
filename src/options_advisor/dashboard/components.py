@@ -13,6 +13,7 @@ from options_advisor.broker import get_broker_client
 from options_advisor.broker.base import BrokerClient
 from options_advisor.config import PROJECT_ROOT, Settings, load_settings, load_symbols
 from options_advisor.storage import db
+from options_advisor.storage import repository as repo
 
 load_dotenv(PROJECT_ROOT / ".env")
 
@@ -195,6 +196,12 @@ def _leg_row_html(leg: dict) -> str:
     )
 
 
+def _fmt_pct(value) -> str:
+    if value is None:
+        return "N/D"
+    return f"{value * 100:.0f}%"
+
+
 def _fmt_money(value) -> str:
     if value is None:
         return "N/D"
@@ -204,12 +211,21 @@ def _fmt_money(value) -> str:
     return f"{sign}${abs(value):,.2f}"
 
 
-def render_alert_card(alert: sqlite3.Row, candidate: sqlite3.Row | None) -> None:
+def _earnings_caveat_html(next_earnings_date: str | None, expiration_date: str | None) -> str:
+    if not next_earnings_date:
+        return f"<div class='oia-caveat'>⚠️ No se pudo verificar la fecha de earnings — confirmá manualmente antes de operar.</div>"
+    if expiration_date and next_earnings_date <= expiration_date:
+        return f"<div class='oia-caveat' style='color:{CRITICAL};'>🚨 Earnings el {next_earnings_date} — CAE DENTRO del vencimiento de esta posición, riesgo de gap.</div>"
+    return f"<div style='color:{GOOD}; font-size:0.82rem; margin-top:0.3rem;'>✅ Sin earnings antes del vencimiento (próximo: {next_earnings_date}).</div>"
+
+
+def render_alert_card(alert: sqlite3.Row, candidate: sqlite3.Row | None, next_earnings_date: str | None = None) -> None:
     """Tarjeta premium de una alerta: patas, prima, beneficio/pérdida máxima, breakevens,
     probabilidad de beneficio y el comentario del narrador — mismos datos que el bloque de
     texto que arma `alerts/formatting.py` para las notificaciones, con estructura HTML."""
     strategy_type = candidate["strategy_type"] if candidate else None
     label = strategy_label(strategy_type) if strategy_type else "Estrategia desconocida"
+    expiration_date = candidate["expiration_date"] if candidate else None
 
     legs = json.loads(candidate["legs_json"]) if candidate and candidate["legs_json"] else []
     breakevens = json.loads(candidate["breakevens_json"]) if candidate and candidate["breakevens_json"] else []
@@ -233,7 +249,7 @@ def render_alert_card(alert: sqlite3.Row, candidate: sqlite3.Row | None) -> None
     )
     if underlying_price is not None:
         html.append(f"<div style='margin-top:0.5rem; color:{TEXT_SECONDARY};'>💲 Precio actual del subyacente: ${underlying_price:,.2f}</div>")
-    html.append(f"<div class='oia-caveat'>⚠️ No se verificaron fechas de earnings — confirmá manualmente antes de operar.</div>")
+    html.append(_earnings_caveat_html(next_earnings_date, expiration_date))
 
     if legs:
         html.append("<div style='margin-top:0.8rem;'>")
@@ -268,4 +284,53 @@ def render_alert_card(alert: sqlite3.Row, candidate: sqlite3.Row | None) -> None
     html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.75rem; margin-top:0.6rem;'>fuente de la narración: {alert['narrative_source']}</div>")
     html.append("</div>")
 
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+
+def render_macro_panel(conn: sqlite3.Connection) -> None:
+    """Contexto macro (Fed, CPI/empleo/PBI, próximos eventos): un dato por día, no por
+    símbolo — probabilidad de decisión de la Fed calculada a partir de precios reales de
+    mercado (Kalshi), nunca una especulación del narrador de IA."""
+    snap = repo.get_latest_macro_snapshot(conn)
+    if snap is None:
+        st.info("Todavía no hay contexto macro. Corré el análisis para traerlo (Finnhub/FRED/Kalshi).", icon="🏦")
+        return
+
+    html = ["<div class='oia-card'>", "<div style='font-size:1.1rem; font-weight:700;'>🏦 Contexto macro</div>"]
+    html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.8rem; margin-top:0.1rem;'>Actualizado {snap['snapshot_date']}</div>")
+
+    if snap["fed_funds_upper"] is not None:
+        html.append(
+            f"<div style='margin-top:0.6rem; color:{TEXT_SECONDARY};'>Tasa de fondos federales vigente: "
+            f"<b>{snap['fed_funds_lower']:.2f}% – {snap['fed_funds_upper']:.2f}%</b></div>"
+        )
+
+    if snap["fed_meeting_date"] is not None:
+        html.append(f"<div style='color:{TEXT_SECONDARY}; margin-top:0.3rem;'>Próxima reunión FOMC: <b>{snap['fed_meeting_date']}</b></div>")
+        html.append("<div class='oia-metric-grid'>")
+        html.append(f"<div class='oia-metric-tile'><div class='label'>📈 Sube</div><div class='value'>{_fmt_pct(snap['fed_hike_probability'])}</div></div>")
+        html.append(f"<div class='oia-metric-tile'><div class='label'>➡️ Mantiene</div><div class='value'>{_fmt_pct(snap['fed_hold_probability'])}</div></div>")
+        html.append(f"<div class='oia-metric-tile'><div class='label'>📉 Baja</div><div class='value'>{_fmt_pct(snap['fed_cut_probability'])}</div></div>")
+        html.append("</div>")
+        html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.75rem;'>Probabilidad calculada a partir de precios reales de mercado (contratos Kalshi sobre la tasa de la Fed) — nunca una estimación de la IA.</div>")
+    else:
+        html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.85rem; margin-top:0.3rem;'>Probabilidad de la próxima decisión de la Fed no disponible (Kalshi).</div>")
+
+    macro_bits = []
+    if snap["cpi_yoy_pct"] is not None:
+        macro_bits.append(f"CPI interanual: <b>{snap['cpi_yoy_pct']:.1f}%</b>")
+    if snap["unemployment_rate_pct"] is not None:
+        macro_bits.append(f"Desempleo: <b>{snap['unemployment_rate_pct']:.1f}%</b>")
+    if snap["gdp_growth_annualized_pct"] is not None:
+        macro_bits.append(f"PBI (crec. anualizado): <b>{snap['gdp_growth_annualized_pct']:.1f}%</b>")
+    if macro_bits:
+        html.append(f"<div style='margin-top:0.6rem; color:{TEXT_SECONDARY};'>{' · '.join(macro_bits)}</div>")
+
+    events = json.loads(snap["upcoming_events_json"]) if snap["upcoming_events_json"] else []
+    if events:
+        html.append(f"<div style='margin-top:0.6rem; color:{TEXT_MUTED}; font-size:0.8rem; text-transform:uppercase; letter-spacing:0.04em;'>Próximos eventos</div>")
+        for event in events[:6]:
+            html.append(f"<div class='oia-leg-row'><span>{event.get('event', '')}</span><span>{event.get('date', '')}</span></div>")
+
+    html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)

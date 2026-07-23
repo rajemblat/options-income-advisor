@@ -21,13 +21,15 @@ def build_scheduler(
     symbols: list[str],
     settings: Settings,
     anthropic_api_key: str | None,
+    finnhub_api_key: str | None = None,
+    fred_api_key: str | None = None,
 ) -> BlockingScheduler:
     """Arma el scheduler con los 3 disparos descriptos en la Sección 6 del plan de Fase 1:
     apertura, chequeo periódico durante el horario regular, y snapshot de cierre."""
     scheduler = BlockingScheduler(timezone=settings.scheduler.timezone)
 
     def run_job() -> None:
-        job_poll_and_analyze(broker, conn, symbols, settings, anthropic_api_key)
+        job_poll_and_analyze(broker, conn, symbols, settings, anthropic_api_key, finnhub_api_key=finnhub_api_key, fred_api_key=fred_api_key)
 
     open_h, open_m = _hh_mm(settings.scheduler.market_open_snapshot_time)
     close_h, close_m = _hh_mm(settings.scheduler.market_close_snapshot_time)

@@ -4,7 +4,7 @@ import os
 
 import streamlit as st
 
-from options_advisor.dashboard.components import get_broker, get_connection, get_settings, get_symbols, inject_theme, render_header
+from options_advisor.dashboard.components import get_broker, get_connection, get_settings, get_symbols, inject_theme, render_header, render_macro_panel
 from options_advisor.scheduler.jobs import job_poll_and_analyze
 
 st.set_page_config(page_title="Options Income Advisor — Fase 1", page_icon="📈", layout="wide")
@@ -34,9 +34,14 @@ if settings.broker.mode == "mock":
 if st.button("🔄 Correr análisis ahora", type="primary"):
     broker = get_broker()
     api_key = os.environ.get("ANTHROPIC_API_KEY")
+    finnhub_api_key = os.environ.get("FINNHUB_API_KEY")
+    fred_api_key = os.environ.get("FRED_API_KEY")
     with st.spinner(f"Analizando {len(symbols)} símbolos..."):
-        job_poll_and_analyze(broker, conn, symbols, settings, api_key)
+        job_poll_and_analyze(broker, conn, symbols, settings, api_key, finnhub_api_key=finnhub_api_key, fred_api_key=fred_api_key)
     st.success("Listo. Revisá la página de Alertas.")
+
+st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
+render_macro_panel(conn)
 
 st.markdown(
     """

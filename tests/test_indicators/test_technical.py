@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from options_advisor.broker.models import PriceBar
-from options_advisor.indicators.technical import compute_atr, compute_rsi, compute_sma, detect_ma_cross
+from options_advisor.indicators.technical import compute_atr, compute_rsi, compute_sma, compute_stddev, detect_ma_cross
 
 
 def test_rsi_trending_up_is_high(price_bars_factory):
@@ -54,3 +54,18 @@ def test_detect_golden_cross(price_bars_factory):
 def test_detect_no_cross_when_flat(price_bars_factory):
     closes = [100] * 30
     assert detect_ma_cross(price_bars_factory(closes), short_period=8, long_period=20) is None
+
+
+def test_stddev_zero_for_constant_price(price_bars_factory):
+    closes = [100] * 25
+    assert compute_stddev(price_bars_factory(closes), period=20) == 0.0
+
+
+def test_stddev_positive_for_varying_price(price_bars_factory):
+    closes = [100, 105, 95, 110, 90] * 5
+    stddev = compute_stddev(price_bars_factory(closes), period=20)
+    assert stddev > 0
+
+
+def test_stddev_insufficient_data_returns_none(price_bars_factory):
+    assert compute_stddev(price_bars_factory([100, 101, 102]), period=20) is None

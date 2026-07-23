@@ -9,6 +9,7 @@ from options_advisor.storage.models import (
     CandidateContract,
     IndicatorSnapshot,
     InvestorProfile,
+    MacroSnapshot,
 )
 
 
@@ -18,15 +19,17 @@ def insert_indicator_snapshot(conn: sqlite3.Connection, snap: IndicatorSnapshot)
         INSERT INTO indicator_snapshots
             (symbol, snapshot_date, snapshot_ts, price, iv_atm, iv_rank, iv_rank_source,
              hv_20d, atr_14, rsi_14, sma_8, sma_20, sma_50, sma_200, ma_cross_signal,
-             support_levels, resistance_levels, raw_indicators_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             support_levels, resistance_levels, raw_indicators_json, next_earnings_date,
+             price_std_20, net_gex)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(symbol, snapshot_date) DO UPDATE SET
             snapshot_ts=excluded.snapshot_ts, price=excluded.price, iv_atm=excluded.iv_atm,
             iv_rank=excluded.iv_rank, iv_rank_source=excluded.iv_rank_source, hv_20d=excluded.hv_20d,
             atr_14=excluded.atr_14, rsi_14=excluded.rsi_14, sma_8=excluded.sma_8, sma_20=excluded.sma_20,
             sma_50=excluded.sma_50, sma_200=excluded.sma_200, ma_cross_signal=excluded.ma_cross_signal,
             support_levels=excluded.support_levels, resistance_levels=excluded.resistance_levels,
-            raw_indicators_json=excluded.raw_indicators_json
+            raw_indicators_json=excluded.raw_indicators_json, next_earnings_date=excluded.next_earnings_date,
+            price_std_20=excluded.price_std_20, net_gex=excluded.net_gex
         """,
         (
             snap.symbol,
@@ -47,10 +50,56 @@ def insert_indicator_snapshot(conn: sqlite3.Connection, snap: IndicatorSnapshot)
             json.dumps(snap.support_levels),
             json.dumps(snap.resistance_levels),
             snap.raw_indicators_json,
+            snap.next_earnings_date.isoformat() if snap.next_earnings_date else None,
+            snap.price_std_20,
+            snap.net_gex,
         ),
     )
     conn.commit()
     return cur.lastrowid
+
+
+def get_indicator_snapshot(conn: sqlite3.Connection, symbol: str, snapshot_date: date) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM indicator_snapshots WHERE symbol = ? AND snapshot_date = ?",
+        (symbol, snapshot_date.isoformat()),
+    ).fetchone()
+
+
+def upsert_macro_snapshot(conn: sqlite3.Connection, snap: MacroSnapshot) -> None:
+    conn.execute(
+        """
+        INSERT INTO macro_snapshot
+            (snapshot_date, fed_funds_lower, fed_funds_upper, cpi_yoy_pct, unemployment_rate_pct,
+             gdp_growth_annualized_pct, fed_meeting_date, fed_hike_probability, fed_hold_probability,
+             fed_cut_probability, upcoming_events_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(snapshot_date) DO UPDATE SET
+            fed_funds_lower=excluded.fed_funds_lower, fed_funds_upper=excluded.fed_funds_upper,
+            cpi_yoy_pct=excluded.cpi_yoy_pct, unemployment_rate_pct=excluded.unemployment_rate_pct,
+            gdp_growth_annualized_pct=excluded.gdp_growth_annualized_pct, fed_meeting_date=excluded.fed_meeting_date,
+            fed_hike_probability=excluded.fed_hike_probability, fed_hold_probability=excluded.fed_hold_probability,
+            fed_cut_probability=excluded.fed_cut_probability, upcoming_events_json=excluded.upcoming_events_json
+        """,
+        (
+            snap.snapshot_date.isoformat(),
+            snap.fed_funds_lower,
+            snap.fed_funds_upper,
+            snap.cpi_yoy_pct,
+            snap.unemployment_rate_pct,
+            snap.gdp_growth_annualized_pct,
+            snap.fed_meeting_date.isoformat() if snap.fed_meeting_date else None,
+            snap.fed_hike_probability,
+            snap.fed_hold_probability,
+            snap.fed_cut_probability,
+            json.dumps(snap.upcoming_events),
+        ),
+    )
+    conn.commit()
+
+
+def get_latest_macro_snapshot(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM macro_snapshot ORDER BY snapshot_date DESC LIMIT 1").fetchone()
 
 
 def insert_iv_snapshot(conn: sqlite3.Connection, symbol: str, snapshot_date: date, iv_atm: float, source: str) -> None:

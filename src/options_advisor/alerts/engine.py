@@ -7,6 +7,7 @@ from datetime import datetime
 from options_advisor.alerts import dedup, narrator, notifier
 from options_advisor.config import Settings
 from options_advisor.indicators.pipeline import SymbolAnalysis
+from options_advisor.market_context import finnhub_client
 from options_advisor.storage import repository as repo
 from options_advisor.storage.models import Alert, CandidateContract
 from options_advisor.strategy import candidates as candidate_builder
@@ -35,6 +36,7 @@ def process_symbol_alerts(
     settings: Settings,
     has_open_assigned_position: bool = False,
     anthropic_api_key: str | None = None,
+    finnhub_api_key: str | None = None,
 ) -> list[dict]:
     """Corre selector → candidatos → scoring → filtro de umbral → dedup → narrador → persistencia
     para un símbolo ya analizado (Sección 6 de la hoja de ruta). Devuelve las alertas nuevas
@@ -50,6 +52,7 @@ def process_symbol_alerts(
         snap.iv_rank, risk_level, ma_cross_signal=snap.ma_cross_signal, rsi=snap.rsi_14, has_open_assigned_position=has_open_assigned_position
     )
     generated: list[dict] = []
+    recent_news = finnhub_client.get_recent_news(snap.symbol, snap.snapshot_date, finnhub_api_key) if strategy_types else []
 
     for strategy_type in strategy_types:
         build = candidate_builder.build_candidate(strategy_type, analysis.chain)
@@ -127,6 +130,8 @@ def process_symbol_alerts(
             probability_of_profit=payoff.probability_of_profit,
             dte=payoff.dte,
             payoff_is_estimate=payoff.is_estimate,
+            next_earnings_date=snap.next_earnings_date,
+            recent_news=recent_news,
         )
         narrative_text, narrative_source = narrator.narrate_alert(context, settings.llm, anthropic_api_key)
 

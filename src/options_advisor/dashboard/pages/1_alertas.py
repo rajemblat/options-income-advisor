@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import streamlit as st
 
 from options_advisor.dashboard.components import get_connection, get_symbols, inject_theme, render_alert_card, render_header
@@ -22,4 +24,6 @@ else:
         candidate = conn.execute(
             "SELECT * FROM candidate_contracts WHERE id = ?", (alert["candidate_contract_id"],)
         ).fetchone()
-        render_alert_card(alert, candidate)
+        snapshot = repo.get_indicator_snapshot(conn, alert["symbol"], date.fromisoformat(alert["alert_date"]))
+        next_earnings_date = snapshot["next_earnings_date"] if snapshot else None
+        render_alert_card(alert, candidate, next_earnings_date=next_earnings_date)

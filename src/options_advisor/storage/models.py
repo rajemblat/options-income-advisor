@@ -29,6 +29,9 @@ class IndicatorSnapshot(BaseModel):
     support_levels: list[float] = []
     resistance_levels: list[float] = []
     raw_indicators_json: str | None = None
+    next_earnings_date: date | None = None
+    price_std_20: float | None = None
+    net_gex: float | None = None
 
 
 class CandidateContract(BaseModel):
@@ -68,6 +71,20 @@ class Alert(BaseModel):
     narrative_text: str | None
     narrative_source: NarrativeSource | None
     dedup_key: str
+
+
+class MacroSnapshot(BaseModel):
+    snapshot_date: date
+    fed_funds_lower: float | None = None
+    fed_funds_upper: float | None = None
+    cpi_yoy_pct: float | None = None
+    unemployment_rate_pct: float | None = None
+    gdp_growth_annualized_pct: float | None = None
+    fed_meeting_date: date | None = None
+    fed_hike_probability: float | None = None
+    fed_hold_probability: float | None = None
+    fed_cut_probability: float | None = None
+    upcoming_events: list[dict] = []
 
 
 class InvestorProfile(BaseModel):

@@ -33,12 +33,18 @@ else:
             "iv_rank_source",
             "rsi_14",
             "atr_14",
+            "price_std_20",
+            "net_gex",
             "sma_20",
             "sma_50",
             "ma_cross_signal",
+            "next_earnings_date",
         ]
     ]
-    df.columns = ["Símbolo", "Fecha", "Precio", "IV Rank", "Fuente IV Rank", "RSI", "ATR", "SMA20", "SMA50", "Cruce MA"]
+    df.columns = [
+        "Símbolo", "Fecha", "Precio", "IV Rank", "Fuente IV Rank", "RSI", "ATR", "Std Dev (20d)",
+        "Net GEX", "SMA20", "SMA50", "Cruce MA", "Próx. Earnings",
+    ]
     st.dataframe(
         df,
         use_container_width=True,
@@ -47,11 +53,20 @@ else:
             "Precio": st.column_config.NumberColumn(format="$%.2f"),
             "IV Rank": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
             "RSI": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
+            "Std Dev (20d)": st.column_config.NumberColumn(format="$%.2f"),
+            "Net GEX": st.column_config.NumberColumn(format="%.2e"),
             "SMA20": st.column_config.NumberColumn(format="$%.2f"),
             "SMA50": st.column_config.NumberColumn(format="$%.2f"),
         },
     )
     st.caption(
         "iv_rank_source = 'historical_volatility_proxy' significa que todavía no hay 12 meses "
-        "de historial de IV real acumulado; se usa volatilidad histórica realizada como aproximación."
+        "de historial de IV real acumulado; se usa volatilidad histórica realizada como aproximación. "
+        "Net GEX positivo sugiere que los dealers amortiguan movimiento (compran en bajas/venden en "
+        "subas); negativo, lo contrario. Próx. Earnings vacío = no se pudo verificar (ver Finnhub). "
+        "En modo mock, Net GEX da 0.00 para todos los símbolos: el generador de fixtures asigna el "
+        "mismo open interest a call y put de un mismo strike, que por paridad de gamma se cancelan "
+        "exactamente — es una limitación del dato simulado, no del cálculo (ver indicators/gex.py, "
+        "probado con gamma/OI asimétricos). Con datos reales de Schwab, call y put OI difieren y el "
+        "número deja de ser trivial."
     )

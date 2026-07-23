@@ -7,26 +7,34 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 # `CREATE TABLE IF NOT EXISTS` no agrega columnas nuevas a una tabla ya existente en un
 # data/app.db previo — sin ORM/migraciones formales (Sección 5, herramienta de un solo
-# usuario), este es el mecanismo mínimo para que las columnas de payoff (Fase 1, cálculo de
-# P&L) aparezcan también en bases creadas antes de que existieran.
-_CANDIDATE_CONTRACTS_NEW_COLUMNS = {
-    "legs_json": "TEXT",
-    "net_premium": "REAL",
-    "max_profit": "REAL",
-    "max_loss": "REAL",
-    "breakevens_json": "TEXT",
-    "probability_of_profit": "REAL",
-    "dte": "INTEGER",
-    "underlying_price": "REAL",
-    "payoff_is_estimate": "INTEGER",
+# usuario), este es el mecanismo mínimo para que las columnas agregadas después de la
+# creación inicial de cada tabla aparezcan también en bases creadas antes de que existieran.
+_NEW_COLUMNS_BY_TABLE = {
+    "candidate_contracts": {
+        "legs_json": "TEXT",
+        "net_premium": "REAL",
+        "max_profit": "REAL",
+        "max_loss": "REAL",
+        "breakevens_json": "TEXT",
+        "probability_of_profit": "REAL",
+        "dte": "INTEGER",
+        "underlying_price": "REAL",
+        "payoff_is_estimate": "INTEGER",
+    },
+    "indicator_snapshots": {
+        "next_earnings_date": "TEXT",
+        "price_std_20": "REAL",
+        "net_gex": "REAL",
+    },
 }
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    existing = {row["name"] for row in conn.execute("PRAGMA table_info(candidate_contracts)")}
-    for column, col_type in _CANDIDATE_CONTRACTS_NEW_COLUMNS.items():
-        if column not in existing:
-            conn.execute(f"ALTER TABLE candidate_contracts ADD COLUMN {column} {col_type}")
+    for table, new_columns in _NEW_COLUMNS_BY_TABLE.items():
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for column, col_type in new_columns.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
     conn.commit()
 
 

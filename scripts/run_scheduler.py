@@ -29,8 +29,10 @@ def main() -> None:
     broker = get_broker_client(settings)
     conn = db.connect(settings.database.resolved_path())
     api_key = os.environ.get("ANTHROPIC_API_KEY")
+    finnhub_api_key = os.environ.get("FINNHUB_API_KEY")
+    fred_api_key = os.environ.get("FRED_API_KEY")
 
-    scheduler = build_scheduler(broker, conn, symbols, settings, api_key)
+    scheduler = build_scheduler(broker, conn, symbols, settings, api_key, finnhub_api_key=finnhub_api_key, fred_api_key=fred_api_key)
     print(f"Scheduler iniciado (broker.mode={settings.broker.mode}, {len(symbols)} símbolos). Ctrl+C para salir.")
     scheduler.start()
 

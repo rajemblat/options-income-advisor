@@ -7,7 +7,8 @@ from typing import NamedTuple
 from options_advisor.broker.base import BrokerClient
 from options_advisor.broker.models import OptionChain, Quote
 from options_advisor.config import Settings
-from options_advisor.indicators import levels, technical, volatility
+from options_advisor.indicators import gex, levels, technical, volatility
+from options_advisor.market_context import finnhub_client
 from options_advisor.storage import repository as repo
 from options_advisor.storage.models import IndicatorSnapshot
 
@@ -22,7 +23,9 @@ class SymbolAnalysis(NamedTuple):
     quote: Quote
 
 
-def analyze_symbol(broker: BrokerClient, conn: sqlite3.Connection, symbol: str, settings: Settings) -> SymbolAnalysis:
+def analyze_symbol(
+    broker: BrokerClient, conn: sqlite3.Connection, symbol: str, settings: Settings, finnhub_api_key: str | None = None
+) -> SymbolAnalysis:
     """Calcula todos los indicadores de Fase 1 para un símbolo y persiste el snapshot.
     Devuelve también la cadena de opciones y el quote, que necesita strategy/candidates.py
     para construir los contratos concretos a sugerir."""
@@ -56,6 +59,7 @@ def analyze_symbol(broker: BrokerClient, conn: sqlite3.Connection, symbol: str, 
         price_history, 50, 200
     )
     supports, resistances = levels.find_support_resistance(price_history, quote.last_price)
+    next_earnings_date = finnhub_client.get_next_earnings_date(symbol, quote.as_of, finnhub_api_key)
 
     snapshot = IndicatorSnapshot(
         symbol=symbol,
@@ -75,6 +79,9 @@ def analyze_symbol(broker: BrokerClient, conn: sqlite3.Connection, symbol: str, 
         ma_cross_signal=cross_signal,
         support_levels=supports,
         resistance_levels=resistances,
+        next_earnings_date=next_earnings_date,
+        price_std_20=technical.compute_stddev(price_history, 20),
+        net_gex=gex.compute_net_gex(chain),
     )
     repo.insert_indicator_snapshot(conn, snapshot)
 
