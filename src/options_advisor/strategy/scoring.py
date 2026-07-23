@@ -2,9 +2,63 @@ from __future__ import annotations
 
 from options_advisor.strategy import constants as c
 
-HIGH_IV_STRATEGIES = {c.CASH_SECURED_PUT, c.BULL_PUT_SPREAD, c.IRON_CONDOR, c.SHORT_PUT_NAKED}
-LOW_IV_STRATEGIES = {c.CALENDAR_PUT_SPREAD, c.DIAGONAL_PUT_SPREAD}
+# Clasificación por régimen de IV Rank (Sección 6.1): "alto" favorece estrategias de crédito
+# neto (venden prima cara); "bajo" favorece estrategias que compran optionalidad barata
+# (calendar/diagonal, debit spreads, backspread). Covered Call y Collar no dependen
+# fuertemente de IV Rank (la tesis es la posición en acciones, no el timing de volatilidad).
+HIGH_IV_STRATEGIES = {
+    c.CASH_SECURED_PUT,
+    c.SHORT_PUT_NAKED,
+    c.SHORT_CALL_NAKED,
+    c.BULL_PUT_SPREAD,
+    c.BEAR_CALL_SPREAD,
+    c.IRON_CONDOR,
+    c.SHORT_CALL_CONDOR,
+    c.SHORT_PUT_CONDOR,
+    c.CALL_RATIO_SPREAD,
+    c.PUT_RATIO_SPREAD,
+}
+LOW_IV_STRATEGIES = {
+    c.CALENDAR_PUT_SPREAD,
+    c.CALENDAR_CALL_SPREAD,
+    c.DIAGONAL_PUT_SPREAD,
+    c.DIAGONAL_CALL_SPREAD,
+    c.BULL_CALL_SPREAD,
+    c.BEAR_PUT_SPREAD,
+    c.CALL_RATIO_BACKSPREAD,
+}
 PUT_SELLING_STRATEGIES = HIGH_IV_STRATEGIES | LOW_IV_STRATEGIES
+
+# Sesgo direccional de cada estrategia, para elegir qué lectura de RSI aplicarle (Sección
+# 4.2): "bullish" evita vender puts en medio de pánico sin agotamiento; "bearish" evita
+# vender calls en medio de un rally sin señales de techo; "neutral" (condors/calendars,
+# que ganan con precio en rango o con vencimientos combinados) prefiere RSI ni sobrecomprado
+# ni sobrevendido.
+_BULLISH_RSI_STRATEGIES = {
+    c.CASH_SECURED_PUT,
+    c.SHORT_PUT_NAKED,
+    c.BULL_PUT_SPREAD,
+    c.BULL_CALL_SPREAD,
+    c.CALL_RATIO_BACKSPREAD,
+    c.PUT_RATIO_SPREAD,
+}
+_BEARISH_RSI_STRATEGIES = {
+    c.COVERED_CALL,
+    c.SHORT_CALL_NAKED,
+    c.BEAR_CALL_SPREAD,
+    c.BEAR_PUT_SPREAD,
+    c.CALL_RATIO_SPREAD,
+    c.COLLAR,
+}
+_NEUTRAL_RSI_STRATEGIES = {
+    c.IRON_CONDOR,
+    c.SHORT_CALL_CONDOR,
+    c.SHORT_PUT_CONDOR,
+    c.CALENDAR_PUT_SPREAD,
+    c.CALENDAR_CALL_SPREAD,
+    c.DIAGONAL_PUT_SPREAD,
+    c.DIAGONAL_CALL_SPREAD,
+}
 
 # Pesos del puntaje de convicción 0-100 (Sección 6.1). Documentados acá porque son una
 # decisión de producto, no un detalle de implementación — ajustar con cuidado.
@@ -22,7 +76,7 @@ def _score_iv_rank(strategy_type: str, iv_rank: float) -> float:
         return round(WEIGHT_IV_RANK * (iv_rank / 100), 2)
     if strategy_type in LOW_IV_STRATEGIES:
         return round(WEIGHT_IV_RANK * (1 - iv_rank / 100), 2)
-    return round(WEIGHT_IV_RANK * 0.6, 2)  # covered_call: no depende fuertemente de IV Rank
+    return round(WEIGHT_IV_RANK * 0.6, 2)  # covered_call / collar: no dependen fuertemente de IV Rank
 
 
 def _distance_score(strike: float, levels: list[float]) -> float:
@@ -43,24 +97,53 @@ def _score_technical_level(strategy_type: str, strikes: dict, supports: list[flo
         put_score = _distance_score(strikes["put_short_strike"], supports)
         call_score = _distance_score(strikes["call_short_strike"], resistances)
         return round((put_score + call_score) / 2, 2)
-    if strategy_type == c.COVERED_CALL:
+    if strategy_type in (c.SHORT_CALL_CONDOR, c.SHORT_PUT_CONDOR):
+        # Rango de "cuerpo" comprado (strike_2/strike_3): la tesis es un movimiento grande
+        # que lo abandone, así que la referencia técnica es la cercanía a CUALQUIER nivel
+        # fuerte (soporte o resistencia), no un lado en particular.
+        body_mid = (strikes["strike_2"] + strikes["strike_3"]) / 2
+        return _distance_score(body_mid, supports + resistances)
+    if strategy_type == c.COLLAR:
+        return _distance_score(strikes["call_strike"], resistances)
+    if strategy_type in (c.COVERED_CALL, c.SHORT_CALL_NAKED, c.BEAR_CALL_SPREAD, c.CALL_RATIO_SPREAD, c.CALL_RATIO_BACKSPREAD):
         return _distance_score(strikes["short_strike"], resistances)
     if strategy_type in (c.CALENDAR_PUT_SPREAD, c.DIAGONAL_PUT_SPREAD):
         return _distance_score(strikes["near_strike"], supports)
+    if strategy_type in (c.CALENDAR_CALL_SPREAD, c.DIAGONAL_CALL_SPREAD):
+        return _distance_score(strikes["near_strike"], resistances)
+    if strategy_type == c.BULL_CALL_SPREAD:
+        # Debit spread bullish: la pata comprada (cerca del dinero) es la referencia — entrar
+        # cerca de un soporte con margen para subir es lo técnicamente favorable.
+        return _distance_score(strikes["long_strike"], supports)
+    if strategy_type == c.BEAR_PUT_SPREAD:
+        return _distance_score(strikes["long_strike"], resistances)
+    if strategy_type == c.PUT_RATIO_SPREAD:
+        return _distance_score(strikes["long_strike"], supports)
+    # CSP, short_put_naked, bull_put_spread: short_strike es un put, referencia = soportes
     return _distance_score(strikes["short_strike"], supports)
 
 
 def _score_rsi_context(strategy_type: str, rsi: float | None) -> float:
     if rsi is None:
         return WEIGHT_RSI_CONTEXT * 0.5  # sin RSI disponible: crédito parcial neutral
-    if strategy_type == c.COVERED_CALL:
+    if strategy_type in _BEARISH_RSI_STRATEGIES:
         # Sección 4.2: evitar vender calls en medio de un rally sin señales de techo.
         if rsi <= 70:
             return float(WEIGHT_RSI_CONTEXT)
         if rsi >= 85:
             return 0.0
         return round(WEIGHT_RSI_CONTEXT * (1 - (rsi - 70) / 15), 2)
-    # Sección 3.3: evitar vender puts en medio de pánico de venta sin señales de agotamiento.
+    if strategy_type in _NEUTRAL_RSI_STRATEGIES:
+        if 30 <= rsi <= 70:
+            return float(WEIGHT_RSI_CONTEXT)
+        if rsi < 30:
+            if rsi <= 15:
+                return 0.0
+            return round(WEIGHT_RSI_CONTEXT * (1 - (30 - rsi) / 15), 2)
+        if rsi >= 85:
+            return 0.0
+        return round(WEIGHT_RSI_CONTEXT * (1 - (rsi - 70) / 15), 2)
+    # bullish (default): Sección 3.3, evitar vender puts en medio de pánico sin agotamiento.
     if rsi >= 30:
         return float(WEIGHT_RSI_CONTEXT)
     if rsi <= 15:

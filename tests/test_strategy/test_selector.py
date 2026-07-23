@@ -21,18 +21,67 @@ def test_high_iv_rank_agresivo_gets_naked_put():
     assert c.SHORT_PUT_NAKED in candidates
 
 
-def test_low_iv_rank_returns_calendar_and_diagonal():
+def test_low_iv_rank_neutral_bias_returns_calendar_diagonal_and_debit_spreads():
     candidates = select_candidate_strategies(iv_rank=20, risk_level="moderado")
-    assert set(candidates) == {c.CALENDAR_PUT_SPREAD, c.DIAGONAL_PUT_SPREAD}
+    assert set(candidates) == {
+        c.CALENDAR_PUT_SPREAD,
+        c.CALENDAR_CALL_SPREAD,
+        c.DIAGONAL_PUT_SPREAD,
+        c.DIAGONAL_CALL_SPREAD,
+        c.BULL_CALL_SPREAD,
+        c.BEAR_PUT_SPREAD,
+        c.CALL_RATIO_BACKSPREAD,
+    }
 
 
-def test_covered_call_only_appears_with_open_assigned_position():
+def test_covered_call_and_collar_only_appear_with_open_assigned_position():
     without_position = select_candidate_strategies(iv_rank=70, risk_level="moderado", has_open_assigned_position=False)
     with_position = select_candidate_strategies(iv_rank=70, risk_level="moderado", has_open_assigned_position=True)
     assert c.COVERED_CALL not in without_position
+    assert c.COLLAR not in without_position
     assert c.COVERED_CALL in with_position
+    assert c.COLLAR in with_position
 
 
 def test_iv_rank_exactly_at_threshold_counts_as_high():
     candidates = select_candidate_strategies(iv_rank=50, risk_level="conservador")
     assert c.CASH_SECURED_PUT in candidates
+
+
+def test_golden_cross_bias_excludes_bearish_strategies():
+    candidates = select_candidate_strategies(iv_rank=70, risk_level="agresivo", ma_cross_signal="golden_cross_8_20")
+    assert c.CASH_SECURED_PUT in candidates
+    assert c.BULL_PUT_SPREAD in candidates
+    assert c.SHORT_CALL_NAKED not in candidates
+    assert c.BEAR_CALL_SPREAD not in candidates
+    assert c.IRON_CONDOR not in candidates  # solo aparece con sesgo neutral
+
+
+def test_death_cross_bias_excludes_bullish_strategies():
+    candidates = select_candidate_strategies(iv_rank=70, risk_level="agresivo", ma_cross_signal="death_cross_50_200")
+    assert c.SHORT_CALL_NAKED in candidates
+    assert c.BEAR_CALL_SPREAD in candidates
+    assert c.CASH_SECURED_PUT not in candidates
+    assert c.BULL_PUT_SPREAD not in candidates
+
+
+def test_overbought_rsi_without_ma_cross_leans_bearish():
+    candidates = select_candidate_strategies(iv_rank=70, risk_level="agresivo", rsi=75.0)
+    assert c.BEAR_CALL_SPREAD in candidates
+    assert c.BULL_PUT_SPREAD not in candidates
+
+
+def test_ma_cross_takes_priority_over_rsi():
+    # RSI sobrecomprado sugeriría bajista, pero un golden cross manda primero.
+    candidates = select_candidate_strategies(iv_rank=70, risk_level="agresivo", ma_cross_signal="golden_cross_8_20", rsi=75.0)
+    assert c.BULL_PUT_SPREAD in candidates
+    assert c.BEAR_CALL_SPREAD not in candidates
+
+
+def test_ratio_spreads_only_for_agresivo():
+    moderado = select_candidate_strategies(iv_rank=70, risk_level="moderado")
+    agresivo = select_candidate_strategies(iv_rank=70, risk_level="agresivo")
+    assert c.CALL_RATIO_SPREAD not in moderado
+    assert c.PUT_RATIO_SPREAD not in moderado
+    assert c.CALL_RATIO_SPREAD in agresivo
+    assert c.PUT_RATIO_SPREAD in agresivo

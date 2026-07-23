@@ -37,7 +37,10 @@ def test_full_pipeline_iv_rank_bootstrap_and_alert_dedup(mock_fixtures_dir):
 
     alerts_first_run = process_symbol_alerts(conn, last_analysis, settings, anthropic_api_key=None)
     assert len(alerts_first_run) > 0
-    assert any(a["strategy_type"] == "cash_secured_put" for a in alerts_first_run)
+    # La fixture es una tendencia alcista monótona → RSI ~100 (extremo sobrecomprado) → el
+    # selector aplica sesgo bajista y evita vender puts frescos en un rally así, ofreciendo en
+    # cambio estrategias del lado call (Sección 5 / selector.py::_directional_bias).
+    assert any(a["strategy_type"] in ("short_call_naked", "bear_call_spread") for a in alerts_first_run)
 
     # Repetir el mismo día (como si el scheduler corriera de nuevo 30 min después) no
     # debe generar alertas duplicadas.

@@ -46,7 +46,9 @@ def process_symbol_alerts(
         logger.info("%s: IV Rank no disponible todavía, sin candidatos posibles", snap.symbol)
         return []
 
-    strategy_types = select_candidate_strategies(snap.iv_rank, risk_level, has_open_assigned_position)
+    strategy_types = select_candidate_strategies(
+        snap.iv_rank, risk_level, ma_cross_signal=snap.ma_cross_signal, rsi=snap.rsi_14, has_open_assigned_position=has_open_assigned_position
+    )
     generated: list[dict] = []
 
     for strategy_type in strategy_types:
