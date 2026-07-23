@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 
@@ -185,9 +186,10 @@ def _leg_row_html(leg: dict) -> str:
     side_color = CRITICAL if is_sell else GOOD
     side_label = "🔴 Venta" if is_sell else "🟢 Compra"
     option_label = "Put" if leg["option_type"] == "put" else "Call"
+    quantity = leg.get("quantity", 1)
     return (
         "<div class='oia-leg-row'>"
-        f"<span style='color:{side_color}; font-weight:600;'>{side_label} · 1 {option_label}</span>"
+        f"<span style='color:{side_color}; font-weight:600;'>{side_label} · {quantity} {option_label}</span>"
         f"<span>Strike ${leg['strike']:.2f} · Vence {leg['expiration']} · Prima ${leg['premium']:.2f}</span>"
         "</div>"
     )
@@ -196,6 +198,8 @@ def _leg_row_html(leg: dict) -> str:
 def _fmt_money(value) -> str:
     if value is None:
         return "N/D"
+    if math.isinf(value):
+        return "Ilimitado"
     sign = "-" if value < 0 else ""
     return f"{sign}${abs(value):,.2f}"
 

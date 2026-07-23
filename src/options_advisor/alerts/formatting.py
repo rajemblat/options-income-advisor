@@ -1,13 +1,27 @@
 from __future__ import annotations
 
+import math
+
 STRATEGY_LABELS = {
     "cash_secured_put": "Cash-Secured Put",
-    "short_put_naked": "Short Put (Naked)",
     "covered_call": "Covered Call",
+    "short_put_naked": "Short Put (Naked)",
+    "short_call_naked": "Short Call (Naked)",
     "bull_put_spread": "Bull Put Spread",
+    "bear_call_spread": "Bear Call Spread",
+    "bull_call_spread": "Bull Call Spread",
+    "bear_put_spread": "Bear Put Spread",
+    "collar": "Collar",
     "iron_condor": "Iron Condor",
     "calendar_put_spread": "Calendar Put Spread",
+    "calendar_call_spread": "Calendar Call Spread",
     "diagonal_put_spread": "Diagonal Put Spread",
+    "diagonal_call_spread": "Diagonal Call Spread",
+    "call_ratio_backspread": "Call Ratio Backspread",
+    "call_ratio_spread": "Call Ratio Spread",
+    "put_ratio_spread": "Put Ratio Spread",
+    "short_call_condor": "Short Call Condor",
+    "short_put_condor": "Short Put Condor",
 }
 
 # Fase 1 no verifica fechas de earnings (es Fase 3) — la alerta siempre lo advierte
@@ -24,6 +38,8 @@ def strategy_label(strategy_type: str) -> str:
 def _fmt_money(value: float | None) -> str:
     if value is None:
         return "N/D"
+    if math.isinf(value):
+        return "Ilimitado"
     sign = "-" if value < 0 else ""
     return f"{sign}${abs(value):,.2f}"
 
@@ -37,8 +53,9 @@ def _fmt_pct(value: float | None) -> str:
 def _leg_line(leg: dict) -> str:
     side_icon = "🔴 Venta" if leg["side"] == "sell" else "🟢 Compra"
     option_label = "Put" if leg["option_type"] == "put" else "Call"
+    quantity = leg.get("quantity", 1)
     return (
-        f"{side_icon} · 1 {option_label} · Strike ${leg['strike']:.2f} · "
+        f"{side_icon} · {quantity} {option_label} · Strike ${leg['strike']:.2f} · "
         f"Vence {leg['expiration']} · Prima ${leg['premium']:.2f}"
     )
 
