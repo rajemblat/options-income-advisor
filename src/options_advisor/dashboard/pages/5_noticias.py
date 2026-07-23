@@ -3,6 +3,7 @@ from __future__ import annotations
 import streamlit as st
 
 from options_advisor.dashboard.components import get_connection, get_symbols, inject_theme, render_header, render_news_card
+from options_advisor.dashboard.news_relevance import find_cross_symbol_news
 from options_advisor.storage import repository as repo
 
 st.set_page_config(page_title="Noticias", page_icon="📰", layout="wide")
@@ -10,7 +11,25 @@ inject_theme()
 render_header("📰", "Noticias por símbolo", "Últimas noticias vía Finnhub, más recientes primero")
 
 conn = get_connection()
-symbols = ["Todos"] + get_symbols()
+symbols_list = get_symbols()
+
+all_recent_news = [dict(r) for r in repo.get_recent_news(conn, limit=200)]
+cross_symbol_news = find_cross_symbol_news(all_recent_news, symbols_list)
+
+st.subheader("🔥 Lo más relevante hoy")
+st.caption(
+    "Noticias que mencionan 2 o más símbolos de tu watchlist — heurística de texto, no sentiment "
+    "(tu plan de Finnhub no incluye /news-sentiment, ver Configuración)."
+)
+if cross_symbol_news:
+    for item in cross_symbol_news[:5]:
+        render_news_card(item, badge="🔗 Menciona: " + ", ".join(item["mentioned_symbols"]))
+else:
+    st.caption("Ninguna noticia reciente menciona 2+ símbolos de tu watchlist todavía.")
+
+st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
+
+symbols = ["Todos"] + symbols_list
 selected = st.selectbox("Símbolo", symbols)
 
 news = repo.get_recent_news(conn, symbol=None if selected == "Todos" else selected, limit=100)

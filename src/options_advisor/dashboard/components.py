@@ -315,9 +315,10 @@ def render_alert_card(
     st.markdown("".join(html), unsafe_allow_html=True)
 
 
-def render_news_card(item: sqlite3.Row) -> None:
+def render_news_card(item: sqlite3.Row | dict, badge: str | None = None) -> None:
     """Tarjeta compacta de una noticia (Finnhub /company-news): headline enlazado, fuente y
-    fecha de publicación, resumen corto — mismo lenguaje visual que las tarjetas de alerta."""
+    fecha de publicación, resumen corto — mismo lenguaje visual que las tarjetas de alerta.
+    `badge` opcional (p.ej. símbolos mencionados) para la sección de relevancia cruzada."""
     published = item["published_at"][:10] if item["published_at"] else "fecha N/D"
     source = item["source"] or "fuente N/D"
     headline = item["headline"]
@@ -331,6 +332,8 @@ def render_news_card(item: sqlite3.Row) -> None:
         "</div>"
     )
     html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.8rem; margin-top:0.25rem;'>{source} · {published}</div>")
+    if badge:
+        html.append(f"<div style='margin-top:0.4rem;'><span class='oia-pill' style='color:{ACCENT}; border-color:{ACCENT}44; background:{ACCENT}1a;'>{badge}</span></div>")
     if summary:
         html.append(f"<div class='oia-comment'>{summary}</div>")
     html.append("</div>")
