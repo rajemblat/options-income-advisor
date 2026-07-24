@@ -4,6 +4,7 @@ import json
 import math
 import os
 import sqlite3
+from datetime import datetime
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -175,6 +176,26 @@ def score_pill_html(score: int) -> str:
     return f"<span class='oia-pill' style='color:{color}; border-color:{color}44; background:{color}1a;'>● {score}</span>"
 
 
+def pop_badge_html(probability_of_profit: float | None) -> str:
+    """POP como badge grande y destacado — es el número que más importa de un vistazo al
+    vender prima, no debería competir visualmente con el resto de las métricas chicas."""
+    if probability_of_profit is None:
+        return f"<span class='oia-pill' style='font-size:0.95rem; color:{TEXT_MUTED}; border-color:{TEXT_MUTED}44;'>🎯 POP N/D</span>"
+    pct = probability_of_profit * 100
+    color = GOOD if pct >= 70 else WARNING if pct >= 50 else CRITICAL
+    return (
+        f"<span class='oia-pill' style='font-size:1.1rem; font-weight:800; padding:0.3rem 0.9rem; "
+        f"color:{color}; border-color:{color}44; background:{color}1a;'>🎯 POP {pct:.0f}%</span>"
+    )
+
+
+def _fmt_time(alert_ts: str) -> str:
+    try:
+        return datetime.fromisoformat(alert_ts).strftime("%H:%M")
+    except ValueError:
+        return "N/D"
+
+
 _RISK_LEVEL_COLORS = {"alto": CRITICAL, "medio": WARNING, "bajo": GOOD}
 _RISK_LEVEL_LABELS = {"alto": "🔴 Alto", "medio": "🟡 Medio", "bajo": "🟢 Bajo"}
 
@@ -256,6 +277,8 @@ def render_alert_card(
     breakevens = json.loads(candidate["breakevens_json"]) if candidate and candidate["breakevens_json"] else []
     underlying_price = candidate["underlying_price"] if candidate else None
     is_estimate = bool(candidate["payoff_is_estimate"]) if candidate else False
+    net_premium = candidate["net_premium"] if candidate else None
+    probability_of_profit = candidate["probability_of_profit"] if candidate else None
 
     narrative = alert["narrative_text"] or ""
     if "💡 Comentario:" in narrative:
@@ -264,16 +287,28 @@ def render_alert_card(
         comment = narrative or "Sin comentario disponible."
 
     html = ["<div class='oia-card'>"]
+    # Línea principal compacta: símbolo/estrategia a la izquierda, POP bien destacado + score a
+    # la derecha — son los dos números que más importan de un vistazo al vender prima.
     html.append(
         "<div style='display:flex; justify-content:space-between; align-items:flex-start; gap:1rem;'>"
-        f"<div><div style='font-size:1.3rem; font-weight:700;'>📌 {alert['symbol']} — {label}</div>"
-        f"<div style='color:{TEXT_MUTED}; font-size:0.85rem; margin-top:0.15rem;'>"
-        f"{alert['alert_date']} · perfil {alert['risk_profile']} · umbral {alert['threshold_applied']}</div></div>"
-        f"<div>{score_pill_html(alert['conviction_score'])}</div>"
+        f"<div style='font-size:1.3rem; font-weight:700;'>📌 {alert['symbol']} — {label}</div>"
+        f"<div style='display:flex; gap:0.5rem; align-items:center;'>{pop_badge_html(probability_of_profit)}{score_pill_html(alert['conviction_score'])}</div>"
         "</div>"
     )
+    meta_bits = [f"🕐 {_fmt_time(alert['alert_ts'])}"]
     if underlying_price is not None:
-        html.append(f"<div style='margin-top:0.5rem; color:{TEXT_SECONDARY};'>💲 Precio actual del subyacente: ${underlying_price:,.2f}</div>")
+        meta_bits.append(f"💲 ${underlying_price:,.2f}")
+    if breakevens:
+        meta_bits.append("⚖️ BE " + "/".join(f"${b:,.2f}" for b in breakevens))
+    if net_premium is not None:
+        premium_kind = "crédito" if net_premium >= 0 else "débito"
+        meta_bits.append(f"💵 {_fmt_money(abs(net_premium))} {premium_kind}")
+    html.append(f"<div style='color:{TEXT_SECONDARY}; font-size:0.85rem; margin-top:0.2rem;'>{' · '.join(meta_bits)}</div>")
+    html.append(
+        f"<div style='color:{TEXT_MUTED}; font-size:0.78rem; margin-top:0.1rem;'>"
+        f"perfil {alert['risk_profile']} · umbral {alert['threshold_applied']}</div>"
+    )
+
     html.append(_earnings_caveat_html(next_earnings_date, expiration_date))
     fed_caveat = _fed_event_caveat_html(fed_meeting_date, expiration_date)
     if fed_caveat:
@@ -286,18 +321,9 @@ def render_alert_card(
             html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.85rem; margin-top:0.4rem;'>📎 Requiere 100 acciones de {alert['symbol']} en cartera (o asignación previa).</div>")
         html.append("</div>")
 
-        net_premium = candidate["net_premium"]
-        premium_kind = "crédito" if (net_premium or 0) >= 0 else "débito"
-        breakevens_str = " / ".join(f"${b:,.2f}" for b in breakevens) if breakevens else "N/D"
-        pop = candidate["probability_of_profit"]
-        pop_str = f"{pop * 100:.0f}%" if pop is not None else "N/D"
-
         html.append("<div class='oia-metric-grid'>")
-        html.append(f"<div class='oia-metric-tile'><div class='label'>💵 Prima neta</div><div class='value'>{_fmt_money(abs(net_premium) if net_premium is not None else None)} <span style='font-size:0.7rem; color:{TEXT_MUTED};'>({premium_kind})</span></div></div>")
         html.append(f"<div class='oia-metric-tile'><div class='label'>🏆 Beneficio máximo</div><div class='value'>{_fmt_money(candidate['max_profit'])}</div></div>")
         html.append(f"<div class='oia-metric-tile'><div class='label'>📉 Pérdida máxima</div><div class='value'>{_fmt_money(candidate['max_loss'])}</div></div>")
-        html.append(f"<div class='oia-metric-tile'><div class='label'>⚖️ Breakeven(s)</div><div class='value' style='font-size:0.9rem;'>{breakevens_str}</div></div>")
-        html.append(f"<div class='oia-metric-tile'><div class='label'>📊 Prob. de beneficio</div><div class='value'>{pop_str}</div></div>")
         html.append(f"<div class='oia-metric-tile'><div class='label'>⏳ DTE</div><div class='value'>{candidate['dte'] if candidate['dte'] is not None else 'N/D'} días</div></div>")
         html.append("</div>")
 
@@ -313,6 +339,9 @@ def render_alert_card(
     html.append("</div>")
 
     st.markdown("".join(html), unsafe_allow_html=True)
+
+    with st.expander("📋 Copiar alerta (para WhatsApp/Telegram)", key=f"copy_alert_expander_{alert['id']}"):
+        st.code(alert["narrative_text"] or "Sin texto disponible.", language=None)
 
 
 def render_news_card(item: sqlite3.Row | dict, badge: str | None = None) -> None:
