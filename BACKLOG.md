@@ -42,6 +42,10 @@ Todo pedido hoy después del refinamiento de strikes, en el orden en que llegaro
 5. **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
    selector de semana o rango desde/hasta, earnings de la watchlist (y opcionalmente universo
    amplio) dentro de ese rango, ordenados por fecha.
+6. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
+   movimiento, aplicado por igual a todos los subyacentes de posiciones abiertas, recalculado
+   con el motor de `payoff.py` existente. Muestra total proyectado vs. hoy (diferencia $ y %).
+   Disclaimer de que es una simplificación (todo se mueve igual), no una predicción real.
 
 ## Bloqueado — esperando al usuario (de antes de hoy, sigue vigente)
 
