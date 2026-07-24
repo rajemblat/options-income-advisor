@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from options_advisor.alerts.formatting import format_alert_message
+from options_advisor.alerts.formatting import compute_coverage, format_alert_message
 
 _BASE_CONTEXT = {
     "symbol": "AAPL",
@@ -49,3 +49,54 @@ def test_recent_news_are_listed():
 def test_no_news_section_when_empty():
     text = format_alert_message({**_BASE_CONTEXT, "next_earnings_date": None, "recent_news": []}, "comentario")
     assert "Noticias recientes" not in text
+
+
+def test_coverage_sold_put_uses_downside_formula():
+    # META a $600, put vendido a $510 → (600-510)/600 = 15% (ejemplo del pedido 2026-07-24).
+    legs = [{"side": "sell", "option_type": "put", "strike": 510.0}]
+    coverage = compute_coverage(legs, 600.0)
+    assert coverage == [{"option_type": "put", "strike": 510.0, "coverage_pct": 0.15}]
+
+
+def test_coverage_sold_call_uses_upside_formula():
+    legs = [{"side": "sell", "option_type": "call", "strike": 660.0}]
+    coverage = compute_coverage(legs, 600.0)
+    assert coverage == [{"option_type": "call", "strike": 660.0, "coverage_pct": 0.1}]
+
+
+def test_coverage_ignores_bought_legs():
+    legs = [
+        {"side": "sell", "option_type": "put", "strike": 510.0},
+        {"side": "buy", "option_type": "put", "strike": 500.0},
+    ]
+    coverage = compute_coverage(legs, 600.0)
+    assert len(coverage) == 1
+    assert coverage[0]["strike"] == 510.0
+
+
+def test_coverage_iron_condor_has_both_downside_and_upside():
+    legs = [
+        {"side": "sell", "option_type": "put", "strike": 510.0},
+        {"side": "buy", "option_type": "put", "strike": 500.0},
+        {"side": "sell", "option_type": "call", "strike": 660.0},
+        {"side": "buy", "option_type": "call", "strike": 670.0},
+    ]
+    coverage = compute_coverage(legs, 600.0)
+    assert [c["option_type"] for c in coverage] == ["put", "call"]
+    assert coverage[0]["coverage_pct"] == 0.15
+    assert coverage[1]["coverage_pct"] == 0.1
+
+
+def test_coverage_empty_without_underlying_price():
+    legs = [{"side": "sell", "option_type": "put", "strike": 510.0}]
+    assert compute_coverage(legs, None) == []
+
+
+def test_format_alert_message_includes_coverage_line():
+    context = {
+        **_BASE_CONTEXT,
+        "next_earnings_date": None,
+        "legs": [{"side": "sell", "option_type": "put", "strike": 170.0, "quantity": 1, "expiration": "2026-08-21", "premium": 2.5}],
+    }
+    text = format_alert_message(context, "comentario")
+    assert "↓ Cobertura: 15.0% (necesita caer hasta $170.00)" in text

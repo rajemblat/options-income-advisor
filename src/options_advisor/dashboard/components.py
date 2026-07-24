@@ -9,7 +9,7 @@ from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
 
-from options_advisor.alerts.formatting import strategy_label
+from options_advisor.alerts.formatting import compute_coverage, strategy_label
 from options_advisor.broker import get_broker_client
 from options_advisor.broker.base import BrokerClient
 from options_advisor.config import PROJECT_ROOT, Settings, load_settings, load_symbols
@@ -234,6 +234,26 @@ def pop_badge_html(probability_of_profit: float | None) -> str:
     )
 
 
+def coverage_badge_html(coverage: list[dict]) -> str:
+    """% que el subyacente necesita moverse para llegar al strike vendido, con el mismo
+    tratamiento visual destacado que el POP (pedido 2026-07-24) — es el otro número que
+    importa de un vistazo antes de vender prima. Iron Condor arma dos badges (baja/alza),
+    el resto de las estrategias del MVP arma uno solo."""
+    if not coverage:
+        return ""
+    badges = []
+    for c in coverage:
+        pct = c["coverage_pct"] * 100
+        color = GOOD if pct >= 15 else WARNING if pct >= 7 else CRITICAL
+        arrow_icon = "trending-down" if c["option_type"] == "put" else "trending-up"
+        badges.append(
+            f"<span class='oia-pill' style='font-size:0.95rem; font-weight:700; padding:0.3rem 0.8rem; "
+            f"color:{color}; border-color:{color}44; background:{color}1a;'>{icon(arrow_icon, size=15, color=color)} "
+            f"Cobertura {pct:.1f}%</span>"
+        )
+    return "".join(badges)
+
+
 def _fmt_time(alert_ts: str) -> str:
     try:
         return datetime.fromisoformat(alert_ts).strftime("%H:%M")
@@ -336,18 +356,21 @@ def render_alert_card(
     probability_of_profit = candidate["probability_of_profit"] if candidate else None
 
     narrative = alert["narrative_text"] or ""
-    if "💬 Comentario:" in narrative:
-        comment = narrative.split("💬 Comentario:", 1)[1].strip()
+    if "✎ Comentario:" in narrative:
+        comment = narrative.split("✎ Comentario:", 1)[1].strip()
     else:
         comment = narrative or "Sin comentario disponible."
 
+    coverage = compute_coverage(legs, underlying_price)
+
     html = ["<div class='oia-card'>"]
-    # Línea principal compacta: símbolo/estrategia a la izquierda, POP bien destacado + score a
-    # la derecha — son los dos números que más importan de un vistazo al vender prima.
+    # Línea principal compacta: símbolo/estrategia a la izquierda, POP + cobertura + score a la
+    # derecha — son los números que más importan de un vistazo al vender prima.
     html.append(
         "<div style='display:flex; justify-content:space-between; align-items:flex-start; gap:1rem;'>"
         f"<div style='font-size:1.3rem; font-weight:700;'>{icon('pin', size=19, color=ACCENT)} {alert['symbol']} — {label}</div>"
-        f"<div style='display:flex; gap:0.5rem; align-items:center;'>{pop_badge_html(probability_of_profit)}{score_pill_html(alert['conviction_score'])}</div>"
+        f"<div style='display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; justify-content:flex-end;'>"
+        f"{pop_badge_html(probability_of_profit)}{coverage_badge_html(coverage)}{score_pill_html(alert['conviction_score'])}</div>"
         "</div>"
     )
     meta_bits = [f"{icon('clock', size=14)} {_fmt_time(alert['alert_ts'])}"]
