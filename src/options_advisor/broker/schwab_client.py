@@ -80,12 +80,16 @@ class SchwabBrokerClient(BrokerClient):
     def get_quote(self, symbol: str) -> Quote:
         data = self._get(f"/{symbol}/quotes", params={})
         quote = data[symbol]["quote"]
+        last_price = quote["lastPrice"]
         return Quote(
             symbol=symbol,
             as_of=date.today(),
-            last_price=quote["lastPrice"],
-            bid=quote["bidPrice"],
-            ask=quote["askPrice"],
+            last_price=last_price,
+            # Los índices ($SPX, $RUT, $NDX, $VIX, etc.) no son instrumentos operables — no
+            # tienen bid/ask, solo lastPrice. Sin esos campos, se usa lastPrice para ambos en
+            # vez de fallar (no hay spread real que reportar para un índice).
+            bid=quote.get("bidPrice", last_price),
+            ask=quote.get("askPrice", last_price),
         )
 
     def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
@@ -104,12 +108,13 @@ class SchwabBrokerClient(BrokerClient):
             quote = entry.get("quote")
             if not quote:
                 continue
+            last_price = quote["lastPrice"]
             quotes[symbol] = Quote(
                 symbol=symbol,
                 as_of=date.today(),
-                last_price=quote["lastPrice"],
-                bid=quote["bidPrice"],
-                ask=quote["askPrice"],
+                last_price=last_price,
+                bid=quote.get("bidPrice", last_price),  # índices sin bid/ask, ver get_quote()
+                ask=quote.get("askPrice", last_price),
             )
         return quotes
 
@@ -290,3 +295,53 @@ class SchwabBrokerClient(BrokerClient):
                 )
             )
         return positions
+
+    # Rango de precio y liquidez razonables para vender prima con capital manejable — evita
+    # penny stocks (spreads horribles) y nombres de $1000+ (100 acciones de colateral inviables).
+    _SCREEN_MIN_PRICE = 10.0
+    _SCREEN_MAX_PRICE = 800.0
+    _SCREEN_MIN_AVG_VOLUME = 300_000
+    _SCREEN_BATCH_SIZE = 200  # probado en vivo hasta 100+ sin problema; margen de seguridad
+    _SCREEN_MAX_SHORTLIST = 60  # tope duro: la Fase 2 (cadena+Finnhub+Claude) es cara por símbolo
+
+    def screen_universe(self, symbols: list[str], max_shortlist: int = _SCREEN_MAX_SHORTLIST) -> list[str]:
+        """Fase 1 barata: 1 llamada batch cada 200 símbolos (no una cadena de opciones por
+        símbolo) — optionable, precio y volumen promedio razonables. Entre los que pasan el
+        filtro, rankea por rango 52 semanas / precio (proxy gratis de volatilidad histórica,
+        mismos datos del batch, sin llamada extra) y devuelve solo los primeros
+        `max_shortlist` — sin esto, un universo de cientos de large-caps líquidos casi no se
+        reduce (probado: 385 -> 355 solo con el filtro de liquidez), y la Fase 2 se vuelve
+        impagable. Usa el JSON crudo de Schwab directo (no el Quote genérico) porque necesita
+        optionable/volumen/rango 52 semanas, específicos de este screen."""
+        candidates: list[tuple[str, float]] = []  # (symbol, volatility_proxy)
+        headers = {"Authorization": f"Bearer {self.auth.get_valid_access_token()}"}
+        for i in range(0, len(symbols), self._SCREEN_BATCH_SIZE):
+            batch = symbols[i : i + self._SCREEN_BATCH_SIZE]
+            try:
+                response = self._client.get(
+                    "/quotes", params={"symbols": ",".join(batch)}, headers=headers
+                )
+                response.raise_for_status()
+                data = response.json()
+            except Exception:
+                logger.exception("Fallo al screenear un lote de %d símbolos; se omite ese lote", len(batch))
+                continue
+
+            for symbol, entry in data.items():
+                quote = entry.get("quote", {})
+                reference = entry.get("reference", {})
+                fundamental = entry.get("fundamental", {})
+                price = quote.get("lastPrice", 0) or 0
+                avg_volume = fundamental.get("avg10DaysVolume", 0) or 0
+                if not (
+                    reference.get("optionable")
+                    and self._SCREEN_MIN_PRICE <= price <= self._SCREEN_MAX_PRICE
+                    and avg_volume >= self._SCREEN_MIN_AVG_VOLUME
+                ):
+                    continue
+                high_52w, low_52w = quote.get("52WeekHigh"), quote.get("52WeekLow")
+                volatility_proxy = (high_52w - low_52w) / price if high_52w and low_52w and price else 0.0
+                candidates.append((symbol, volatility_proxy))
+
+        candidates.sort(key=lambda pair: pair[1], reverse=True)
+        return [symbol for symbol, _ in candidates[:max_shortlist]]

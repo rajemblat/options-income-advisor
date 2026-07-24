@@ -59,6 +59,9 @@ class MockBrokerClient(BrokerClient):
     def get_all_positions(self) -> list[AccountPosition]:
         return []  # sin cuentas reales en modo mock
 
+    def screen_universe(self, symbols: list[str], max_shortlist: int = 60) -> list[str]:
+        return list(symbols)  # sin datos reales de mercado para filtrar/rankear en modo mock
+
     # -- carga de fixtures -------------------------------------------------
 
     def _load_price_history(self, symbol: str) -> list[PriceBar]:

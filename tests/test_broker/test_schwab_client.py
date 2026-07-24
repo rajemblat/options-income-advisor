@@ -57,6 +57,25 @@ def test_get_quote_parses_real_fields(client, monkeypatch):
     assert quote.ask == 321.48
 
 
+def test_get_quote_index_without_bid_ask_falls_back_to_last_price(client, monkeypatch):
+    """Índices ($SPX, $RUT, $NDX, $VIX) no tienen bid/ask — confirmado en vivo. Sin fallback,
+    esto rompería con KeyError antes de esta corrección."""
+    payload = {"$SPX": {"quote": {"lastPrice": 7449.47, "closePrice": 7408.3}}}
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quote = client.get_quote("$SPX")
+    assert quote.last_price == 7449.47
+    assert quote.bid == 7449.47
+    assert quote.ask == 7449.47
+
+
+def test_get_quotes_batch_index_without_bid_ask_falls_back_to_last_price(client, monkeypatch):
+    payload = {"$VIX": {"quote": {"lastPrice": 17.6}}}
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quotes = client.get_quotes(["$VIX"])
+    assert quotes["$VIX"].bid == 17.6
+    assert quotes["$VIX"].ask == 17.6
+
+
 def test_get_price_history_sorts_and_truncates_to_lookback(client, monkeypatch):
     candles = [
         {"datetime": 1700000000000 + i * 86_400_000, "open": 100 + i, "high": 101 + i, "low": 99 + i, "close": 100 + i, "volume": 1000}
@@ -279,3 +298,68 @@ def test_get_quotes_returns_empty_dict_on_failure(client, monkeypatch):
 
     monkeypatch.setattr(httpx.Client, "get", _boom)
     assert client.get_quotes(["AAPL"]) == {}
+
+
+def _screen_entry(optionable: bool, price: float, avg_volume: float, high_52w: float | None = None, low_52w: float | None = None) -> dict:
+    return {
+        "quote": {"lastPrice": price, "52WeekHigh": high_52w, "52WeekLow": low_52w},
+        "reference": {"optionable": optionable},
+        "fundamental": {"avg10DaysVolume": avg_volume},
+    }
+
+
+def test_screen_universe_filters_by_optionable_price_and_volume(client, monkeypatch):
+    payload = {
+        "AAPL": _screen_entry(optionable=True, price=200.0, avg_volume=1_000_000, high_52w=250, low_52w=150),
+        "PENNY": _screen_entry(optionable=True, price=2.0, avg_volume=1_000_000, high_52w=3, low_52w=1),  # precio muy bajo
+        "BRKA": _screen_entry(optionable=True, price=900_000.0, avg_volume=1_000_000, high_52w=950_000, low_52w=800_000),  # muy caro
+        "ILLIQUID": _screen_entry(optionable=True, price=200.0, avg_volume=1_000, high_52w=250, low_52w=150),  # sin volumen
+        "NOTOPT": _screen_entry(optionable=False, price=200.0, avg_volume=1_000_000, high_52w=250, low_52w=150),  # sin opciones
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    shortlist = client.screen_universe(list(payload.keys()))
+    assert shortlist == ["AAPL"]
+
+
+def test_screen_universe_ranks_by_52_week_range_and_caps_shortlist(client, monkeypatch):
+    payload = {
+        "LOW_VOL": _screen_entry(optionable=True, price=100.0, avg_volume=1_000_000, high_52w=110, low_52w=90),  # rango 20%
+        "HIGH_VOL": _screen_entry(optionable=True, price=100.0, avg_volume=1_000_000, high_52w=180, low_52w=60),  # rango 120%
+        "MID_VOL": _screen_entry(optionable=True, price=100.0, avg_volume=1_000_000, high_52w=140, low_52w=80),  # rango 60%
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    shortlist = client.screen_universe(list(payload.keys()), max_shortlist=2)
+    assert shortlist == ["HIGH_VOL", "MID_VOL"]  # rankeado desc, tope de 2 excluye LOW_VOL
+
+
+def test_screen_universe_chunks_large_batches(client, monkeypatch):
+    symbols = [f"SYM{i}" for i in range(250)]  # más de 1 batch (tamaño 200)
+    calls = []
+
+    def _get(self, path, params=None, headers=None):
+        calls.append(len(params["symbols"].split(",")))
+        batch_symbols = params["symbols"].split(",")
+        payload = {s: _screen_entry(optionable=True, price=100.0, avg_volume=1_000_000, high_52w=110, low_52w=90) for s in batch_symbols}
+        request = httpx.Request("GET", f"https://api.schwabapi.com/marketdata/v1{path}")
+        return httpx.Response(200, json=payload, request=request)
+
+    monkeypatch.setattr(httpx.Client, "get", _get)
+    shortlist = client.screen_universe(symbols, max_shortlist=1000)
+    assert len(calls) == 2  # 200 + 50
+    assert len(shortlist) == 250
+
+
+def test_screen_universe_one_batch_failing_does_not_block_others(client, monkeypatch):
+    symbols = [f"SYM{i}" for i in range(250)]
+
+    def _get(self, path, params=None, headers=None):
+        batch_symbols = params["symbols"].split(",")
+        if batch_symbols[0] == "SYM0":
+            raise httpx.ConnectError("no network", request=httpx.Request("GET", "https://api.schwabapi.com/marketdata/v1/x"))
+        payload = {s: _screen_entry(optionable=True, price=100.0, avg_volume=1_000_000, high_52w=110, low_52w=90) for s in batch_symbols}
+        request = httpx.Request("GET", f"https://api.schwabapi.com/marketdata/v1{path}")
+        return httpx.Response(200, json=payload, request=request)
+
+    monkeypatch.setattr(httpx.Client, "get", _get)
+    shortlist = client.screen_universe(symbols, max_shortlist=1000)
+    assert len(shortlist) == 50  # el primer lote (200) falló, el segundo (50) sobrevive

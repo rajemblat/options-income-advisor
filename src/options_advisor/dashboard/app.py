@@ -74,5 +74,6 @@ st.markdown(
     - **Noticias**: últimas noticias por símbolo (Finnhub).
     - **Eventos de riesgo**: calendario de volatilidad esperada (FOMC, CPI, empleo, earnings).
     - **Portafolio**: posiciones reales de tus cuentas Schwab (símbolo, cantidad, P&L).
+    - **Escaneo**: busca oportunidades en un universo amplio (cientos de símbolos), no solo tu watchlist fija.
     """
 )

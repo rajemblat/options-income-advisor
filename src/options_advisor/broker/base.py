@@ -53,3 +53,14 @@ class BrokerClient(ABC):
         vinculadas — página de portafolio real, Entrega 1. [] si el broker no tiene cuentas
         reales (MockBrokerClient)."""
         ...
+
+    @abstractmethod
+    def screen_universe(self, symbols: list[str], max_shortlist: int = 60) -> list[str]:
+        """Fase 1 del escaneo de universo amplio (Sección 'universo amplio' 2026-07-24): filtro
+        barato usando solo quotes en batch (sin cadenas de opciones) — optionable, rango de
+        precio razonable, liquidez mínima — y rankeo por un proxy gratis de volatilidad
+        histórica (rango 52 semanas / precio), devolviendo como máximo `max_shortlist`
+        símbolos. Reduce cientos de símbolos a un shortlist manejable antes de correr el
+        pipeline completo (caro) solo sobre esos. MockBrokerClient devuelve la lista sin
+        cambios — no hay datos reales de mercado para filtrar/rankear."""
+        ...

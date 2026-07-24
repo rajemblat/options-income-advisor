@@ -127,6 +127,16 @@ def load_symbols(path: Path | None = None) -> list[str]:
     return SymbolsConfig.model_validate(raw).symbols
 
 
+def load_universe_symbols(path: Path | None = None) -> list[str]:
+    """Universo amplio de referencia (large-caps líquidos estilo S&P 500) para el escaneo de
+    "mejores oportunidades" — ver dashboard/pages/8_escaneo.py, que lo combina con
+    load_symbols() (watchlist real) para armar el universo efectivo a escanear."""
+    path = path or (PROJECT_ROOT / "config" / "universe_sp500.yaml")
+    with open(path) as f:
+        raw = yaml.safe_load(f)
+    return SymbolsConfig.model_validate(raw).symbols
+
+
 def configure_logging(path: Path | None = None) -> None:
     path = path or (PROJECT_ROOT / "config" / "logging.yaml")
     with open(path) as f:
