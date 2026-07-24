@@ -8,41 +8,18 @@ es el estado ACTUAL de qué falta.
 
 ## En progreso ahora
 
-- **Refinamiento de selección de strikes por perfil de riesgo** (cobertura mínima + soporte
-  técnico vía SMA8/SMA20). Las 3 preguntas de diseño ya están confirmadas por el usuario:
-  1. Si el delta objetivo no cumple el mínimo de cobertura → buscar el siguiente strike más
-     OTM hasta cumplirlo, nunca descartar el candidato.
-  2. El chequeo de soporte/resistencia aplica simétrico: SMA como piso para puts vendidos,
-     SMA como techo para calls vendidos (Covered Call y el lado call de Iron Condor).
-  3. Delta objetivo Normal baja de 0.25 a 0.20.
-  Implementado en `strategy/candidates.py` (`_pick_short_leg`, `_has_good_support`,
-  `_coverage_pct`, threadeado en `_build_single_short_leg`/`_build_collar`/`_build_iron_condor`/
-  `build_candidate`). Falta: agregar `min_coverage_pct`/`support_sma_periods` a
-  `config.py`/`settings.yaml`, conectar `strategy/selector.py`/`alerts/engine.py`, tests,
-  verificación en vivo con ejemplo real (mismo patrón que PG antes), commit y push.
+- **Calculadora de interés compuesto** en la página Configuración — arrancando.
 
 ## Pendiente, no empezado
 
-Todo pedido hoy después del refinamiento de strikes, en el orden en que llegaron:
-
-1. **Proyección de cierre anticipado** (30%/50%/100% del beneficio máximo + días aproximados
-   por decaimiento de theta). Pedido explícito del usuario: evaluar primero si es calculable
-   de forma confiable con los datos actuales (Black-Scholes + theta) antes de implementar —
-   todavía no di esa respuesta.
-2. **Rendimiento anualizado sobre capital en riesgo**: `(beneficio_max / riesgo_max) * (365 /
-   DTE) * 100`. Aprobado para implementar directo (cálculo simple, sin ambigüedad).
-3. **Calculadora de interés compuesto** en la página Configuración (Perfil de inversor):
-   capital inicial + rendimiento anual (prellenable con el rendimiento anualizado del punto 2,
-   editable) + aporte anual + horizonte 1-5 años → proyección año por año + valor final, con
-   disclaimer visible de que es una proyección, no una garantía.
-4. **Buscador de noticias por símbolo libre** en la página Noticias: cualquier símbolo (no solo
+1. **Buscador de noticias por símbolo libre** en la página Noticias: cualquier símbolo (no solo
    watchlist), cotización + noticias en tiempo real al buscar, error claro si el símbolo no
    existe. Pregunta del usuario sin responder todavía: ¿llamada en vivo cada vez, o cachear
    ~5 min para no golpear rate limits si se repite la búsqueda?
-5. **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
+2. **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
    selector de semana o rango desde/hasta, earnings de la watchlist (y opcionalmente universo
    amplio) dentro de ese rango, ordenados por fecha.
-6. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
+3. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
    movimiento, aplicado por igual a todos los subyacentes de posiciones abiertas, recalculado
    con el motor de `payoff.py` existente. Muestra total proyectado vs. hoy (diferencia $ y %).
    Disclaimer de que es una simplificación (todo se mueve igual), no una predicción real.
@@ -71,6 +48,10 @@ Todo pedido hoy después del refinamiento de strikes, en el orden en que llegaro
    se genera.
 10. Confirmado en vivo que el endpoint de market movers de Schwab funciona (sin construir UI
     todavía — decisión de producto pendiente sobre el caso de uso).
+11. Refinamiento de selección de strikes por perfil (cobertura mínima + soporte técnico vía
+    SMA8/SMA20) — las 3 preguntas de diseño confirmadas por el usuario antes de implementar.
+12. Rendimiento anualizado sobre capital en riesgo + proyección de cierre anticipado
+    (30%/50%/100%, con disclaimer de que asume precio/IV constantes).
 
 ## Cómo se usa este archivo
 

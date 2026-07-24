@@ -113,6 +113,36 @@ sin verificar bien — encontré que 2 de 3 estaban mal, más una causa raíz op
     sumar `next_ex_dividend_date` a `Quote` y a `IndicatorSnapshot` (con su migración liviana
     en `storage/db.py`, mismo patrón que `next_earnings_date`).
 
+26. **Refinamiento de selección de strikes por perfil de riesgo** (cobertura mínima + soporte
+    técnico) — pedido explícito del usuario, 3 preguntas de diseño confirmadas antes de tocar
+    el motor (ver sección de arriba, ahora resuelta). Nuevos parámetros por perfil: delta
+    objetivo Normal 0.25→0.20 (confirmado), `min_coverage_pct` (conservador=0%, moderado=12%,
+    agresivo=8%), `support_sma_periods` (conservador=[8], moderado/agresivo=[8,20]).
+    `strategy/candidates.py::_pick_short_leg` elige, entre los strikes que cumplen cobertura Y
+    soporte, el más cercano al delta objetivo — si el pick natural no alcanza, sigue buscando
+    más OTM (nunca descarta el candidato solo por esto, confirmado por el usuario). Sin ninguna
+    restricción real pedida reproduce el comportamiento exacto de antes — no afecta las 15
+    estrategias fuera del MVP. **Verificado con datos reales de AAPL** (spot $333.52, SMA8
+    $326.41, SMA20 $311.49): agresivo pasó de su strike natural (322.5, cobertura 3.3%, no
+    cumplía el 8% mínimo) a 305 (8.55%); moderado de ~310 a 290 (13.0%, cumple el 12% mínimo);
+    conservador se quedó en 305 sin ajuste porque ya cumplía soporte vía SMA8, sin mínimo de
+    cobertura que lo mueva. **Hallazgo real interesante**: PG no generó ningún candidato de
+    venta de puts hoy en NINGÚN perfil porque su precio está por debajo de SMA8 y SMA20 — sin
+    soporte técnico real ahora mismo, el filtro correctamente se abstiene en vez de vender
+    prima contra una media rota (antes de este refinamiento, se hubiera generado igual).
+
+27. **Rendimiento anualizado sobre capital en riesgo + proyección de cierre anticipado** —
+    pedido explícito del usuario. Rendimiento anualizado: `(beneficio_máx / riesgo_máx) *
+    (365/DTE) * 100`, cálculo directo. Cierre anticipado (30%/50%/100% del beneficio máximo,
+    con días aproximados): evaluado como calculable de forma confiable ANTES de implementar
+    (pedido explícito) — reusa Black-Scholes manteniendo precio/IV constantes (misma técnica
+    que `dashboard/portfolio_analysis.py`), con la simplificación real de que ignora movimiento
+    de precio y cambios de IV, documentada como disclaimer visible. Ambos se PERSISTEN en
+    `candidate_contracts` (no se recalculan en cada render — el escaneo día a día con BSM es
+    caro para repetir). Verificado con datos reales: JNJ Short Put Naked ($98.50 máx/$23,901.50
+    riesgo/28 DTE) → 5.4% anualizado (matemáticamente exacto), cierre anticipado 30% en 4 días,
+    50% en 8, 100% en 28 (el vencimiento).
+
 **Anotado, sin resolver todavía — problema de facturación del usuario, no de código**: durante
 una de las regeneraciones de hoy la cuenta de Anthropic se quedó sin crédito
 (`Your credit balance is too low`) — las alertas de ese momento cayeron al comentario de
