@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import streamlit as st
 
-from options_advisor.dashboard.components import get_connection, get_symbols, inject_theme, render_header, render_news_card, render_notification_bell
+from options_advisor.dashboard.components import ACCENT, get_connection, get_symbols, icon, inject_theme, render_header, render_news_card, render_notification_bell
 from options_advisor.dashboard.news_relevance import find_cross_symbol_news
 from options_advisor.storage import repository as repo
 
 st.set_page_config(page_title="Noticias", page_icon="📰", layout="wide")
 inject_theme()
-render_header("📰", "Noticias por símbolo", "Últimas noticias vía Finnhub, más recientes primero")
+render_header(icon("news", size=24, color=ACCENT), "Noticias por símbolo", "Últimas noticias vía Finnhub, más recientes primero")
 
 conn = get_connection()
 render_notification_bell(conn)
@@ -24,7 +24,7 @@ st.caption(
 )
 if cross_symbol_news:
     for item in cross_symbol_news[:5]:
-        render_news_card(item, badge="🔗 Menciona: " + ", ".join(item["mentioned_symbols"]))
+        render_news_card(item, badge=f"{icon('link', size=13)} Menciona: " + ", ".join(item["mentioned_symbols"]))
 else:
     st.caption("Ninguna noticia reciente menciona 2+ símbolos de tu watchlist todavía.")
 

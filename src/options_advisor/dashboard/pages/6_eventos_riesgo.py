@@ -7,14 +7,18 @@ import pandas as pd
 import streamlit as st
 
 from options_advisor.alerts.risk_calendar import build_risk_calendar
-from options_advisor.dashboard.components import get_connection, get_symbols, inject_theme, render_header, render_notification_bell, risk_level_pill_html
+from options_advisor.dashboard.components import ACCENT, get_connection, get_symbols, icon, inject_theme, render_header, render_notification_bell, risk_level_pill_html
 from options_advisor.storage import repository as repo
 
 LOOKAHEAD_DAYS = 30
 
 st.set_page_config(page_title="Eventos de riesgo", page_icon="⚡", layout="wide")
 inject_theme()
-render_header("⚡", "Eventos de riesgo", f"Volatilidad esperada en los próximos {LOOKAHEAD_DAYS} días: FOMC, CPI, empleo y earnings de tu watchlist")
+render_header(
+    icon("zap", size=24, color=ACCENT),
+    "Eventos de riesgo",
+    f"Volatilidad esperada en los próximos {LOOKAHEAD_DAYS} días: FOMC, CPI, empleo y earnings de tu watchlist",
+)
 
 conn = get_connection()
 render_notification_bell(conn)

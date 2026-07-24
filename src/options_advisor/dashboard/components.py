@@ -34,6 +34,50 @@ GOOD = "#0ca30c"
 WARNING = "#fab219"
 CRITICAL = "#d03b3b"
 
+# Set de íconos outline (trazo 1.75, estilo Lucide) que reemplaza los emojis en todo lo que se
+# renderiza como HTML propio (st.markdown con unsafe_allow_html). Los widgets nativos de
+# Streamlit (botones, popover de la campanita, dataframes) no aceptan HTML en sus labels —
+# ahí se mantiene emoji, es una limitación de la plataforma, no una inconsistencia de diseño.
+_ICON_PATHS = {
+    "pin": '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>',
+    "target": '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
+    "dollar": '<line x1="12" y1="2" x2="12" y2="22"/><path d="M17 5.5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
+    "trending-up": '<polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/>',
+    "trending-down": '<polyline points="22 17 13.5 8.5 8.5 13.5 2 7"/><polyline points="16 17 22 17 22 11"/>',
+    "scale": '<line x1="5" y1="9" x2="19" y2="9"/><line x1="5" y1="15" x2="19" y2="15"/>',
+    "clock": '<circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/>',
+    "alert-triangle": '<path d="M10.3 3.86 2.3 18a1.8 1.8 0 0 0 1.55 2.7h16.3A1.8 1.8 0 0 0 21.7 18l-8-14.14a1.8 1.8 0 0 0-3.4 0Z"/><line x1="12" y1="9.5" x2="12" y2="13.5"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    "check-circle": '<path d="M21 10.5V12a9 9 0 1 1-5.34-8.23"/><polyline points="21 4 12 13.01 9 10.01"/>',
+    "help-circle": '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 4.9.8c0 1.7-2.4 1.9-2.4 3.7"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    "info": '<circle cx="12" cy="12" r="9"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
+    "lightbulb": '<path d="M9 18h6"/><path d="M10 22h4"/><path d="M12 2a6.5 6.5 0 0 0-4 11.6c.6.5 1 1.2 1 2.4h6c0-1.2.4-1.9 1-2.4A6.5 6.5 0 0 0 12 2Z"/>',
+    "copy": '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+    "bell": '<path d="M6 8a6 6 0 0 1 12 0c0 5.5 2 7 2 7H4s2-1.5 2-7"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+    "news": '<path d="M4 4h16v14H8l-4 4Z"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="13" x2="13" y2="13"/>',
+    "zap": '<path d="M13 2 3 14h8l-1 8 10-12h-8l1-8Z"/>',
+    "eye": '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+    "arrow-up": '<line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/>',
+    "arrow-down": '<line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/>',
+    "arrow-right": '<line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>',
+    "briefcase": '<rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/>',
+    "settings": '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>',
+    "landmark": '<line x1="3" y1="22" x2="21" y2="22"/><line x1="6" y1="18" x2="6" y2="11"/><line x1="10" y1="18" x2="10" y2="11"/><line x1="14" y1="18" x2="14" y2="11"/><line x1="18" y1="18" x2="18" y2="11"/><polygon points="12 2 20 7 4 7"/>',
+    "bar-chart": '<line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/>',
+    "clipboard": '<rect x="8" y="2" width="8" height="4" rx="1"/><path d="M9 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3"/>',
+    "link": '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+}
+
+
+def icon(name: str, size: int = 16, color: str = "currentColor", stroke_width: float = 1.75) -> str:
+    """SVG inline de un ícono outline — sin librería ni CDN, ~200-400 bytes cada uno. Solo sirve
+    dentro de HTML propio (st.markdown con unsafe_allow_html=True); los widgets nativos de
+    Streamlit no lo renderizan."""
+    return (
+        f'<svg width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="{color}" '
+        f'stroke-width="{stroke_width}" stroke-linecap="round" stroke-linejoin="round" '
+        f'style="vertical-align:-3px; flex-shrink:0;">{_ICON_PATHS[name]}</svg>'
+    )
+
 
 @st.cache_resource
 def get_settings() -> Settings:
@@ -160,10 +204,13 @@ def inject_theme() -> None:
     )
 
 
-def render_header(icon: str, title: str, subtitle: str | None = None) -> None:
-    st.markdown(f"## {icon} {title}")
+def render_header(icon_html: str, title: str, subtitle: str | None = None) -> None:
+    st.markdown(
+        f"<h2 style='display:flex; align-items:center; gap:0.55rem; margin:0;'>{icon_html}<span>{title}</span></h2>",
+        unsafe_allow_html=True,
+    )
     if subtitle:
-        st.markdown(f"<div style='color:{TEXT_MUTED}; margin-top:-0.6rem;'>{subtitle}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='color:{TEXT_MUTED}; margin-top:0.4rem;'>{subtitle}</div>", unsafe_allow_html=True)
 
 
 def score_pill_html(score: int) -> str:
@@ -178,12 +225,12 @@ def pop_badge_html(probability_of_profit: float | None) -> str:
     """POP como badge grande y destacado — es el número que más importa de un vistazo al
     vender prima, no debería competir visualmente con el resto de las métricas chicas."""
     if probability_of_profit is None:
-        return f"<span class='oia-pill' style='font-size:0.95rem; color:{TEXT_MUTED}; border-color:{TEXT_MUTED}44;'>🎯 POP N/D</span>"
+        return f"<span class='oia-pill' style='font-size:0.95rem; color:{TEXT_MUTED}; border-color:{TEXT_MUTED}44;'>{icon('target', size=15)} POP N/D</span>"
     pct = probability_of_profit * 100
     color = GOOD if pct >= 70 else WARNING if pct >= 50 else CRITICAL
     return (
         f"<span class='oia-pill' style='font-size:1.1rem; font-weight:800; padding:0.3rem 0.9rem; "
-        f"color:{color}; border-color:{color}44; background:{color}1a;'>🎯 POP {pct:.0f}%</span>"
+        f"color:{color}; border-color:{color}44; background:{color}1a;'>{icon('target', size=17, color=color)} POP {pct:.0f}%</span>"
     )
 
 
@@ -195,13 +242,16 @@ def _fmt_time(alert_ts: str) -> str:
 
 
 _RISK_LEVEL_COLORS = {"alto": CRITICAL, "medio": WARNING, "bajo": GOOD}
-_RISK_LEVEL_LABELS = {"alto": "🔴 Alto", "medio": "🟡 Medio", "bajo": "🟢 Bajo"}
+_RISK_LEVEL_LABELS = {"alto": "Alto", "medio": "Medio", "bajo": "Bajo"}
 
 
 def risk_level_pill_html(level: str) -> str:
+    """Punto de color sólido en vez del emoji 🔴🟡🟢 — mismo semáforo, trazo consistente con
+    el resto de los íconos outline."""
     color = _RISK_LEVEL_COLORS.get(level, TEXT_MUTED)
     label = _RISK_LEVEL_LABELS.get(level, level)
-    return f"<span class='oia-pill' style='color:{color}; border-color:{color}44; background:{color}1a;'>{label}</span>"
+    dot = f"<span style='width:8px; height:8px; border-radius:50%; background:{color}; display:inline-block;'></span>"
+    return f"<span class='oia-pill' style='color:{color}; border-color:{color}44; background:{color}1a;'>{dot} {label}</span>"
 
 
 def risk_badge(score: int) -> str:
@@ -215,12 +265,13 @@ def risk_badge(score: int) -> str:
 def _leg_row_html(leg: dict) -> str:
     is_sell = leg["side"] == "sell"
     side_color = CRITICAL if is_sell else GOOD
-    side_label = "🔴 Venta" if is_sell else "🟢 Compra"
+    side_icon = icon("arrow-down", size=14, color=side_color) if is_sell else icon("arrow-up", size=14, color=side_color)
+    side_label = "Venta" if is_sell else "Compra"
     option_label = "Put" if leg["option_type"] == "put" else "Call"
     quantity = leg.get("quantity", 1)
     return (
         "<div class='oia-leg-row'>"
-        f"<span style='color:{side_color}; font-weight:600;'>{side_label} · {quantity} {option_label}</span>"
+        f"<span style='color:{side_color}; font-weight:600;'>{side_icon} {side_label} · {quantity} {option_label}</span>"
         f"<span>Strike ${leg['strike']:.2f} · Vence {leg['expiration']} · Prima ${leg['premium']:.2f}</span>"
         "</div>"
     )
@@ -243,17 +294,23 @@ def _fmt_money(value) -> str:
 
 def _earnings_caveat_html(next_earnings_date: str | None, expiration_date: str | None) -> str:
     if not next_earnings_date:
-        return f"<div class='oia-caveat'>⚠️ No se pudo verificar la fecha de earnings — confirmá manualmente antes de operar.</div>"
+        return f"<div class='oia-caveat'>{icon('help-circle', size=15)} No se pudo verificar la fecha de earnings — confirmá manualmente antes de operar.</div>"
     if expiration_date and next_earnings_date <= expiration_date:
-        return f"<div class='oia-caveat' style='color:{CRITICAL};'>🚨 Earnings el {next_earnings_date} — CAE DENTRO del vencimiento de esta posición, riesgo de gap.</div>"
-    return f"<div style='color:{GOOD}; font-size:0.82rem; margin-top:0.3rem;'>✅ Sin earnings antes del vencimiento (próximo: {next_earnings_date}).</div>"
+        return (
+            f"<div class='oia-caveat' style='color:{CRITICAL};'>{icon('alert-triangle', size=15, color=CRITICAL)} "
+            f"Earnings el {next_earnings_date} — CAE DENTRO del vencimiento de esta posición, riesgo de gap.</div>"
+        )
+    return (
+        f"<div style='color:{GOOD}; font-size:0.82rem; margin-top:0.3rem;'>{icon('check-circle', size=14, color=GOOD)} "
+        f"Sin earnings antes del vencimiento (próximo: {next_earnings_date}).</div>"
+    )
 
 
 def _fed_event_caveat_html(fed_meeting_date: str | None, expiration_date: str | None) -> str | None:
     if not fed_meeting_date or not expiration_date or fed_meeting_date > expiration_date:
         return None
     return (
-        f"<div class='oia-caveat' style='color:{CRITICAL};'>🚨 Reunión FOMC el {fed_meeting_date} — "
+        f"<div class='oia-caveat' style='color:{CRITICAL};'>{icon('alert-triangle', size=15, color=CRITICAL)} Reunión FOMC el {fed_meeting_date} — "
         "CAE DENTRO del vencimiento de esta posición, riesgo de gap por decisión de tasas.</div>"
     )
 
@@ -289,18 +346,18 @@ def render_alert_card(
     # la derecha — son los dos números que más importan de un vistazo al vender prima.
     html.append(
         "<div style='display:flex; justify-content:space-between; align-items:flex-start; gap:1rem;'>"
-        f"<div style='font-size:1.3rem; font-weight:700;'>📌 {alert['symbol']} — {label}</div>"
+        f"<div style='font-size:1.3rem; font-weight:700;'>{icon('pin', size=19, color=ACCENT)} {alert['symbol']} — {label}</div>"
         f"<div style='display:flex; gap:0.5rem; align-items:center;'>{pop_badge_html(probability_of_profit)}{score_pill_html(alert['conviction_score'])}</div>"
         "</div>"
     )
-    meta_bits = [f"🕐 {_fmt_time(alert['alert_ts'])}"]
+    meta_bits = [f"{icon('clock', size=14)} {_fmt_time(alert['alert_ts'])}"]
     if underlying_price is not None:
-        meta_bits.append(f"💲 ${underlying_price:,.2f}")
+        meta_bits.append(f"{icon('dollar', size=14)} ${underlying_price:,.2f}")
     if breakevens:
-        meta_bits.append("⚖️ BE " + "/".join(f"${b:,.2f}" for b in breakevens))
+        meta_bits.append(f"{icon('scale', size=14)} BE " + "/".join(f"${b:,.2f}" for b in breakevens))
     if net_premium is not None:
         premium_kind = "crédito" if net_premium >= 0 else "débito"
-        meta_bits.append(f"💵 {_fmt_money(abs(net_premium))} {premium_kind}")
+        meta_bits.append(f"{icon('dollar', size=14)} {_fmt_money(abs(net_premium))} {premium_kind}")
     html.append(f"<div style='color:{TEXT_SECONDARY}; font-size:0.85rem; margin-top:0.2rem;'>{' · '.join(meta_bits)}</div>")
     html.append(
         f"<div style='color:{TEXT_MUTED}; font-size:0.78rem; margin-top:0.1rem;'>"
@@ -316,23 +373,38 @@ def render_alert_card(
         html.append("<div style='margin-top:0.8rem;'>")
         html.extend(_leg_row_html(leg) for leg in legs)
         if strategy_type == "covered_call":
-            html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.85rem; margin-top:0.4rem;'>📎 Requiere 100 acciones de {alert['symbol']} en cartera (o asignación previa).</div>")
+            html.append(
+                f"<div style='color:{TEXT_MUTED}; font-size:0.85rem; margin-top:0.4rem;'>{icon('info', size=14)} "
+                f"Requiere 100 acciones de {alert['symbol']} en cartera (o asignación previa).</div>"
+            )
         html.append("</div>")
 
         html.append("<div class='oia-metric-grid'>")
-        html.append(f"<div class='oia-metric-tile'><div class='label'>🏆 Beneficio máximo</div><div class='value'>{_fmt_money(candidate['max_profit'])}</div></div>")
-        html.append(f"<div class='oia-metric-tile'><div class='label'>📉 Pérdida máxima</div><div class='value'>{_fmt_money(candidate['max_loss'])}</div></div>")
-        html.append(f"<div class='oia-metric-tile'><div class='label'>⏳ DTE</div><div class='value'>{candidate['dte'] if candidate['dte'] is not None else 'N/D'} días</div></div>")
+        html.append(
+            f"<div class='oia-metric-tile'><div class='label'>{icon('trending-up', size=13, color=GOOD)} Beneficio máximo</div>"
+            f"<div class='value'>{_fmt_money(candidate['max_profit'])}</div></div>"
+        )
+        html.append(
+            f"<div class='oia-metric-tile'><div class='label'>{icon('trending-down', size=13, color=CRITICAL)} Pérdida máxima</div>"
+            f"<div class='value'>{_fmt_money(candidate['max_loss'])}</div></div>"
+        )
+        html.append(
+            f"<div class='oia-metric-tile'><div class='label'>{icon('clock', size=13)} DTE</div>"
+            f"<div class='value'>{candidate['dte'] if candidate['dte'] is not None else 'N/D'} días</div></div>"
+        )
         html.append("</div>")
 
         if is_estimate:
-            html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.8rem;'>ℹ️ Beneficio máximo, pérdida máxima y breakeven(s) son una estimación por modelo (vencimientos combinados).</div>")
+            html.append(
+                f"<div style='color:{TEXT_MUTED}; font-size:0.8rem;'>{icon('info', size=14)} Beneficio máximo, pérdida "
+                "máxima y breakeven(s) son una estimación por modelo (vencimientos combinados).</div>"
+            )
     elif candidate:
         strikes = json.loads(candidate["strikes_json"])
         html.append(f"<div style='margin-top:0.6rem; color:{TEXT_SECONDARY};'>Strikes: {strikes}</div>")
         html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.8rem; margin-top:0.3rem;'>Alerta generada antes de esta actualización — sin datos de P&L calculados.</div>")
 
-    html.append(f"<div class='oia-comment'>💡 <b>Comentario:</b> {comment}</div>")
+    html.append(f"<div class='oia-comment'>{icon('lightbulb', size=16, color=WARNING)} <b>Comentario:</b> {comment}</div>")
     html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.75rem; margin-top:0.6rem;'>fuente de la narración: {alert['narrative_source']}</div>")
     html.append("</div>")
 
@@ -355,7 +427,7 @@ def render_news_card(item: sqlite3.Row | dict, badge: str | None = None) -> None
     html = ["<div class='oia-card'>"]
     html.append(
         "<div style='display:flex; justify-content:space-between; align-items:baseline; gap:1rem;'>"
-        f"<a href='{url}' target='_blank' style='color:{TEXT_PRIMARY}; font-size:1.05rem; font-weight:700; text-decoration:none;'>📰 {headline}</a>"
+        f"<a href='{url}' target='_blank' style='color:{TEXT_PRIMARY}; font-size:1.05rem; font-weight:700; text-decoration:none;'>{icon('news', size=17)} {headline}</a>"
         "</div>"
     )
     html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.8rem; margin-top:0.25rem;'>{source} · {published}</div>")
@@ -376,7 +448,7 @@ def render_macro_panel(conn: sqlite3.Connection) -> None:
         st.info("Todavía no hay contexto macro. Corré el análisis para traerlo (Finnhub/FRED/Kalshi).", icon="🏦")
         return
 
-    html = ["<div class='oia-card'>", "<div style='font-size:1.1rem; font-weight:700;'>🏦 Contexto macro</div>"]
+    html = ["<div class='oia-card'>", f"<div style='font-size:1.1rem; font-weight:700;'>{icon('landmark', size=18, color=ACCENT)} Contexto macro</div>"]
     html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.8rem; margin-top:0.1rem;'>Actualizado {snap['snapshot_date']}</div>")
 
     if snap["fed_funds_upper"] is not None:
@@ -388,9 +460,9 @@ def render_macro_panel(conn: sqlite3.Connection) -> None:
     if snap["fed_meeting_date"] is not None:
         html.append(f"<div style='color:{TEXT_SECONDARY}; margin-top:0.3rem;'>Próxima reunión FOMC: <b>{snap['fed_meeting_date']}</b></div>")
         html.append("<div class='oia-metric-grid'>")
-        html.append(f"<div class='oia-metric-tile'><div class='label'>📈 Sube</div><div class='value'>{_fmt_pct(snap['fed_hike_probability'])}</div></div>")
-        html.append(f"<div class='oia-metric-tile'><div class='label'>➡️ Mantiene</div><div class='value'>{_fmt_pct(snap['fed_hold_probability'])}</div></div>")
-        html.append(f"<div class='oia-metric-tile'><div class='label'>📉 Baja</div><div class='value'>{_fmt_pct(snap['fed_cut_probability'])}</div></div>")
+        html.append(f"<div class='oia-metric-tile'><div class='label'>{icon('trending-up', size=13, color=GOOD)} Sube</div><div class='value'>{_fmt_pct(snap['fed_hike_probability'])}</div></div>")
+        html.append(f"<div class='oia-metric-tile'><div class='label'>{icon('arrow-right', size=13)} Mantiene</div><div class='value'>{_fmt_pct(snap['fed_hold_probability'])}</div></div>")
+        html.append(f"<div class='oia-metric-tile'><div class='label'>{icon('trending-down', size=13, color=CRITICAL)} Baja</div><div class='value'>{_fmt_pct(snap['fed_cut_probability'])}</div></div>")
         html.append("</div>")
         html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.75rem;'>Probabilidad calculada a partir de precios reales de mercado (contratos Kalshi sobre la tasa de la Fed) — nunca una estimación de la IA.</div>")
     else:
@@ -423,7 +495,7 @@ def render_portfolio_summary_panel(conn: sqlite3.Connection, alert_date) -> None
     rows = [dict(r) for r in repo.get_alerts_for_date(conn, alert_date)]
     summary = summarize_portfolio(rows)
 
-    html = ["<div class='oia-card'>", "<div style='font-size:1.1rem; font-weight:700;'>📋 Resumen de oportunidades de hoy</div>"]
+    html = ["<div class='oia-card'>", f"<div style='font-size:1.1rem; font-weight:700;'>{icon('clipboard', size=18, color=ACCENT)} Resumen de oportunidades de hoy</div>"]
 
     if summary["total_alerts"] == 0:
         html.append(f"<div style='color:{TEXT_MUTED}; margin-top:0.4rem;'>Todavía no hay alertas hoy ({alert_date}).</div>")
@@ -432,25 +504,25 @@ def render_portfolio_summary_panel(conn: sqlite3.Connection, alert_date) -> None
         return
 
     html.append("<div class='oia-metric-grid'>")
-    html.append(f"<div class='oia-metric-tile'><div class='label'>🔔 Alertas hoy</div><div class='value'>{summary['total_alerts']}</div></div>")
+    html.append(f"<div class='oia-metric-tile'><div class='label'>{icon('bell', size=13)} Alertas hoy</div><div class='value'>{summary['total_alerts']}</div></div>")
 
     directional = summary["directional"]
-    html.append(f"<div class='oia-metric-tile'><div class='label'>📈 Alcistas</div><div class='value'>{directional['bullish']}</div></div>")
-    html.append(f"<div class='oia-metric-tile'><div class='label'>📉 Bajistas</div><div class='value'>{directional['bearish']}</div></div>")
-    html.append(f"<div class='oia-metric-tile'><div class='label'>➡️ Neutrales</div><div class='value'>{directional['neutral']}</div></div>")
+    html.append(f"<div class='oia-metric-tile'><div class='label'>{icon('trending-up', size=13, color=GOOD)} Alcistas</div><div class='value'>{directional['bullish']}</div></div>")
+    html.append(f"<div class='oia-metric-tile'><div class='label'>{icon('trending-down', size=13, color=CRITICAL)} Bajistas</div><div class='value'>{directional['bearish']}</div></div>")
+    html.append(f"<div class='oia-metric-tile'><div class='label'>{icon('arrow-right', size=13)} Neutrales</div><div class='value'>{directional['neutral']}</div></div>")
 
     net_delta = summary["net_delta"]
     net_delta_str = f"{net_delta:+.2f}" if net_delta is not None else "N/D"
-    html.append(f"<div class='oia-metric-tile'><div class='label'>⚖️ Delta neto total</div><div class='value'>{net_delta_str}</div></div>")
+    html.append(f"<div class='oia-metric-tile'><div class='label'>{icon('scale', size=13)} Delta neto total</div><div class='value'>{net_delta_str}</div></div>")
 
     bounded_risk = summary["bounded_risk_total"]
     risk_str = _fmt_money(bounded_risk) if bounded_risk is not None else "N/D"
-    html.append(f"<div class='oia-metric-tile'><div class='label'>📉 Riesgo total (acotado)</div><div class='value'>{risk_str}</div></div>")
+    html.append(f"<div class='oia-metric-tile'><div class='label'>{icon('trending-down', size=13, color=CRITICAL)} Riesgo total (acotado)</div><div class='value'>{risk_str}</div></div>")
     html.append("</div>")
 
     if summary["unbounded_risk_count"] > 0:
         html.append(
-            f"<div class='oia-caveat'>⚠️ {summary['unbounded_risk_count']} estrategia(s) de riesgo no acotado (short naked) "
+            f"<div class='oia-caveat'>{icon('alert-triangle', size=15, color=WARNING)} {summary['unbounded_risk_count']} estrategia(s) de riesgo no acotado (short naked) "
             "entre las alertas de hoy — no están incluidas en el riesgo total de arriba, podrían perder más.</div>"
         )
 

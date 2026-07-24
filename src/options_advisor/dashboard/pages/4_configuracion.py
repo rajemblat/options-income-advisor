@@ -4,13 +4,13 @@ from datetime import datetime
 
 import streamlit as st
 
-from options_advisor.dashboard.components import get_connection, get_settings, get_symbols, inject_theme, render_header, render_notification_bell
+from options_advisor.dashboard.components import ACCENT, get_connection, get_settings, get_symbols, icon, inject_theme, render_header, render_notification_bell
 from options_advisor.storage import repository as repo
 from options_advisor.storage.models import InvestorProfile
 
 st.set_page_config(page_title="Configuración", page_icon="⚙️", layout="wide")
 inject_theme()
-render_header("⚙️", "Configuración")
+render_header(icon("settings", size=24, color=ACCENT), "Configuración")
 
 conn = get_connection()
 render_notification_bell(conn)

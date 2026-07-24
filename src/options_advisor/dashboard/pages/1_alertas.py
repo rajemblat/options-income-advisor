@@ -5,8 +5,10 @@ from datetime import date
 import streamlit as st
 
 from options_advisor.dashboard.components import (
+    ACCENT,
     get_connection,
     get_symbols,
+    icon,
     inject_theme,
     render_alert_card,
     render_header,
@@ -16,7 +18,7 @@ from options_advisor.storage import repository as repo
 
 st.set_page_config(page_title="Alertas", page_icon="🔔", layout="wide")
 inject_theme()
-render_header("🔔", "Alertas — Ingreso a Largo Plazo")
+render_header(icon("bell", size=24, color=ACCENT), "Alertas — Ingreso a Largo Plazo")
 
 conn = get_connection()
 render_notification_bell(conn)

@@ -77,7 +77,7 @@ def format_alert_message(context: dict, comment: str) -> str:
     comentario). Todo lo numérico viene ya calculado por `strategy/payoff.py` — el único
     texto libre es `comment`, escrito por el narrador (Claude o plantilla de fallback)."""
     label = strategy_label(context["strategy_type"])
-    lines = ["🔔 Alerta de Opción", _earnings_line(context), f"📌 {context['symbol']} — {label}"]
+    lines = ["🔔 Alerta de Opción", _earnings_line(context), f"📍 {context['symbol']} — {label}"]
 
     if context.get("underlying_price") is not None:
         lines.append(f"💲 Precio actual del subyacente: ${context['underlying_price']:,.2f}")
@@ -99,17 +99,17 @@ def format_alert_message(context: dict, comment: str) -> str:
     else:
         lines.append("💵 Prima neta: N/D")
 
-    lines.append(f"🏆 Beneficio máximo: {_fmt_money(context.get('max_profit'))}")
+    lines.append(f"📈 Beneficio máximo: {_fmt_money(context.get('max_profit'))}")
     lines.append(f"📉 Pérdida máxima (riesgo): {_fmt_money(context.get('max_loss'))}")
 
     breakevens = context.get("breakevens") or []
     breakevens_str = " / ".join(f"${b:,.2f}" for b in breakevens) if breakevens else "N/D"
     lines.append(f"⚖️ Breakeven(s): {breakevens_str}")
 
-    lines.append(f"📊 Probabilidad de beneficio: {_fmt_pct(context.get('probability_of_profit'))}")
+    lines.append(f"🎯 Probabilidad de beneficio: {_fmt_pct(context.get('probability_of_profit'))}")
 
     dte = context.get("dte")
-    lines.append(f"⏳ DTE: {dte if dte is not None else 'N/D'} días")
+    lines.append(f"⏱ DTE: {dte if dte is not None else 'N/D'} días")
 
     if context.get("payoff_is_estimate"):
         lines.append(

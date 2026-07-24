@@ -6,12 +6,14 @@ import streamlit as st
 from plotly.subplots import make_subplots
 
 from options_advisor.dashboard.components import (
+    ACCENT,
     BORDER,
     SURFACE,
     TEXT_MUTED,
     TEXT_PRIMARY,
     get_connection,
     get_symbols,
+    icon,
     inject_theme,
     render_header,
     render_notification_bell,
@@ -26,7 +28,7 @@ SERIES_VIOLET = "#9085e9"
 
 st.set_page_config(page_title="Indicadores", page_icon="📊", layout="wide")
 inject_theme()
-render_header("📊", "Detalle de indicadores por símbolo")
+render_header(icon("bar-chart", size=24, color=ACCENT), "Detalle de indicadores por símbolo")
 
 conn = get_connection()
 render_notification_bell(conn)

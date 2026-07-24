@@ -3,11 +3,15 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from options_advisor.dashboard.components import get_broker, get_connection, get_settings, inject_theme, render_header, render_notification_bell
+from options_advisor.dashboard.components import ACCENT, get_broker, get_connection, get_settings, icon, inject_theme, render_header, render_notification_bell
 
 st.set_page_config(page_title="Portafolio real", page_icon="💼", layout="wide")
 inject_theme()
-render_header("💼", "Portafolio real", "Posiciones reales de tus cuentas Schwab — símbolo, cantidad, precio de entrada, valor actual y P&L")
+render_header(
+    icon("briefcase", size=24, color=ACCENT),
+    "Portafolio real",
+    "Posiciones reales de tus cuentas Schwab — símbolo, cantidad, precio de entrada, valor actual y P&L",
+)
 
 conn = get_connection()
 render_notification_bell(conn)

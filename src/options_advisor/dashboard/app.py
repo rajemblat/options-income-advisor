@@ -6,10 +6,12 @@ from datetime import date
 import streamlit as st
 
 from options_advisor.dashboard.components import (
+    ACCENT,
     get_broker,
     get_connection,
     get_settings,
     get_symbols,
+    icon,
     inject_theme,
     render_header,
     render_macro_panel,
@@ -21,7 +23,11 @@ from options_advisor.scheduler.jobs import job_poll_and_analyze
 st.set_page_config(page_title="Options Income Advisor — Fase 1", page_icon="📈", layout="wide")
 inject_theme()
 
-render_header("📈", "Options Income Advisor — Fase 1", "Escenario: Ingreso a Largo Plazo. Motor de reglas determinístico + narración con Claude.")
+render_header(
+    icon("trending-up", size=24, color=ACCENT),
+    "Options Income Advisor — Fase 1",
+    "Escenario: Ingreso a Largo Plazo. Motor de reglas determinístico + narración con Claude.",
+)
 
 settings = get_settings()
 symbols = get_symbols()
