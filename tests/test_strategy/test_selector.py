@@ -106,3 +106,19 @@ def test_enabled_strategies_restricts_to_mvp_scope():
 def test_enabled_strategies_can_exclude_everything():
     candidates = select_candidate_strategies(iv_rank=70, risk_level="agresivo", enabled_strategies=frozenset())
     assert candidates == []
+
+
+def test_iv_rank_high_threshold_default_matches_module_constant():
+    with_default = select_candidate_strategies(iv_rank=55, risk_level="agresivo")
+    with_explicit = select_candidate_strategies(iv_rank=55, risk_level="agresivo", iv_rank_high_threshold=c.IV_RANK_HIGH_THRESHOLD)
+    assert with_default == with_explicit
+
+
+def test_lower_iv_rank_high_threshold_unlocks_premium_selling_sooner():
+    """Perfil agresivo (umbral más bajo, ej. 40) debería ofrecer venta de prima con un IV Rank
+    que perfil conservador (umbral más alto, ej. 60) todavía considera "bajo"."""
+    iv_rank = 45  # entre 40 y 60
+    conservative = select_candidate_strategies(iv_rank=iv_rank, risk_level="moderado", iv_rank_high_threshold=60)
+    aggressive = select_candidate_strategies(iv_rank=iv_rank, risk_level="moderado", iv_rank_high_threshold=40)
+    assert c.CASH_SECURED_PUT not in conservative  # 45 < 60: régimen de IV bajo, no vende prima
+    assert c.CASH_SECURED_PUT in aggressive  # 45 >= 40: régimen de IV alto, sí vende prima

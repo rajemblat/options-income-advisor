@@ -28,6 +28,7 @@ def select_candidate_strategies(
     rsi: float | None = None,
     has_open_assigned_position: bool = False,
     enabled_strategies: frozenset[str] | None = None,
+    iv_rank_high_threshold: float = c.IV_RANK_HIGH_THRESHOLD,
 ) -> list[str]:
     """Matriz de selección de estrategia para el escenario Ingreso a Largo Plazo, filtrada por
     lo que el perfil de riesgo tiene habilitado.
@@ -44,6 +45,10 @@ def select_candidate_strategies(
     `enabled_strategies` (settings.strategy.enabled): filtro adicional para el MVP enfocado en
     4 categorías (2026-07-24) — None = sin restricción extra (todo lo que ya habilita el perfil
     de riesgo), igual que antes de que existiera este parámetro.
+
+    `iv_rank_high_threshold` (settings.strategy.iv_rank_high_threshold, por perfil de riesgo):
+    conservador solo considera vender prima con IV Rank más alto (colchón de valor mayor);
+    agresivo acepta oportunidades con menos IV Rank. Default = la constante fija de siempre.
     """
     if iv_rank is None:
         return []  # sin IV Rank calculable todavía, no hay base para decidir (Sección 4, gap conocido)
@@ -52,7 +57,7 @@ def select_candidate_strategies(
     bias = _directional_bias(ma_cross_signal, rsi)
     candidates: list[str] = []
 
-    if iv_rank >= c.IV_RANK_HIGH_THRESHOLD:
+    if iv_rank >= iv_rank_high_threshold:
         if bias != "bearish":
             candidates += [c.CASH_SECURED_PUT, c.SHORT_PUT_NAKED, c.BULL_PUT_SPREAD, c.PUT_RATIO_SPREAD]
         if bias != "bullish":

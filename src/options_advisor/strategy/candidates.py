@@ -86,12 +86,12 @@ def _nearest_expiration_or_none(chain: OptionChain, dte_range: tuple[int, int]) 
         return None
 
 
-def _build_single_short_leg(strategy_type: str, chain: OptionChain, option_type: OptionType) -> CandidateBuild | None:
+def _build_single_short_leg(strategy_type: str, chain: OptionChain, option_type: OptionType, target_short_delta: float) -> CandidateBuild | None:
     expiration = _nearest_expiration_or_none(chain, SINGLE_LEG_DTE_RANGE)
     if expiration is None:
         return None
     contracts = _contracts_for(chain, option_type, expiration)
-    short = _pick_by_target_delta(contracts, TARGET_SHORT_DELTA)
+    short = _pick_by_target_delta(contracts, target_short_delta)
     if short is None:
         return None
     return CandidateBuild(
@@ -104,14 +104,14 @@ def _build_single_short_leg(strategy_type: str, chain: OptionChain, option_type:
     )
 
 
-def _build_vertical_spread(strategy_type: str, chain: OptionChain, option_type: OptionType) -> CandidateBuild | None:
+def _build_vertical_spread(strategy_type: str, chain: OptionChain, option_type: OptionType, target_short_delta: float = TARGET_SHORT_DELTA) -> CandidateBuild | None:
     """Credit spread: vende la pata cercana al dinero (target delta), compra la pata más OTM
     como cobertura. Sirve tanto para Bull Put Spread (puts) como Bear Call Spread (calls)."""
     expiration = _nearest_expiration_or_none(chain, SINGLE_LEG_DTE_RANGE)
     if expiration is None:
         return None
     contracts = _contracts_for(chain, option_type, expiration)
-    short = _pick_by_target_delta(contracts, TARGET_SHORT_DELTA)
+    short = _pick_by_target_delta(contracts, target_short_delta)
     if short is None:
         return None
     long = _pick_further_otm(contracts, short, option_type)
@@ -150,7 +150,7 @@ def _build_debit_vertical_spread(strategy_type: str, chain: OptionChain, option_
     )
 
 
-def _build_collar(chain: OptionChain) -> CandidateBuild | None:
+def _build_collar(chain: OptionChain, target_short_delta: float = TARGET_SHORT_DELTA) -> CandidateBuild | None:
     """Vende un call OTM (ingreso) + compra un put OTM (protección) sobre 100 acciones ya en
     cartera, misma expiración. Deltas objetivo simétricas (simplificación documentada — un
     collar real suele ajustar cada pata para calzar costo, acá se prioriza consistencia con
@@ -158,8 +158,8 @@ def _build_collar(chain: OptionChain) -> CandidateBuild | None:
     expiration = _nearest_expiration_or_none(chain, SINGLE_LEG_DTE_RANGE)
     if expiration is None:
         return None
-    short_call = _pick_by_target_delta(_contracts_for(chain, "call", expiration), TARGET_SHORT_DELTA)
-    long_put = _pick_by_target_delta(_contracts_for(chain, "put", expiration), TARGET_SHORT_DELTA)
+    short_call = _pick_by_target_delta(_contracts_for(chain, "call", expiration), target_short_delta)
+    long_put = _pick_by_target_delta(_contracts_for(chain, "put", expiration), target_short_delta)
     if short_call is None or long_put is None:
         return None
     return CandidateBuild(
@@ -249,13 +249,13 @@ def _build_short_condor(strategy_type: str, chain: OptionChain, option_type: Opt
     )
 
 
-def _build_iron_condor(chain: OptionChain) -> CandidateBuild | None:
-    put_spread = _build_vertical_spread(c.IRON_CONDOR, chain, "put")
+def _build_iron_condor(chain: OptionChain, target_short_delta: float = TARGET_SHORT_DELTA) -> CandidateBuild | None:
+    put_spread = _build_vertical_spread(c.IRON_CONDOR, chain, "put", target_short_delta)
     expiration = _nearest_expiration_or_none(chain, SINGLE_LEG_DTE_RANGE)
     if put_spread is None or expiration is None:
         return None
     call_contracts = _contracts_for(chain, "call", expiration)
-    short_call = _pick_by_target_delta(call_contracts, TARGET_SHORT_DELTA)
+    short_call = _pick_by_target_delta(call_contracts, target_short_delta)
     if short_call is None:
         return None
     long_call = _pick_further_otm(call_contracts, short_call, "call")
@@ -319,25 +319,30 @@ def _build_calendar_or_diagonal(
     )
 
 
-def build_candidate(strategy_type: str, chain: OptionChain) -> CandidateBuild | None:
+def build_candidate(strategy_type: str, chain: OptionChain, target_short_delta: float = TARGET_SHORT_DELTA) -> CandidateBuild | None:
     """Construye los strikes/vencimiento concretos para una estrategia dada, a partir de la
-    cadena de opciones. Devuelve None si no hay contratos suficientes en la cadena para armarla."""
+    cadena de opciones. Devuelve None si no hay contratos suficientes en la cadena para armarla.
+
+    `target_short_delta`: delta objetivo de la(s) pata(s) corta(s), ajustado por perfil de
+    riesgo (settings.strategy.target_short_delta) — más bajo = más OTM = más colchón, menos
+    prima. Solo threadeado en las 4 estrategias del MVP (Sección 'perfil de riesgo'
+    2026-07-24); el resto sigue con el default del módulo, pausadas de todos modos."""
     if strategy_type in (c.CASH_SECURED_PUT, c.SHORT_PUT_NAKED):
-        return _build_single_short_leg(strategy_type, chain, "put")
+        return _build_single_short_leg(strategy_type, chain, "put", target_short_delta)
     if strategy_type in (c.COVERED_CALL, c.SHORT_CALL_NAKED):
-        return _build_single_short_leg(strategy_type, chain, "call")
+        return _build_single_short_leg(strategy_type, chain, "call", target_short_delta)
     if strategy_type == c.BULL_PUT_SPREAD:
-        return _build_vertical_spread(strategy_type, chain, "put")
+        return _build_vertical_spread(strategy_type, chain, "put", target_short_delta)
     if strategy_type == c.BEAR_CALL_SPREAD:
-        return _build_vertical_spread(strategy_type, chain, "call")
+        return _build_vertical_spread(strategy_type, chain, "call", target_short_delta)
     if strategy_type == c.BULL_CALL_SPREAD:
         return _build_debit_vertical_spread(strategy_type, chain, "call")
     if strategy_type == c.BEAR_PUT_SPREAD:
         return _build_debit_vertical_spread(strategy_type, chain, "put")
     if strategy_type == c.COLLAR:
-        return _build_collar(chain)
+        return _build_collar(chain, target_short_delta)
     if strategy_type == c.IRON_CONDOR:
-        return _build_iron_condor(chain)
+        return _build_iron_condor(chain, target_short_delta)
     if strategy_type == c.CALENDAR_PUT_SPREAD:
         return _build_calendar_or_diagonal(strategy_type, chain, same_strike=True, option_type="put")
     if strategy_type == c.CALENDAR_CALL_SPREAD:

@@ -55,3 +55,15 @@ strategy:
     - covered_call
     - collar
     - iron_condor
+  # Delta objetivo de la pata corta: más bajo = strike más OTM = más colchón de precio, menos
+  # prima. Agresivo se acerca más al dinero (más prima, menos margen antes de perder).
+  target_short_delta:
+    conservador: 0.15
+    moderado: 0.25
+    agresivo: 0.35
+  # IV Rank mínimo para considerar vender prima. Conservador solo vende cuando la prima está
+  # realmente cara (más colchón de valor); agresivo acepta oportunidades con menos IV Rank.
+  iv_rank_high_threshold:
+    conservador: 60
+    moderado: 50
+    agresivo: 40

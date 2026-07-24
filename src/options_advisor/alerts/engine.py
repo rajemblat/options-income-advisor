@@ -48,6 +48,9 @@ def process_symbol_alerts(
         logger.info("%s: IV Rank no disponible todavía, sin candidatos posibles", snap.symbol)
         return []
 
+    target_short_delta = settings.strategy.target_short_delta.for_risk_level(risk_level)
+    iv_rank_high_threshold = settings.strategy.iv_rank_high_threshold.for_risk_level(risk_level)
+
     strategy_types = select_candidate_strategies(
         snap.iv_rank,
         risk_level,
@@ -55,12 +58,13 @@ def process_symbol_alerts(
         rsi=snap.rsi_14,
         has_open_assigned_position=has_open_assigned_position,
         enabled_strategies=frozenset(settings.strategy.enabled),
+        iv_rank_high_threshold=iv_rank_high_threshold,
     )
     generated: list[dict] = []
     recent_news = finnhub_client.get_recent_news(snap.symbol, snap.snapshot_date, finnhub_api_key) if strategy_types else []
 
     for strategy_type in strategy_types:
-        build = candidate_builder.build_candidate(strategy_type, analysis.chain)
+        build = candidate_builder.build_candidate(strategy_type, analysis.chain, target_short_delta)
         if build is None:
             continue
 

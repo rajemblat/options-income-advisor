@@ -134,3 +134,43 @@ def test_calendar_call_spread_has_two_expirations(chain):
 def test_unknown_strategy_raises(chain):
     with pytest.raises(ValueError):
         build_candidate("not_a_real_strategy", chain)
+
+
+def test_lower_target_short_delta_picks_more_otm_put_strike(chain):
+    """Perfil conservador (delta más bajo) debería elegir un strike más lejos del precio
+    actual que perfil agresivo (delta más alto) — más colchón, menos prima."""
+    conservative = build_candidate(c.CASH_SECURED_PUT, chain, target_short_delta=0.15)
+    aggressive = build_candidate(c.CASH_SECURED_PUT, chain, target_short_delta=0.35)
+    assert conservative is not None and aggressive is not None
+    conservative_strike = conservative.strikes["short_strike"]
+    aggressive_strike = aggressive.strikes["short_strike"]
+    # Put: strike más OTM = más bajo (más lejos de UNDERLYING_PRICE hacia abajo).
+    assert conservative_strike < aggressive_strike
+    assert (UNDERLYING_PRICE - conservative_strike) > (UNDERLYING_PRICE - aggressive_strike)
+
+
+def test_lower_target_short_delta_picks_more_otm_collar_strikes(chain):
+    conservative = build_candidate(c.COLLAR, chain, target_short_delta=0.15)
+    aggressive = build_candidate(c.COLLAR, chain, target_short_delta=0.35)
+    assert conservative is not None and aggressive is not None
+    # Call vendida: más OTM = strike más alto para conservador que para agresivo.
+    assert conservative.strikes["call_strike"] > aggressive.strikes["call_strike"]
+    # Put comprada: más OTM = strike más bajo para conservador que para agresivo.
+    assert conservative.strikes["put_strike"] < aggressive.strikes["put_strike"]
+
+
+def test_lower_target_short_delta_widens_iron_condor(chain):
+    conservative = build_candidate(c.IRON_CONDOR, chain, target_short_delta=0.15)
+    aggressive = build_candidate(c.IRON_CONDOR, chain, target_short_delta=0.35)
+    assert conservative is not None and aggressive is not None
+    assert conservative.strikes["call_short_strike"] > aggressive.strikes["call_short_strike"]
+    assert conservative.strikes["put_short_strike"] < aggressive.strikes["put_short_strike"]
+
+
+def test_build_candidate_default_target_short_delta_matches_module_constant(chain):
+    """Sin pasar target_short_delta explícito, se comporta igual que antes de este parámetro."""
+    from options_advisor.strategy.candidates import TARGET_SHORT_DELTA
+
+    default_call = build_candidate(c.CASH_SECURED_PUT, chain)
+    explicit_call = build_candidate(c.CASH_SECURED_PUT, chain, target_short_delta=TARGET_SHORT_DELTA)
+    assert default_call.strikes == explicit_call.strikes

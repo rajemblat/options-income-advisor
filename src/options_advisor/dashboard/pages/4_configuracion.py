@@ -40,10 +40,13 @@ with st.form("investor_profile_form"):
         ["defined", "undefined"],
         index=["defined", "undefined"].index(current.risk_preference if current else defaults.risk_preference),
     )
+    risk_level_labels = {"conservador": "Conservador", "moderado": "Normal", "agresivo": "Agresivo"}
+    risk_level_keys = ["conservador", "moderado", "agresivo"]
     risk_level = st.selectbox(
-        "Perfil de riesgo",
-        ["conservador", "moderado", "agresivo"],
-        index=["conservador", "moderado", "agresivo"].index(current.risk_level if current else defaults.risk_level),
+        "Perfil de riesgo — ajusta qué tan OTM se eligen los strikes y el IV Rank mínimo para vender prima",
+        risk_level_keys,
+        format_func=lambda k: risk_level_labels[k],
+        index=risk_level_keys.index(current.risk_level if current else defaults.risk_level),
     )
     threshold_override = st.number_input(
         "Umbral de convicción manual (vacío = usar el default del perfil)",
@@ -70,11 +73,25 @@ with st.form("investor_profile_form"):
         st.rerun()
 
 st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
-st.subheader("Umbrales de convicción por defecto (config/settings.yaml)")
+st.subheader("Qué cambia cada perfil (config/settings.yaml)")
+st.caption(
+    "No es solo un filtro visual: el delta objetivo y el IV Rank mínimo cambian qué strikes "
+    "elige el motor al armar cada candidato, antes de llegar a puntuarlo."
+)
 st.table(
     {
-        "Perfil": ["conservador", "moderado", "agresivo"],
-        "Umbral": [
+        "Perfil": ["Conservador", "Normal", "Agresivo"],
+        "Delta objetivo (más bajo = más OTM)": [
+            settings.strategy.target_short_delta.conservador,
+            settings.strategy.target_short_delta.moderado,
+            settings.strategy.target_short_delta.agresivo,
+        ],
+        "IV Rank mínimo para vender": [
+            settings.strategy.iv_rank_high_threshold.conservador,
+            settings.strategy.iv_rank_high_threshold.moderado,
+            settings.strategy.iv_rank_high_threshold.agresivo,
+        ],
+        "Umbral de convicción": [
             settings.conviction_thresholds.conservador,
             settings.conviction_thresholds.moderado,
             settings.conviction_thresholds.agresivo,

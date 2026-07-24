@@ -66,6 +66,19 @@ class ConvictionThresholds(BaseModel):
         return getattr(self, risk_level)
 
 
+class RiskLevelFloatParams(BaseModel):
+    """Mismo patrón que ConvictionThresholds pero en float — reusado para delta objetivo e
+    IV Rank mínimo, los dos parámetros que el perfil de riesgo ajusta en la selección de
+    strikes (Sección 'perfil de riesgo' 2026-07-24)."""
+
+    conservador: float
+    moderado: float
+    agresivo: float
+
+    def for_risk_level(self, risk_level: RiskLevel) -> float:
+        return getattr(self, risk_level)
+
+
 class IvRankSettings(BaseModel):
     min_sessions_for_real_iv: int
     full_window_sessions: int
@@ -77,6 +90,11 @@ class StrategySettings(BaseModel):
     # categoría "Naked Put"). Las otras 15 estrategias quedan en el código sin borrar, solo
     # pausadas acá — para reactivarlas alcanza con sumarlas a esta lista en settings.yaml.
     enabled: list[str]
+    # Perfil de riesgo (conservador/moderado/agresivo) ajusta qué tan OTM se eligen los strikes
+    # y qué tan alto tiene que estar el IV Rank para considerar vender prima — no es solo un
+    # filtro visual, cambia qué candidatos arma strategy/candidates.py.
+    target_short_delta: RiskLevelFloatParams
+    iv_rank_high_threshold: RiskLevelFloatParams
 
 
 class Settings(BaseModel):
