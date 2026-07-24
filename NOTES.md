@@ -91,6 +91,15 @@ sin verificar bien — encontré que 2 de 3 estaban mal, más una causa raíz op
     OKLO 19.3% y NVDA 15.5% como mayores concentraciones, cluster de 13 símbolos con earnings a
     fin de julio detectado correctamente.
 
+24. **Advertencia de liquidez (spread bid/ask ancho)** — trabajo autónomo, no pedido puntual
+    del usuario, tomado del backlog "menor" de abajo. Bid/ask/OI/volumen ya eran reales de
+    Schwab pero nadie los usaba para nada. Si el spread bid/ask de una pata VENDIDA supera el
+    15% de su precio medio, se agrega una advertencia (mismo lugar/estilo que el caveat de
+    earnings) tanto en el texto de WhatsApp como en la tarjeta — nunca descarta la alerta, solo
+    advierte. Requirió sumar `bid`/`ask` a los legs persistidos (antes solo se guardaba
+    `mid_price`). Verificado con datos reales: 11 de 69 alertas de una corrida dispararon la
+    advertencia.
+
 **Anotado, sin resolver todavía — problema de facturación del usuario, no de código**: durante
 una de las regeneraciones de hoy la cuenta de Anthropic se quedó sin crédito
 (`Your credit balance is too low`) — las alertas de ese momento cayeron al comentario de
@@ -240,9 +249,9 @@ pendientes de confirmar con el usuario:
   analistas — confirmado con pruebas reales (403 en ambos). Necesitaría otra fuente.
 - Schwab expone `divExDate`/`nextDivExDate` (fecha ex-dividendo) que no usamos — relevante
   para riesgo de asignación anticipada en Covered Call.
-- No hay ningún control de liquidez (ancho de spread bid/ask, tamaño de book) antes de
-  sugerir una estrategia — con plata real esto importa. Bid/ask/OI/volumen ya son reales,
-  pero nadie los usa todavía para filtrar/advertir sobre iliquidez.
+- ~~Control de liquidez (spread bid/ask)~~ — **hecho hoy**, ver punto 24 arriba. Todavía no
+  se usa open interest/volumen para nada — podría sumar una segunda señal de liquidez además
+  del spread (ej. advertir si OI o volumen están muy bajos incluso con spread angosto).
 - Rankings de mercado (ganadoras/perdedoras, más activas): Schwab (heredado de TD Ameritrade)
   probablemente tiene un endpoint `/marketdata/v1/movers/{index}` — no verificado todavía,
   evaluar antes de buscar otra fuente.
