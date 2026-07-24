@@ -1,7 +1,7 @@
 # Estado del proyecto — sesión 2026-07-23 → 2026-07-24
 
 Conexión real con Schwab: verificada, conectada y con un bug de datos crítico ya resuelto.
-Todo lo de esta sección está commiteado y pusheado a `origin/main` (último commit: `803dd61`).
+Todo lo de esta sección está commiteado y pusheado a `origin/main` (último commit: `f64992f`).
 
 ## Resuelto hoy — segunda mitad de la sesión (auditoría del usuario + trabajo autónomo)
 
@@ -99,6 +99,19 @@ sin verificar bien — encontré que 2 de 3 estaban mal, más una causa raíz op
     advierte. Requirió sumar `bid`/`ask` a los legs persistidos (antes solo se guardaba
     `mid_price`). Verificado con datos reales: 11 de 69 alertas de una corrida dispararon la
     advertencia.
+
+25. **Advertencia de riesgo de asignación anticipada por ex-dividendo** — trabajo autónomo,
+    tomado del backlog "menor". Schwab expone `divExDate`/`nextDivExDate` (fundamental) pero
+    nadie los usaba. Si una call VENDIDA (Covered Call, Collar, o el lado call de Iron Condor)
+    sigue viva en o después de la próxima fecha ex-dividendo, se advierte sobre el riesgo de
+    que la ejerzan antes para capturar el dividendo. **Bug real encontrado y corregido durante
+    la verificación en vivo**: `divExDate` de Schwab NO es siempre la fecha futura — probado
+    con dos símbolos reales el mismo día: JNJ la tenía futura (2026-08-25, correcta), QQQ la
+    tenía en el PASADO (2026-06-22, ciclo ya pagado) con la fecha real en `nextDivExDate`
+    (2026-09-22). Se corrigió tomando la más próxima entre ambos campos que sea hoy o futura,
+    no un campo fijo — quedó cubierto con tests que reproducen ambos casos reales. Requirió
+    sumar `next_ex_dividend_date` a `Quote` y a `IndicatorSnapshot` (con su migración liviana
+    en `storage/db.py`, mismo patrón que `next_earnings_date`).
 
 **Anotado, sin resolver todavía — problema de facturación del usuario, no de código**: durante
 una de las regeneraciones de hoy la cuenta de Anthropic se quedó sin crédito
@@ -247,8 +260,7 @@ pendientes de confirmar con el usuario:
 
 - Ninguna fuente actual (Schwab ni el plan free de Finnhub) expone target price de
   analistas — confirmado con pruebas reales (403 en ambos). Necesitaría otra fuente.
-- Schwab expone `divExDate`/`nextDivExDate` (fecha ex-dividendo) que no usamos — relevante
-  para riesgo de asignación anticipada en Covered Call.
+- ~~Ex-dividendo (`divExDate`/`nextDivExDate`)~~ — **hecho hoy**, ver punto 25 arriba.
 - ~~Control de liquidez (spread bid/ask)~~ — **hecho hoy**, ver punto 24 arriba. Todavía no
   se usa open interest/volumen para nada — podría sumar una segunda señal de liquidez además
   del spread (ej. advertir si OI o volumen están muy bajos incluso con spread angosto).
