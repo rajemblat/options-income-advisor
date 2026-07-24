@@ -102,6 +102,39 @@ def _coverage_lines(coverage: list[dict]) -> list[str]:
     return lines
 
 
+LIQUIDITY_SPREAD_WARN_PCT = 0.15  # spread bid/ask > 15% del mid_price: caro entrar/salir a precio de referencia
+
+
+def assess_liquidity(legs: list[dict], threshold_pct: float = LIQUIDITY_SPREAD_WARN_PCT) -> list[dict]:
+    """Spread bid/ask ancho en alguna pata VENDIDA — nadie filtraba esto todavía pese a que
+    bid/ask/OI/volumen ya son reales de Schwab (backlog "menor" 2026-07-23: "con plata real
+    esto importa"). Solo ADVIERTE, nunca descarta la alerta — el spread real en el momento de
+    operar puede ser mejor que el snapshot, y el usuario es quien decide si es operable."""
+    warnings = []
+    for leg in legs:
+        if leg.get("side") != "sell":
+            continue
+        bid, ask = leg.get("bid"), leg.get("ask")
+        if bid is None or ask is None or bid <= 0 or ask <= 0:
+            continue
+        mid = (bid + ask) / 2
+        spread_pct = (ask - bid) / mid
+        if spread_pct > threshold_pct:
+            warnings.append(
+                {"option_type": leg["option_type"], "strike": leg["strike"], "spread_pct": spread_pct, "bid": bid, "ask": ask}
+            )
+    return warnings
+
+
+def _liquidity_lines(warnings: list[dict]) -> list[str]:
+    return [
+        f"⚠ Spread ancho en {'Put' if w['option_type'] == 'put' else 'Call'} ${w['strike']:.2f}: "
+        f"bid ${w['bid']:.2f} / ask ${w['ask']:.2f} ({w['spread_pct'] * 100:.0f}% del precio medio) — "
+        "confirmá el precio real antes de operar."
+        for w in warnings
+    ]
+
+
 def _leg_line(leg: dict) -> str:
     side_icon = "↓ Venta" if leg["side"] == "sell" else "↑ Compra"
     option_label = "Put" if leg["option_type"] == "put" else "Call"
@@ -122,8 +155,10 @@ def format_alert_message(context: dict, comment: str) -> str:
     if context.get("underlying_price") is not None:
         lines.append(f"• Precio actual del subyacente: ${context['underlying_price']:,.2f}")
 
-    lines.append(SEPARATOR)
     legs = context.get("legs") or []
+    lines.extend(_liquidity_lines(assess_liquidity(legs)))
+
+    lines.append(SEPARATOR)
     if legs:
         lines.extend(_leg_line(leg) for leg in legs)
         if context["strategy_type"] == "covered_call":

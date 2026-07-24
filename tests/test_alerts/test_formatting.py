@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from options_advisor.alerts.formatting import compute_coverage, format_alert_message
+import pytest
+
+from options_advisor.alerts.formatting import assess_liquidity, compute_coverage, format_alert_message
 
 _BASE_CONTEXT = {
     "symbol": "AAPL",
@@ -100,3 +102,42 @@ def test_format_alert_message_includes_coverage_line():
     }
     text = format_alert_message(context, "comentario")
     assert "↓ Cobertura: 15.0% (necesita caer hasta $170.00)" in text
+
+
+def test_assess_liquidity_flags_wide_spread_on_sold_leg():
+    legs = [{"side": "sell", "option_type": "put", "strike": 170.0, "bid": 1.00, "ask": 1.40}]  # spread 33% del mid ($1.20)
+    warnings = assess_liquidity(legs)
+    assert len(warnings) == 1
+    assert warnings[0]["strike"] == 170.0
+    assert warnings[0]["spread_pct"] == pytest.approx(0.4 / 1.2)
+
+
+def test_assess_liquidity_ignores_tight_spread():
+    legs = [{"side": "sell", "option_type": "put", "strike": 170.0, "bid": 2.45, "ask": 2.55}]  # spread ~4%
+    assert assess_liquidity(legs) == []
+
+
+def test_assess_liquidity_ignores_bought_legs():
+    legs = [{"side": "buy", "option_type": "put", "strike": 165.0, "bid": 0.10, "ask": 1.00}]  # spread enorme, pero es compra
+    assert assess_liquidity(legs) == []
+
+
+def test_assess_liquidity_ignores_legs_without_bid_ask():
+    legs = [{"side": "sell", "option_type": "put", "strike": 170.0}]
+    assert assess_liquidity(legs) == []
+
+
+def test_format_alert_message_includes_liquidity_warning():
+    context = {
+        **_BASE_CONTEXT,
+        "next_earnings_date": None,
+        "legs": [
+            {
+                "side": "sell", "option_type": "put", "strike": 170.0, "quantity": 1,
+                "expiration": "2026-08-21", "premium": 1.2, "bid": 1.00, "ask": 1.40,
+            }
+        ],
+    }
+    text = format_alert_message(context, "comentario")
+    assert "⚠ Spread ancho en Put $170.00" in text
+    assert "bid $1.00 / ask $1.40" in text

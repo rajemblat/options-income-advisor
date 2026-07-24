@@ -47,6 +47,10 @@ def _leg_dict(leg: Leg) -> dict:
         "expiration": ct.expiration.isoformat(),
         "premium": ct.mid_price,
         "implied_volatility": ct.implied_volatility,
+        # bid/ask crudos (no solo el mid_price ya usado para "premium") — hacen falta para
+        # advertir sobre spreads anchos, ver alerts/formatting.py::assess_liquidity.
+        "bid": ct.bid,
+        "ask": ct.ask,
     }
 
 

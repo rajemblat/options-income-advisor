@@ -9,7 +9,7 @@ from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
 
-from options_advisor.alerts.formatting import compute_coverage, strategy_label
+from options_advisor.alerts.formatting import assess_liquidity, compute_coverage, strategy_label
 from options_advisor.broker import get_broker_client
 from options_advisor.broker.base import BrokerClient
 from options_advisor.config import PROJECT_ROOT, Settings, load_settings, load_symbols
@@ -335,6 +335,19 @@ def _fed_event_caveat_html(fed_meeting_date: str | None, expiration_date: str | 
     )
 
 
+def _liquidity_caveat_html(warnings: list[dict]) -> str:
+    if not warnings:
+        return ""
+    parts = [
+        f"{'Put' if w['option_type'] == 'put' else 'Call'} ${w['strike']:.2f} ({w['spread_pct'] * 100:.0f}% del precio medio)"
+        for w in warnings
+    ]
+    return (
+        f"<div class='oia-caveat' style='color:{WARNING};'>{icon('alert-triangle', size=15, color=WARNING)} "
+        f"Spread bid/ask ancho en {', '.join(parts)} — confirmá el precio real antes de operar.</div>"
+    )
+
+
 def render_alert_card(
     alert: sqlite3.Row,
     candidate: sqlite3.Row | None,
@@ -391,6 +404,9 @@ def render_alert_card(
     fed_caveat = _fed_event_caveat_html(fed_meeting_date, expiration_date)
     if fed_caveat:
         html.append(fed_caveat)
+    liquidity_caveat = _liquidity_caveat_html(assess_liquidity(legs))
+    if liquidity_caveat:
+        html.append(liquidity_caveat)
 
     if legs:
         html.append("<div style='margin-top:0.8rem;'>")
