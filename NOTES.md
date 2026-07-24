@@ -1,7 +1,7 @@
 # Estado del proyecto — sesión 2026-07-23 → 2026-07-24
 
 Conexión real con Schwab: verificada, conectada y con un bug de datos crítico ya resuelto.
-Todo lo de esta sección está commiteado y pusheado a `origin/main` (último commit: `6353d58`).
+Todo lo de esta sección está commiteado y pusheado a `origin/main` (último commit: `8523c9c`).
 
 ## Resuelto hoy
 
@@ -43,33 +43,32 @@ Todo lo de esta sección está commiteado y pusheado a `origin/main` (último co
     posiciones probado contra la cuenta real. Aparecen 2 de 3 cuentas vía
     `/accounts/accountNumbers` — pendiente revisar por qué la tercera no aparece (posible
     permiso de API no habilitado en el portal de Schwab para esa cuenta específica).
+11. **Motor enfocado en 4 estrategias** (Cash-Secured Put/Short Put Naked, Covered Call,
+    Collar, Iron Condor) vía `settings.strategy.enabled` en `config/settings.yaml` — las otras
+    15 quedan en el código sin borrar, alcanza con agregarlas a esa lista para reactivarlas.
+    Además, `BrokerClient.get_all_share_positions()` (nuevo) reemplaza la tabla interna
+    `assigned_positions` (vacía, sin UI que la llene) por la tenencia REAL de la cuenta Schwab
+    para habilitar Covered Call/Collar — probado en vivo, detecta las 300 acciones reales de
+    NVDA y otras 11 posiciones reales. 179/179 tests pasando.
 
 ## Pendiente — orden de prioridad para retomar
 
-1. **Enfocar el motor en 4 estrategias**: Cash-Secured Put / Short Put Naked, Covered Call,
-   Collar, Iron Condor. Las otras 15 quedan en el código (no borrar), pausadas vía un filtro
-   allowlist configurable (a implementar, no existe todavía).
-   - **Detalle importante**: Covered Call y Collar hoy **nunca** generan alerta porque el
-     selector los gatea con `has_open_assigned_position`, que depende de la tabla interna
-     `assigned_positions` (vacía, sin UI para cargarla) — no de las posiciones reales de
-     Schwab. Para que funcionen con datos reales (ej. las 300 acciones reales de NVDA que ya
-     vimos en la cuenta) hay que reemplazar ese check por una consulta real a las posiciones
-     de la cuenta Schwab en vez de la tabla simulada.
-2. **Campanita de notificaciones en el dashboard**: el backend ya existe (tabla
+1. **Campanita de notificaciones en el dashboard**: el backend ya existe (tabla
    `notifications`, el digest ya escribe ahí) — falta el componente visual (badge con
    contador de no leídas, panel al hacer clic con el detalle). Reemplaza el plan original de
    Telegram.
-3. **Formato de alerta rediseñado**: línea compacta (símbolo/hora/precio/POP bien
+2. **Formato de alerta rediseñado**: línea compacta (símbolo/hora/precio/POP bien
    destacado/crédito neto) + secciones "Razón" (por qué) y "Qué pasa si" (escenario
    alternativo/plan B) generadas por el narrador — hoy es una explicación plana.
-4. **Página de portafolio real + análisis con IA**: diagnosticado y aprobado (endpoints de
+3. **Página de portafolio real + análisis con IA**: diagnosticado y aprobado (endpoints de
    Schwab ya verificados — `GET /trader/v1/accounts/{hash}?fields=positions` funciona con la
-   misma autorización que ya está hecha, no hace falta nada adicional). No implementado
-   todavía. Se había acordado partirlo en 2 entregas: primero posiciones reales (tabla +
-   griegos en vivo + caveats de earnings/FOMC reusados), después la capa de análisis por IA.
-5. **Chat de IA para consultas** sobre alertas/watchlist (mismo narrador, Claude Haiku, con
-   contexto de la DB actual) — pedido después de confirmar los puntos 1-4.
-6. **Watchlist ampliada de thinkorswim**: quedó bloqueado — el usuario nunca pegó la lista
+   misma autorización que ya está hecha, no hace falta nada adicional; el fetch de posiciones
+   ya está resuelto vía `get_all_share_positions()`, reusable acá). No implementado todavía.
+   Se había acordado partirlo en 2 entregas: primero posiciones reales (tabla + griegos en
+   vivo + caveats de earnings/FOMC reusados), después la capa de análisis por IA.
+4. **Chat de IA para consultas** sobre alertas/watchlist (mismo narrador, Claude Haiku, con
+   contexto de la DB actual) — pedido después de confirmar los puntos 1-3.
+5. **Watchlist ampliada de thinkorswim**: quedó bloqueado — el usuario nunca pegó la lista
    real de símbolos (llegó vacía en el mensaje). Falta esa lista para clasificar en
    acciones/ETFs (directo), índices (SPX/RUT/NDX/VIX, revisar soporte), futuros (`/ES`,
    `/NQ`, etc., Schwab probablemente no los cubre) y cripto (BTC/ETH sí vía Schwab `/quote`
