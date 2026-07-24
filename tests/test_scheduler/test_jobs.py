@@ -11,7 +11,8 @@ from options_advisor.storage import db
 from options_advisor.storage import repository as repo
 from options_advisor.storage.models import MacroSnapshot
 
-TODAY = date(2026, 7, 23)
+TODAY = date.today()  # job_premarket_digest usa date.today() internamente (no fecha inyectada);
+# fijarla acá haría que el test dependa de correr un día calendario exacto.
 
 
 @pytest.fixture
