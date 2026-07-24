@@ -135,6 +135,9 @@ class MockBrokerClient(BrokerClient):
             ask=round(bar.close + spread, 2),
         )
 
+    def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        return {symbol: self.get_quote(symbol) for symbol in symbols}
+
     def get_price_history(self, symbol: str, lookback_days: int) -> list[PriceBar]:
         as_of_date = self._resolve_as_of_date(symbol)
         history = [b for b in self._load_price_history(symbol) if b.trade_date <= as_of_date]

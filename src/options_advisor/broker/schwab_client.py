@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from datetime import date, datetime, timedelta
 
 import httpx
@@ -17,6 +18,26 @@ logger = logging.getLogger(__name__)
 MARKET_DATA_BASE_URL = "https://api.schwabapi.com/marketdata/v1"
 TRADER_API_BASE_URL = "https://api.schwabapi.com/trader/v1"
 DEFAULT_RISK_FREE_RATE = 0.045
+
+# Símbolo OCC de un contrato de opción: 6 chars de raíz (rellenados con espacios) + YYMMDD +
+# C/P + strike*1000 en 8 dígitos. Formato estable de la industria (no de Schwab específicamente)
+# — más confiable que parsear el texto libre de `description`.
+_OCC_OPTION_SYMBOL_RE = re.compile(r"^(?P<root>.{6})(?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})(?P<cp>[CP])(?P<strike>\d{8})$")
+
+
+def _parse_occ_option_symbol(symbol: str) -> tuple[str, date, str, float] | None:
+    """(underlying, expiration, option_type, strike) a partir del símbolo OCC, o None si no
+    matchea el formato (posición no es una opción estándar)."""
+    match = _OCC_OPTION_SYMBOL_RE.match(symbol)
+    if not match:
+        return None
+    try:
+        expiration = date(2000 + int(match["yy"]), int(match["mm"]), int(match["dd"]))
+    except ValueError:
+        return None
+    option_type = "call" if match["cp"] == "C" else "put"
+    strike = int(match["strike"]) / 1000
+    return match["root"].strip(), expiration, option_type, strike
 
 
 class SchwabBrokerClient(BrokerClient):
@@ -66,6 +87,31 @@ class SchwabBrokerClient(BrokerClient):
             bid=quote["bidPrice"],
             ask=quote["askPrice"],
         )
+
+    def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        """Batch real de Schwab (probado en vivo: 100+ símbolos en una sola llamada, sin
+        rate-limit en 20 llamadas seguidas) — evita 1 llamada por subyacente en las
+        proyecciones de portafolio real."""
+        if not symbols:
+            return {}
+        try:
+            data = self._get("/quotes", params={"symbols": ",".join(symbols)})
+        except Exception:
+            logger.exception("Fallo al pedir quotes en batch de Schwab; se omite")
+            return {}
+        quotes: dict[str, Quote] = {}
+        for symbol, entry in data.items():
+            quote = entry.get("quote")
+            if not quote:
+                continue
+            quotes[symbol] = Quote(
+                symbol=symbol,
+                as_of=date.today(),
+                last_price=quote["lastPrice"],
+                bid=quote["bidPrice"],
+                ask=quote["askPrice"],
+            )
+        return quotes
 
     def get_price_history(self, symbol: str, lookback_days: int) -> list[PriceBar]:
         data = self._get(
@@ -220,16 +266,27 @@ class SchwabBrokerClient(BrokerClient):
             long_qty = position.get("longQuantity", 0) or 0
             short_qty = position.get("shortQuantity", 0) or 0
             average_price = position.get("averageLongPrice") if long_qty else position.get("averageShortPrice")
+
+            symbol = instrument.get("symbol", "")
+            option_fields = _parse_occ_option_symbol(symbol) if instrument.get("assetType") == "OPTION" else None
+            underlying_symbol, expiration, option_type, strike = option_fields if option_fields else (
+                instrument.get("underlyingSymbol"), None, None, None
+            )
+
             positions.append(
                 AccountPosition(
                     account_number=account_number,
-                    symbol=instrument.get("symbol", ""),
+                    symbol=symbol,
                     asset_type=instrument.get("assetType", ""),
                     quantity=long_qty - short_qty,
                     average_price=average_price if average_price is not None else (position.get("averagePrice") or 0.0),
                     market_value=position.get("marketValue", 0.0) or 0.0,
                     unrealized_pnl=position.get("longOpenProfitLoss", 0.0) or 0.0,
                     description=instrument.get("description"),
+                    underlying_symbol=underlying_symbol,
+                    option_type=option_type,
+                    strike=strike,
+                    expiration=expiration,
                 )
             )
         return positions

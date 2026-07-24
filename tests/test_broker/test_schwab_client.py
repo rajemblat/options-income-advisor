@@ -217,3 +217,65 @@ def test_get_all_positions_empty_when_accounts_call_fails(client, monkeypatch):
 
     monkeypatch.setattr(httpx.Client, "get", _boom)
     assert client.get_all_positions() == []
+
+
+def test_get_all_positions_parses_occ_option_symbol(client, monkeypatch):
+    """Símbolo OCC real: 'SLV   260821P00060000' -> SLV, 2026-08-21, put, strike 60.0."""
+    accounts = [{"accountNumber": "111", "hashValue": "HASH1"}]
+    positions_by_hash = {"HASH1": [_full_position("SLV   260821P00060000", "OPTION", short_qty=2, average_price=6.71)]}
+    monkeypatch.setattr(httpx.Client, "get", _mock_trader_get(accounts, positions_by_hash))
+
+    position = client.get_all_positions()[0]
+    assert position.underlying_symbol == "SLV"
+    assert position.expiration == date(2026, 8, 21)
+    assert position.option_type == "put"
+    assert position.strike == 60.0
+
+
+def test_get_all_positions_call_option_symbol_parses_correctly(client, monkeypatch):
+    accounts = [{"accountNumber": "111", "hashValue": "HASH1"}]
+    positions_by_hash = {"HASH1": [_full_position("AAPL  260117C00320000", "OPTION", long_qty=1, average_price=12.0)]}
+    monkeypatch.setattr(httpx.Client, "get", _mock_trader_get(accounts, positions_by_hash))
+
+    position = client.get_all_positions()[0]
+    assert position.underlying_symbol == "AAPL"
+    assert position.expiration == date(2026, 1, 17)
+    assert position.option_type == "call"
+    assert position.strike == 320.0
+
+
+def test_get_all_positions_equity_has_no_option_fields(client, monkeypatch):
+    accounts = [{"accountNumber": "111", "hashValue": "HASH1"}]
+    positions_by_hash = {"HASH1": [_full_position("NVDA", "EQUITY", long_qty=300, average_price=209.41)]}
+    monkeypatch.setattr(httpx.Client, "get", _mock_trader_get(accounts, positions_by_hash))
+
+    position = client.get_all_positions()[0]
+    assert position.option_type is None
+    assert position.strike is None
+    assert position.expiration is None
+
+
+def test_get_quotes_batch_returns_all_symbols(client, monkeypatch):
+    payload = {
+        "AAPL": {"quote": {"lastPrice": 321.1, "bidPrice": 321.0, "askPrice": 321.2}},
+        "NVDA": {"quote": {"lastPrice": 180.5, "bidPrice": 180.4, "askPrice": 180.6}},
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quotes = client.get_quotes(["AAPL", "NVDA"])
+    assert set(quotes.keys()) == {"AAPL", "NVDA"}
+    assert quotes["AAPL"].last_price == 321.1
+
+
+def test_get_quotes_empty_list_returns_empty_dict_without_calling_api(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(httpx.Client, "get", lambda *a, **k: calls.append(1))
+    assert client.get_quotes([]) == {}
+    assert calls == []
+
+
+def test_get_quotes_returns_empty_dict_on_failure(client, monkeypatch):
+    def _boom(self, path, params=None, headers=None):
+        raise httpx.ConnectError("no network", request=httpx.Request("GET", "https://api.schwabapi.com/marketdata/v1/x"))
+
+    monkeypatch.setattr(httpx.Client, "get", _boom)
+    assert client.get_quotes(["AAPL"]) == {}

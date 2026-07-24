@@ -15,6 +15,14 @@ class BrokerClient(ABC):
         ...
 
     @abstractmethod
+    def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        """Quotes de varios símbolos en una sola llamada cuando el broker lo soporta (Schwab:
+        probado en vivo, 100+ símbolos por llamada) — usado para las proyecciones de portafolio
+        real, donde hace falta el precio de varios subyacentes a la vez sin pegarle al broker
+        una vez por símbolo. Símbolos sin quote disponible simplemente no aparecen en el dict."""
+        ...
+
+    @abstractmethod
     def get_option_chain(
         self, symbol: str, expiration_range_days: tuple[int, int] = (7, 60)
     ) -> OptionChain:

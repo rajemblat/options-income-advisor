@@ -55,9 +55,10 @@ class OptionContract(BaseModel):
 
 
 class AccountPosition(BaseModel):
-    """Una posición real de cuenta (Entrega 1 de la página de portafolio real) — deliberadamente
-    simple por ahora: símbolo, cantidad, precio de entrada, valor actual, P&L. Griegos/DTE/
-    caveats de earnings-FOMC para posiciones de opciones quedan para la Entrega 2 (análisis IA)."""
+    """Una posición real de cuenta. Entrega 1: símbolo, cantidad, precio de entrada, valor
+    actual, P&L. Entrega 2 (análisis sin IA): se suman underlying_symbol/option_type/strike/
+    expiration para posiciones de opciones — parseados del símbolo OCC (formato estable, no
+    depende del texto de `description`) — habilitan % de retorno y proyecciones."""
 
     account_number: str
     symbol: str
@@ -67,6 +68,10 @@ class AccountPosition(BaseModel):
     market_value: float
     unrealized_pnl: float
     description: str | None = None
+    underlying_symbol: str | None = None  # solo si asset_type == "OPTION"
+    option_type: str | None = None  # "put" | "call", solo si asset_type == "OPTION"
+    strike: float | None = None
+    expiration: date | None = None
 
 
 class OptionChain(BaseModel):
