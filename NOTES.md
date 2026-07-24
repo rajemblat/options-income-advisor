@@ -1,7 +1,7 @@
 # Estado del proyecto — sesión 2026-07-23 → 2026-07-24
 
 Conexión real con Schwab: verificada, conectada y con un bug de datos crítico ya resuelto.
-Todo lo de esta sección está commiteado y pusheado a `origin/main` (último commit: `8523c9c`).
+Todo lo de esta sección está commiteado y pusheado a `origin/main` (último commit: `422b2c9`).
 
 ## Resuelto hoy
 
@@ -52,30 +52,65 @@ Todo lo de esta sección está commiteado y pusheado a `origin/main` (último co
     NVDA y otras 11 posiciones reales. 179/179 tests pasando.
 12. **Campanita de notificaciones** (`render_notification_bell`, sidebar en las 7 páginas):
     badge con conteo de no leídas, popover con el detalle completo de cada notificación, botón
-    "marcar todas como leídas". Probada en el navegador real. De paso quedó confirmada una
-    alerta real de Collar en NVDA generada por el motor nuevo (earnings + FOMC verificados,
-    comentario narrado por Claude) — el pipeline completo (posiciones reales + 4 estrategias +
-    narrador) funciona de punta a punta.
+    "marcar todas como leídas". Probada en el navegador real.
+13. **Tarjeta de alerta modernizada**: emojis reemplazados por íconos SVG outline (estilo
+    Lucide, `icon()` helper en `components.py`, sin librería/CDN) en toda tarjeta/panel HTML
+    propio; color semántico por contexto (beneficio verde, pérdida roja) en vez de fijo.
+    Mockup previo aprobado en un artifact antes de aplicar. Limitación real de Streamlit (no
+    de diseño): botones/popover/dataframes no aceptan HTML, ahí sigue emoji. Texto que se
+    copia para WhatsApp (`alerts/formatting.py`, texto plano) usa un set de emoji más
+    consistente en vez de SVG (no se puede poner SVG en WhatsApp).
+14. **Score de convicción en %** con 2 colores (verde ≥70%, amarillo debajo) — de paso se
+    encontró y corrigió `conviction_threshold_override` pisado en 5 desde una prueba de hace
+    2 días (debía ser 55-75 según perfil), causaba alertas de score bajo.
+15. **Perfil de riesgo (Conservador/Normal/Agresivo) ahora ajusta la selección real de
+    strikes**, no solo qué se muestra: delta objetivo (0.15/0.25/0.35) e IV Rank mínimo para
+    vender (60/50/40) por perfil, threadeado hasta `strategy/candidates.py`. Confirmado con
+    AAPL real: conservador $305 de strike, normal $315, agresivo $322.5 (precio $331.77).
+16. **Portafolio real, Entrega 2** (`dashboard/portfolio_analysis.py`, módulo puro): % de
+    retorno por posición, proyección de P&L a vencimiento propio (solo intrínseco, sin IA),
+    y proyección a fecha elegida por el usuario (Black-Scholes manteniendo precio/IV
+    actuales, IV en vivo vía fetch de cadena solo al apretar "Calcular" — no ralentiza la
+    carga normal). `AccountPosition` ahora parsea el símbolo OCC de cada opción (formato
+    estable, no depende de `description`). Probado en vivo: portafolio pasa de -$23,674 hoy
+    a -$17,427 proyectado al 2026-10-22.
+17. **Escaneo de universo amplio** (`dashboard/pages/8_escaneo.py`): universo = watchlist real
+    (13, siempre incluidos) + `config/universe_sp500.yaml` (386 large-caps de referencia,
+    NO es un feed en vivo — Schwab/Finnhub no tienen endpoint de "dame el S&P 500 actual").
+    Fase 1 (`SchwabBrokerClient.screen_universe`, gratis/rápida): 1-2 llamadas batch filtran
+    por optionable/precio/liquidez y rankean por volatilidad histórica (rango 52 semanas ÷
+    precio) — probado en vivo, 385 símbolos → 60 candidatos en 1 segundo. Fase 2 (cara, varios
+    minutos): corre el pipeline existente sobre shortlist + watchlist, gatillada por botón
+    explícito, no automática. De paso: `get_quote`/`get_quotes` ahora soportan índices
+    (`$SPX`/`$RUT`/`$NDX`/`$VIX`, confirmados en vivo con precios reales — no tienen bid/ask).
+
+## Watchlist real del usuario (thinkorswim) — ya disponible
+
+Lista completa (~95 símbolos) recibida y usada como prioritaria en el escaneo de universo
+(punto 17 arriba, siempre incluida sin importar el ranking). Aclaraciones pendientes de
+confirmar con el usuario:
+- **BTC**: en Schwab resuelve a una ETF apalancada (`assetSubType: ETF`, ~$28-29, rango 52
+  semanas $25-56) — **NO es Bitcoin spot**. Si el usuario quiere BTC real, hace falta el
+  formato `BINANCE:BTCUSDT` (confirmado funcional en otra prueba de esta sesión), pero la
+  llamada vía `/{symbol}/quotes` con `:` en el path falló (400) — probablemente necesita ir
+  por el endpoint batch (`/quotes?symbols=...`) en vez del de un símbolo. No resuelto todavía.
+- **SPX/RUT/NDX/VIX**: SÍ funcionan, pero con el prefijo `$` (`$SPX`, `$RUT`, `$NDX`, `$VIX`)
+  — confirmado en vivo con precios reales. Falta validar si la cadena de OPCIONES de estos
+  índices funciona igual (podrían ser cash-settled/europeas, distinto del resto del motor) —
+  no probado todavía, no están en el universo de estrategias actual.
 
 ## Pendiente — orden de prioridad para retomar
 
-1. **Formato de alerta rediseñado**: línea compacta (símbolo/hora/precio/POP bien
-   destacado/crédito neto) + secciones "Razón" (por qué) y "Qué pasa si" (escenario
-   alternativo/plan B) generadas por el narrador — hoy es una explicación plana.
-2. **Página de portafolio real + análisis con IA**: diagnosticado y aprobado (endpoints de
-   Schwab ya verificados — `GET /trader/v1/accounts/{hash}?fields=positions` funciona con la
-   misma autorización que ya está hecha, no hace falta nada adicional; el fetch de posiciones
-   ya está resuelto vía `get_all_share_positions()`, reusable acá). No implementado todavía.
-   Se había acordado partirlo en 2 entregas: primero posiciones reales (tabla + griegos en
-   vivo + caveats de earnings/FOMC reusados), después la capa de análisis por IA.
-3. **Chat de IA para consultas** sobre alertas/watchlist (mismo narrador, Claude Haiku, con
-   contexto de la DB actual) — pedido después de confirmar los puntos 1-2.
-4. **Watchlist ampliada de thinkorswim**: quedó bloqueado — el usuario nunca pegó la lista
-   real de símbolos (llegó vacía en el mensaje). Falta esa lista para clasificar en
-   acciones/ETFs (directo), índices (SPX/RUT/NDX/VIX, revisar soporte), futuros (`/ES`,
-   `/NQ`, etc., Schwab probablemente no los cubre) y cripto (BTC/ETH sí vía Schwab `/quote`
-   con formato `BINANCE:...`; distinguir de ETFs cripto como IBIT/ETHA que son símbolos
-   normales).
+1. **BTC real (spot) y opciones sobre índices** ($SPX/$RUT/$NDX/$VIX): ver aclaraciones arriba
+   — necesita confirmación del usuario sobre qué quiere (BTC: ETF apalancado vs. spot real) y
+   una prueba en vivo de la cadena de opciones de índices antes de sumarlos al motor.
+2. **Chat de IA para consultas** sobre alertas/watchlist (mismo narrador, Claude Haiku, con
+   contexto de la DB actual).
+3. **Portafolio real, Entrega 3 (análisis con IA)**: narrativa sobre exposición total,
+   concentración, riesgo de earnings simultáneo — la Entrega 2 (cuantitativo, sin IA) ya está.
+4. **Automatizar el escaneo de universo**: hoy es manual (botón en `/escaneo`). Evaluar si
+   conviene sumarlo al scheduler (ej. una vez por semana en vez de cada 30 min — la Fase 2 es
+   cara) una vez que el usuario lo haya probado manualmente un tiempo.
 
 ## Menor / oportunidades identificadas, no implementadas
 
