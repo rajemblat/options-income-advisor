@@ -48,7 +48,7 @@ Reglas estrictas:
 
 def _fallback_comment(context: dict) -> str:
     return (
-        f"Score de convicción {context['conviction_score']}/100. No se generó comentario narrativo "
+        f"Score de convicción {context['conviction_score']}%. No se generó comentario narrativo "
         "(fallback por error del narrador) — revisar los datos numéricos de arriba y confirmar "
         "manualmente antes de operar."
     )

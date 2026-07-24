@@ -167,13 +167,11 @@ def render_header(icon: str, title: str, subtitle: str | None = None) -> None:
 
 
 def score_pill_html(score: int) -> str:
-    if score >= 80:
-        color = GOOD
-    elif score >= 65:
-        color = WARNING
-    else:
-        color = CRITICAL
-    return f"<span class='oia-pill' style='color:{color}; border-color:{color}44; background:{color}1a;'>● {score}</span>"
+    """Verde ≥70%, amarillo por debajo — no hay tercer nivel porque el motor ya filtra
+    cualquier score bajo el umbral mínimo antes de generar la alerta (alerts/engine.py), no
+    debería llegar a mostrarse una alerta de score realmente bajo."""
+    color = GOOD if score >= 70 else WARNING
+    return f"<span class='oia-pill' style='color:{color}; border-color:{color}44; background:{color}1a;'>● {score}%</span>"
 
 
 def pop_badge_html(probability_of_profit: float | None) -> str:
