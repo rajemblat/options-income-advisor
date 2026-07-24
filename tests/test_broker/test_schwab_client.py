@@ -171,3 +171,49 @@ def test_get_all_share_positions_one_account_failing_does_not_block_others(clien
 
     monkeypatch.setattr(httpx.Client, "get", _get)
     assert client.get_all_share_positions() == {"NVDA": 300}
+
+
+def _full_position(
+    symbol: str, asset_type: str, long_qty: float = 0, short_qty: float = 0, average_price: float = 0.0,
+    market_value: float = 0.0, pnl: float = 0.0, description: str | None = None,
+) -> dict:
+    return {
+        "instrument": {"assetType": asset_type, "symbol": symbol, "description": description},
+        "longQuantity": long_qty,
+        "shortQuantity": short_qty,
+        "averagePrice": average_price,
+        "marketValue": market_value,
+        "longOpenProfitLoss": pnl,
+    }
+
+
+def test_get_all_positions_returns_long_and_short_across_accounts(client, monkeypatch):
+    accounts = [{"accountNumber": "111", "hashValue": "HASH1"}, {"accountNumber": "222", "hashValue": "HASH2"}]
+    positions_by_hash = {
+        "HASH1": [_full_position("NVDA", "EQUITY", long_qty=300, average_price=209.41, market_value=62370.0, pnl=-453.49, description="NVIDIA CORP")],
+        "HASH2": [_full_position("SLV", "OPTION", short_qty=2, average_price=6.71, market_value=-1670.0, pnl=-300.82, description="ISHR SILVER TR PUT")],
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_trader_get(accounts, positions_by_hash))
+
+    positions = client.get_all_positions()
+
+    assert len(positions) == 2
+    nvda = next(p for p in positions if p.symbol == "NVDA")
+    assert nvda.account_number == "111"
+    assert nvda.asset_type == "EQUITY"
+    assert nvda.quantity == 300
+    assert nvda.average_price == 209.41
+    assert nvda.market_value == 62370.0
+    assert nvda.unrealized_pnl == -453.49
+
+    slv = next(p for p in positions if p.symbol == "SLV")
+    assert slv.quantity == -2  # posición corta: shortQuantity resta
+    assert slv.asset_type == "OPTION"
+
+
+def test_get_all_positions_empty_when_accounts_call_fails(client, monkeypatch):
+    def _boom(self, path, params=None, headers=None):
+        raise httpx.ConnectError("no network", request=httpx.Request("GET", "https://api.schwabapi.com/trader/v1/x"))
+
+    monkeypatch.setattr(httpx.Client, "get", _boom)
+    assert client.get_all_positions() == []

@@ -8,7 +8,7 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from options_advisor.broker.base import BrokerClient
-from options_advisor.broker.models import Greeks, OptionChain, OptionContract, OptionType, PriceBar, Quote
+from options_advisor.broker.models import AccountPosition, Greeks, OptionChain, OptionContract, OptionType, PriceBar, Quote
 from options_advisor.broker.schwab_auth import DEFAULT_TOKEN_STORE_PATH, SchwabAuth
 from options_advisor.indicators.greeks import calculate_greeks
 
@@ -170,21 +170,19 @@ class SchwabBrokerClient(BrokerClient):
             greeks=greeks,
         )
 
-    def get_all_share_positions(self) -> dict[str, int]:
-        """Suma `longQuantity` de todas las posiciones EQUITY, a través de todas las cuentas
-        vinculadas — habilita Covered Call/Collar con la tenencia REAL en vez de una tabla
-        interna de seguimiento (ver strategy/selector.py::select_candidate_strategies). Una
-        cuenta que falle no tumba las demás; sin cuentas legibles, {} (mismo resultado que
-        MockBrokerClient, Covered Call/Collar simplemente no se ofrecen esa corrida)."""
+    def _iter_raw_positions(self):
+        """Generador de (número de cuenta, posición cruda) a través de todas las cuentas
+        vinculadas — compartido por get_all_share_positions y get_all_positions para no
+        duplicar el fetch de cuentas. Una cuenta que falle no tumba las demás; sin cuentas
+        legibles, no yieldea nada (mismo resultado que MockBrokerClient: sin datos reales)."""
         headers = {"Authorization": f"Bearer {self.auth.get_valid_access_token()}"}
-        positions: dict[str, int] = {}
         try:
             response = self._trader_client.get("/accounts/accountNumbers", headers=headers)
             response.raise_for_status()
             accounts = response.json()
         except Exception:
             logger.exception("Fallo al listar cuentas de Schwab; sin posiciones reales esta corrida")
-            return positions
+            return
 
         for account in accounts:
             try:
@@ -193,13 +191,45 @@ class SchwabBrokerClient(BrokerClient):
                 )
                 response.raise_for_status()
                 for position in response.json().get("securitiesAccount", {}).get("positions", []):
-                    instrument = position.get("instrument", {})
-                    if instrument.get("assetType") != "EQUITY":
-                        continue
-                    symbol = instrument.get("symbol")
-                    qty = int(position.get("longQuantity", 0))
-                    positions[symbol] = positions.get(symbol, 0) + qty
+                    yield account["accountNumber"], position
             except Exception:
                 logger.exception("Fallo al leer posiciones de la cuenta %s; se continúa con el resto", account.get("accountNumber"))
 
+    def get_all_share_positions(self) -> dict[str, int]:
+        """Suma `longQuantity` de todas las posiciones EQUITY, a través de todas las cuentas
+        vinculadas — habilita Covered Call/Collar con la tenencia REAL en vez de una tabla
+        interna de seguimiento (ver strategy/selector.py::select_candidate_strategies)."""
+        positions: dict[str, int] = {}
+        for _account_number, position in self._iter_raw_positions():
+            instrument = position.get("instrument", {})
+            if instrument.get("assetType") != "EQUITY":
+                continue
+            symbol = instrument.get("symbol")
+            qty = int(position.get("longQuantity", 0))
+            positions[symbol] = positions.get(symbol, 0) + qty
+        return positions
+
+    def get_all_positions(self) -> list[AccountPosition]:
+        """Todas las posiciones reales (acciones, opciones, ETFs) de todas las cuentas
+        vinculadas — página de portafolio real, Entrega 1 (símbolo/cantidad/precio entrada/
+        valor actual/P&L). `longOpenProfitLoss` es el campo que Schwab usa para el P&L no
+        realizado tanto en posiciones largas como cortas (confirmado con datos reales)."""
+        positions: list[AccountPosition] = []
+        for account_number, position in self._iter_raw_positions():
+            instrument = position.get("instrument", {})
+            long_qty = position.get("longQuantity", 0) or 0
+            short_qty = position.get("shortQuantity", 0) or 0
+            average_price = position.get("averageLongPrice") if long_qty else position.get("averageShortPrice")
+            positions.append(
+                AccountPosition(
+                    account_number=account_number,
+                    symbol=instrument.get("symbol", ""),
+                    asset_type=instrument.get("assetType", ""),
+                    quantity=long_qty - short_qty,
+                    average_price=average_price if average_price is not None else (position.get("averagePrice") or 0.0),
+                    market_value=position.get("marketValue", 0.0) or 0.0,
+                    unrealized_pnl=position.get("longOpenProfitLoss", 0.0) or 0.0,
+                    description=instrument.get("description"),
+                )
+            )
         return positions

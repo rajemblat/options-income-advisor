@@ -10,6 +10,7 @@ from py_vollib.black_scholes_merton import black_scholes_merton
 
 from options_advisor.broker.base import BrokerClient
 from options_advisor.broker.models import (
+    AccountPosition,
     Greeks,
     OptionChain,
     OptionContract,
@@ -54,6 +55,9 @@ class MockBrokerClient(BrokerClient):
 
     def get_all_share_positions(self) -> dict[str, int]:
         return {}  # sin cuentas reales en modo mock — Covered Call/Collar nunca se habilitan acá
+
+    def get_all_positions(self) -> list[AccountPosition]:
+        return []  # sin cuentas reales en modo mock
 
     # -- carga de fixtures -------------------------------------------------
 

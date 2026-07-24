@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import date
 
-from options_advisor.broker.models import OptionChain, PriceBar, Quote
+from options_advisor.broker.models import AccountPosition, OptionChain, PriceBar, Quote
 
 
 class BrokerClient(ABC):
@@ -37,4 +37,11 @@ class BrokerClient(ABC):
         cuentas si el broker tiene noción de cuenta real. Usado para habilitar Covered Call/
         Collar (requieren 100+ acciones ya en cartera) con la posición REAL, no una tabla
         interna de seguimiento. {} si el broker no tiene cuentas reales (MockBrokerClient)."""
+        ...
+
+    @abstractmethod
+    def get_all_positions(self) -> list[AccountPosition]:
+        """Todas las posiciones reales (acciones, opciones, ETFs) de todas las cuentas
+        vinculadas — página de portafolio real, Entrega 1. [] si el broker no tiene cuentas
+        reales (MockBrokerClient)."""
         ...

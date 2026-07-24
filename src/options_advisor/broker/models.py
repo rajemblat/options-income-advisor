@@ -54,6 +54,21 @@ class OptionContract(BaseModel):
         return round((self.bid + self.ask) / 2, 4)
 
 
+class AccountPosition(BaseModel):
+    """Una posición real de cuenta (Entrega 1 de la página de portafolio real) — deliberadamente
+    simple por ahora: símbolo, cantidad, precio de entrada, valor actual, P&L. Griegos/DTE/
+    caveats de earnings-FOMC para posiciones de opciones quedan para la Entrega 2 (análisis IA)."""
+
+    account_number: str
+    symbol: str
+    asset_type: str  # "EQUITY" | "OPTION" | "COLLECTIVE_INVESTMENT" | otros de Schwab
+    quantity: float  # positivo = largo, negativo = corto
+    average_price: float
+    market_value: float
+    unrealized_pnl: float
+    description: str | None = None
+
+
 class OptionChain(BaseModel):
     symbol: str
     as_of: date

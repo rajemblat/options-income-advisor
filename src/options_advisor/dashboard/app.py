@@ -67,5 +67,6 @@ st.markdown(
     - **Configuración**: perfil de inversor y umbrales de convicción.
     - **Noticias**: últimas noticias por símbolo (Finnhub).
     - **Eventos de riesgo**: calendario de volatilidad esperada (FOMC, CPI, empleo, earnings).
+    - **Portafolio**: posiciones reales de tus cuentas Schwab (símbolo, cantidad, P&L).
     """
 )
