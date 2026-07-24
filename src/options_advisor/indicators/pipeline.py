@@ -82,6 +82,7 @@ def analyze_symbol(
         next_earnings_date=next_earnings_date,
         price_std_20=technical.compute_stddev(price_history, 20),
         net_gex=gex.compute_net_gex(chain),
+        next_ex_dividend_date=quote.next_ex_dividend_date,
     )
     repo.insert_indicator_snapshot(conn, snapshot)
 

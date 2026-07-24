@@ -32,6 +32,7 @@ class IndicatorSnapshot(BaseModel):
     next_earnings_date: date | None = None
     price_std_20: float | None = None
     net_gex: float | None = None
+    next_ex_dividend_date: date | None = None
 
 
 class CandidateContract(BaseModel):

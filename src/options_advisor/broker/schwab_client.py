@@ -25,6 +25,31 @@ DEFAULT_RISK_FREE_RATE = 0.045
 _OCC_OPTION_SYMBOL_RE = re.compile(r"^(?P<root>.{6})(?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})(?P<cp>[CP])(?P<strike>\d{8})$")
 
 
+def _parse_schwab_date(raw: str | None) -> date | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+
+
+def _parse_next_ex_dividend_date(fundamental: dict) -> date | None:
+    """`divExDate` de Schwab NO es siempre la fecha futura — probado en vivo con dos símbolos
+    reales el mismo día (2026-07-24): JNJ tenía `divExDate=2026-08-25` (futura) y
+    `nextDivExDate=2026-11-25` (del ciclo siguiente); QQQ tenía `divExDate=2026-06-22` (YA
+    PASADA) y `nextDivExDate=2026-09-22` (la próxima real). Parece depender de si ya se pagó el
+    dividendo del ciclo actual o no en el momento de la consulta, no de un orden fijo. Por eso
+    se toma la fecha MÁS PRÓXIMA que sea hoy o futura entre los dos campos, no un campo fijo.
+    None para símbolos sin dividendo (ETFs apalancados, la mayoría de las acciones de
+    crecimiento, índices) o si ninguno de los dos campos da una fecha futura."""
+    today = date.today()
+    candidates = [
+        d for d in (_parse_schwab_date(fundamental.get("divExDate")), _parse_schwab_date(fundamental.get("nextDivExDate"))) if d and d >= today
+    ]
+    return min(candidates) if candidates else None
+
+
 def _parse_occ_option_symbol(symbol: str) -> tuple[str, date, str, float] | None:
     """(underlying, expiration, option_type, strike) a partir del símbolo OCC, o None si no
     matchea el formato (posición no es una opción estándar)."""
@@ -90,6 +115,7 @@ class SchwabBrokerClient(BrokerClient):
             # vez de fallar (no hay spread real que reportar para un índice).
             bid=quote.get("bidPrice", last_price),
             ask=quote.get("askPrice", last_price),
+            next_ex_dividend_date=_parse_next_ex_dividend_date(data[symbol].get("fundamental") or {}),
         )
 
     def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
@@ -115,6 +141,7 @@ class SchwabBrokerClient(BrokerClient):
                 last_price=last_price,
                 bid=quote.get("bidPrice", last_price),  # índices sin bid/ask, ver get_quote()
                 ask=quote.get("askPrice", last_price),
+                next_ex_dividend_date=_parse_next_ex_dividend_date(entry.get("fundamental") or {}),
             )
         return quotes
 

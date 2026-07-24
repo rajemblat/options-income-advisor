@@ -25,6 +25,7 @@ _NEW_COLUMNS_BY_TABLE = {
         "next_earnings_date": "TEXT",
         "price_std_20": "REAL",
         "net_gex": "REAL",
+        "next_ex_dividend_date": "TEXT",
     },
 }
 

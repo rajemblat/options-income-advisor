@@ -15,6 +15,11 @@ class Quote(BaseModel):
     last_price: float
     bid: float
     ask: float
+    # Próxima fecha ex-dividendo conocida — None en modo mock (sin datos de dividendos en las
+    # fixtures) o si el broker no la expone para este símbolo (ETFs/índices sin dividendo
+    # calendarizado). Usado para advertir sobre riesgo de asignación anticipada en calls
+    # vendidas (Covered Call/Collar/Iron Condor) que vencen después del ex-date.
+    next_ex_dividend_date: date | None = None
 
 
 class PriceBar(BaseModel):

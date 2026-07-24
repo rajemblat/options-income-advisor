@@ -157,6 +157,7 @@ def process_symbol_alerts(
             payoff_is_estimate=payoff.is_estimate,
             next_earnings_date=snap.next_earnings_date,
             recent_news=recent_news,
+            next_ex_dividend_date=analysis.quote.next_ex_dividend_date,
         )
         narrative_text, narrative_source = narrator.narrate_alert(context, settings.llm, anthropic_api_key)
 

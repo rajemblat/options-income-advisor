@@ -68,4 +68,11 @@ else:
     for alert, candidate in rows:
         snapshot = repo.get_indicator_snapshot(conn, alert["symbol"], date.fromisoformat(alert["alert_date"]))
         next_earnings_date = snapshot["next_earnings_date"] if snapshot else None
-        render_alert_card(alert, candidate, next_earnings_date=next_earnings_date, fed_meeting_date=fed_meeting_date)
+        next_ex_dividend_date = snapshot["next_ex_dividend_date"] if snapshot else None
+        render_alert_card(
+            alert,
+            candidate,
+            next_earnings_date=next_earnings_date,
+            fed_meeting_date=fed_meeting_date,
+            next_ex_dividend_date=next_ex_dividend_date,
+        )

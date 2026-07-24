@@ -106,6 +106,7 @@ def build_narration_context(
     payoff_is_estimate: bool = False,
     next_earnings_date: date | None = None,
     recent_news: list[dict] | None = None,
+    next_ex_dividend_date: date | None = None,
 ) -> dict:
     return {
         "symbol": symbol,
@@ -125,6 +126,7 @@ def build_narration_context(
         "max_profit": max_profit,
         "max_loss": max_loss,
         "next_earnings_date": next_earnings_date.isoformat() if next_earnings_date else None,
+        "next_ex_dividend_date": next_ex_dividend_date.isoformat() if next_ex_dividend_date else None,
         "recent_news": recent_news or [],
         "breakevens": breakevens or [],
         "probability_of_profit": probability_of_profit,

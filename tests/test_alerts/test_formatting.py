@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
-from options_advisor.alerts.formatting import assess_liquidity, compute_coverage, format_alert_message
+from options_advisor.alerts.formatting import assess_dividend_risk, assess_liquidity, compute_coverage, format_alert_message
 
 _BASE_CONTEXT = {
     "symbol": "AAPL",
@@ -141,3 +143,46 @@ def test_format_alert_message_includes_liquidity_warning():
     text = format_alert_message(context, "comentario")
     assert "⚠ Spread ancho en Put $170.00" in text
     assert "bid $1.00 / ask $1.40" in text
+
+
+def test_assess_dividend_risk_flags_sold_call_expiring_after_ex_date():
+    legs = [{"side": "sell", "option_type": "call", "strike": 285.0, "expiration": "2026-08-21"}]
+    warnings = assess_dividend_risk(legs, date(2026, 8, 15))
+    assert warnings == [{"strike": 285.0, "ex_dividend_date": "2026-08-15"}]
+
+
+def test_assess_dividend_risk_ignores_call_expiring_before_ex_date():
+    legs = [{"side": "sell", "option_type": "call", "strike": 285.0, "expiration": "2026-08-10"}]
+    assert assess_dividend_risk(legs, date(2026, 8, 15)) == []
+
+
+def test_assess_dividend_risk_ignores_sold_puts_and_bought_calls():
+    legs = [
+        {"side": "sell", "option_type": "put", "strike": 250.0, "expiration": "2026-08-21"},
+        {"side": "buy", "option_type": "call", "strike": 290.0, "expiration": "2026-08-21"},
+    ]
+    assert assess_dividend_risk(legs, date(2026, 8, 15)) == []
+
+
+def test_assess_dividend_risk_none_without_ex_dividend_date():
+    legs = [{"side": "sell", "option_type": "call", "strike": 285.0, "expiration": "2026-08-21"}]
+    assert assess_dividend_risk(legs, None) == []
+
+
+def test_assess_dividend_risk_accepts_iso_string_date():
+    legs = [{"side": "sell", "option_type": "call", "strike": 285.0, "expiration": "2026-08-21"}]
+    assert assess_dividend_risk(legs, "2026-08-15") == [{"strike": 285.0, "ex_dividend_date": "2026-08-15"}]
+
+
+def test_format_alert_message_includes_dividend_warning():
+    context = {
+        **_BASE_CONTEXT,
+        "next_earnings_date": None,
+        "next_ex_dividend_date": "2026-08-15",
+        "legs": [
+            {"side": "sell", "option_type": "call", "strike": 285.0, "quantity": 1, "expiration": "2026-08-21", "premium": 1.06}
+        ],
+    }
+    text = format_alert_message(context, "comentario")
+    assert "⚠ Ex-dividendo el 2026-08-15" in text
+    assert "Call $285.00 vendida" in text

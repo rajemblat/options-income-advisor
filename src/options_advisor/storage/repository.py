@@ -22,8 +22,8 @@ def insert_indicator_snapshot(conn: sqlite3.Connection, snap: IndicatorSnapshot)
             (symbol, snapshot_date, snapshot_ts, price, iv_atm, iv_rank, iv_rank_source,
              hv_20d, atr_14, rsi_14, sma_8, sma_20, sma_50, sma_200, ma_cross_signal,
              support_levels, resistance_levels, raw_indicators_json, next_earnings_date,
-             price_std_20, net_gex)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             price_std_20, net_gex, next_ex_dividend_date)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(symbol, snapshot_date) DO UPDATE SET
             snapshot_ts=excluded.snapshot_ts, price=excluded.price, iv_atm=excluded.iv_atm,
             iv_rank=excluded.iv_rank, iv_rank_source=excluded.iv_rank_source, hv_20d=excluded.hv_20d,
@@ -31,7 +31,8 @@ def insert_indicator_snapshot(conn: sqlite3.Connection, snap: IndicatorSnapshot)
             sma_50=excluded.sma_50, sma_200=excluded.sma_200, ma_cross_signal=excluded.ma_cross_signal,
             support_levels=excluded.support_levels, resistance_levels=excluded.resistance_levels,
             raw_indicators_json=excluded.raw_indicators_json, next_earnings_date=excluded.next_earnings_date,
-            price_std_20=excluded.price_std_20, net_gex=excluded.net_gex
+            price_std_20=excluded.price_std_20, net_gex=excluded.net_gex,
+            next_ex_dividend_date=excluded.next_ex_dividend_date
         """,
         (
             snap.symbol,
@@ -55,6 +56,7 @@ def insert_indicator_snapshot(conn: sqlite3.Connection, snap: IndicatorSnapshot)
             snap.next_earnings_date.isoformat() if snap.next_earnings_date else None,
             snap.price_std_20,
             snap.net_gex,
+            snap.next_ex_dividend_date.isoformat() if snap.next_ex_dividend_date else None,
         ),
     )
     conn.commit()

@@ -9,7 +9,7 @@ from datetime import datetime
 import streamlit as st
 from dotenv import load_dotenv
 
-from options_advisor.alerts.formatting import assess_liquidity, compute_coverage, strategy_label
+from options_advisor.alerts.formatting import assess_dividend_risk, assess_liquidity, compute_coverage, strategy_label
 from options_advisor.broker import get_broker_client
 from options_advisor.broker.base import BrokerClient
 from options_advisor.config import PROJECT_ROOT, Settings, load_settings, load_symbols
@@ -348,11 +348,24 @@ def _liquidity_caveat_html(warnings: list[dict]) -> str:
     )
 
 
+def _dividend_caveat_html(warnings: list[dict]) -> str:
+    if not warnings:
+        return ""
+    strikes = ", ".join(f"${w['strike']:.2f}" for w in warnings)
+    ex_date = warnings[0]["ex_dividend_date"]
+    return (
+        f"<div class='oia-caveat' style='color:{WARNING};'>{icon('alert-triangle', size=15, color=WARNING)} "
+        f"Ex-dividendo el {ex_date} — antes del vencimiento de la Call {strikes} vendida, riesgo de asignación "
+        "anticipada (perder las acciones y el dividendo antes de lo planeado).</div>"
+    )
+
+
 def render_alert_card(
     alert: sqlite3.Row,
     candidate: sqlite3.Row | None,
     next_earnings_date: str | None = None,
     fed_meeting_date: str | None = None,
+    next_ex_dividend_date: str | None = None,
 ) -> None:
     """Tarjeta premium de una alerta: patas, prima, beneficio/pérdida máxima, breakevens,
     probabilidad de beneficio y el comentario del narrador — mismos datos que el bloque de
@@ -407,6 +420,9 @@ def render_alert_card(
     liquidity_caveat = _liquidity_caveat_html(assess_liquidity(legs))
     if liquidity_caveat:
         html.append(liquidity_caveat)
+    dividend_caveat = _dividend_caveat_html(assess_dividend_risk(legs, next_ex_dividend_date))
+    if dividend_caveat:
+        html.append(dividend_caveat)
 
     if legs:
         html.append("<div style='margin-top:0.8rem;'>")

@@ -126,6 +126,35 @@ def assess_liquidity(legs: list[dict], threshold_pct: float = LIQUIDITY_SPREAD_W
     return warnings
 
 
+def assess_dividend_risk(legs: list[dict], next_ex_dividend_date: date | str | None) -> list[dict]:
+    """Riesgo de asignación anticipada: una call VENDIDA que sigue viva en o después de la
+    próxima fecha ex-dividendo corre riesgo real de que el comprador la ejercite antes para
+    capturar el dividendo (si está ITM o cerca) — el vendedor pierde las acciones (y el
+    dividendo) antes de lo planeado. Aplica a cualquier estrategia con una call vendida
+    (Covered Call, Collar, Iron Condor), no solo Covered Call. `next_ex_dividend_date` viene de
+    `broker.get_quote()` (Schwab `fundamental.divExDate`) — None si el símbolo no paga
+    dividendo o el broker no lo expone (siempre el caso en modo mock)."""
+    if not next_ex_dividend_date:
+        return []
+    ex_date = next_ex_dividend_date if isinstance(next_ex_dividend_date, date) else date.fromisoformat(next_ex_dividend_date)
+    warnings = []
+    for leg in legs:
+        if leg.get("side") != "sell" or leg.get("option_type") != "call":
+            continue
+        expiration = date.fromisoformat(leg["expiration"])
+        if expiration >= ex_date:
+            warnings.append({"strike": leg["strike"], "ex_dividend_date": ex_date.isoformat()})
+    return warnings
+
+
+def _dividend_lines(warnings: list[dict]) -> list[str]:
+    return [
+        f"⚠ Ex-dividendo el {w['ex_dividend_date']} — antes del vencimiento de la Call ${w['strike']:.2f} vendida, "
+        "riesgo de asignación anticipada (perder las acciones y el dividendo antes de lo planeado)."
+        for w in warnings
+    ]
+
+
 def _liquidity_lines(warnings: list[dict]) -> list[str]:
     return [
         f"⚠ Spread ancho en {'Put' if w['option_type'] == 'put' else 'Call'} ${w['strike']:.2f}: "
@@ -156,6 +185,7 @@ def format_alert_message(context: dict, comment: str) -> str:
         lines.append(f"• Precio actual del subyacente: ${context['underlying_price']:,.2f}")
 
     legs = context.get("legs") or []
+    lines.extend(_dividend_lines(assess_dividend_risk(legs, context.get("next_ex_dividend_date"))))
     lines.extend(_liquidity_lines(assess_liquidity(legs)))
 
     lines.append(SEPARATOR)

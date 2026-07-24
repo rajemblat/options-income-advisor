@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import httpx
 import pytest
@@ -55,6 +55,64 @@ def test_get_quote_parses_real_fields(client, monkeypatch):
     assert quote.last_price == 321.1
     assert quote.bid == 321.1
     assert quote.ask == 321.48
+
+
+def test_get_quote_parses_next_ex_dividend_date_when_div_ex_date_is_future(client, monkeypatch):
+    future = (TODAY + timedelta(days=30)).isoformat()
+    further = (TODAY + timedelta(days=120)).isoformat()
+    payload = {
+        "JNJ": {
+            "quote": {"lastPrice": 263.25, "bidPrice": 263.0, "askPrice": 263.34},
+            "fundamental": {"divExDate": f"{future}T00:00:00Z", "nextDivExDate": f"{further}T00:00:00Z"},
+        }
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quote = client.get_quote("JNJ")
+    assert quote.next_ex_dividend_date == TODAY + timedelta(days=30)
+
+
+def test_get_quote_falls_back_to_next_div_ex_date_when_div_ex_date_is_past(client, monkeypatch):
+    """Encontrado con datos reales: QQQ tenía `divExDate` en el pasado (ciclo ya pagado) y
+    `nextDivExDate` con la fecha realmente próxima — `divExDate` no es siempre la futura."""
+    past = (TODAY - timedelta(days=30)).isoformat()
+    future = (TODAY + timedelta(days=60)).isoformat()
+    payload = {
+        "QQQ": {
+            "quote": {"lastPrice": 684.63, "bidPrice": 684.5, "askPrice": 684.8},
+            "fundamental": {"divExDate": f"{past}T00:00:00Z", "nextDivExDate": f"{future}T00:00:00Z"},
+        }
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quote = client.get_quote("QQQ")
+    assert quote.next_ex_dividend_date == TODAY + timedelta(days=60)
+
+
+def test_get_quote_none_when_both_dividend_dates_are_past(client, monkeypatch):
+    past1 = (TODAY - timedelta(days=90)).isoformat()
+    past2 = (TODAY - timedelta(days=30)).isoformat()
+    payload = {
+        "OLD": {
+            "quote": {"lastPrice": 10.0, "bidPrice": 9.9, "askPrice": 10.1},
+            "fundamental": {"divExDate": f"{past1}T00:00:00Z", "nextDivExDate": f"{past2}T00:00:00Z"},
+        }
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quote = client.get_quote("OLD")
+    assert quote.next_ex_dividend_date is None
+
+
+def test_get_quote_no_dividend_data_returns_none(client, monkeypatch):
+    payload = {"NVDA": {"quote": {"lastPrice": 180.0, "bidPrice": 179.9, "askPrice": 180.1}, "fundamental": {}}}
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quote = client.get_quote("NVDA")
+    assert quote.next_ex_dividend_date is None
+
+
+def test_get_quote_missing_fundamental_section_returns_none(client, monkeypatch):
+    payload = {"$SPX": {"quote": {"lastPrice": 7449.47}}}
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quote = client.get_quote("$SPX")
+    assert quote.next_ex_dividend_date is None
 
 
 def test_get_quote_index_without_bid_ask_falls_back_to_last_price(client, monkeypatch):
@@ -283,6 +341,21 @@ def test_get_quotes_batch_returns_all_symbols(client, monkeypatch):
     quotes = client.get_quotes(["AAPL", "NVDA"])
     assert set(quotes.keys()) == {"AAPL", "NVDA"}
     assert quotes["AAPL"].last_price == 321.1
+
+
+def test_get_quotes_batch_parses_next_ex_dividend_date(client, monkeypatch):
+    future = (TODAY + timedelta(days=30)).isoformat()
+    payload = {
+        "JNJ": {
+            "quote": {"lastPrice": 263.25, "bidPrice": 263.0, "askPrice": 263.34},
+            "fundamental": {"divExDate": f"{future}T00:00:00Z"},
+        },
+        "NVDA": {"quote": {"lastPrice": 180.5, "bidPrice": 180.4, "askPrice": 180.6}},
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quotes = client.get_quotes(["JNJ", "NVDA"])
+    assert quotes["JNJ"].next_ex_dividend_date == TODAY + timedelta(days=30)
+    assert quotes["NVDA"].next_ex_dividend_date is None
 
 
 def test_get_quotes_empty_list_returns_empty_dict_without_calling_api(client, monkeypatch):
