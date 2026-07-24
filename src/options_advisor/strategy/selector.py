@@ -27,6 +27,7 @@ def select_candidate_strategies(
     ma_cross_signal: str | None = None,
     rsi: float | None = None,
     has_open_assigned_position: bool = False,
+    enabled_strategies: frozenset[str] | None = None,
 ) -> list[str]:
     """Matriz de selección de estrategia para el escenario Ingreso a Largo Plazo, filtrada por
     lo que el perfil de riesgo tiene habilitado.
@@ -39,6 +40,10 @@ def select_candidate_strategies(
 
     Devuelve una lista de candidatos a evaluar — no una única estrategia — porque el
     puntaje de convicción (Sección 6.1) es quien decide después cuál, si alguna, alertar.
+
+    `enabled_strategies` (settings.strategy.enabled): filtro adicional para el MVP enfocado en
+    4 categorías (2026-07-24) — None = sin restricción extra (todo lo que ya habilita el perfil
+    de riesgo), igual que antes de que existiera este parámetro.
     """
     if iv_rank is None:
         return []  # sin IV Rank calculable todavía, no hay base para decidir (Sección 4, gap conocido)
@@ -64,4 +69,7 @@ def select_candidate_strategies(
     if has_open_assigned_position:
         candidates += [c.COVERED_CALL, c.COLLAR]
 
-    return [s for s in candidates if s in allowed]
+    candidates = [s for s in candidates if s in allowed]
+    if enabled_strategies is not None:
+        candidates = [s for s in candidates if s in enabled_strategies]
+    return candidates

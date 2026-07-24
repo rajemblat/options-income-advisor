@@ -15,24 +15,20 @@ from options_advisor.indicators.greeks import calculate_greeks
 logger = logging.getLogger(__name__)
 
 MARKET_DATA_BASE_URL = "https://api.schwabapi.com/marketdata/v1"
+TRADER_API_BASE_URL = "https://api.schwabapi.com/trader/v1"
 DEFAULT_RISK_FREE_RATE = 0.045
 
 
 class SchwabBrokerClient(BrokerClient):
-    """Implementación real de BrokerClient contra la Schwab Trader API.
-
-    IMPORTANTE: no verificada todavía contra la API en vivo — el acceso está pendiente de
-    aprobación (ver Sección 7.2 y "Riesgos" del plan de Fase 1). El mapeo de campos de la
-    cadena de opciones (nombres exactos que devuelve /marketdata/v1/chains) está hecho de
-    buena fe según la documentación pública de Schwab; hay que correr
-    scripts/verify_schwab_client.py apenas lleguen las credenciales y ajustar lo que no
-    coincida antes de confiar en esto para alertas reales.
-    """
+    """Implementación real de BrokerClient contra la Schwab Trader API — verificada en vivo
+    (autenticación, quotes, historial de precios, cadena de opciones con griegos/IV/OI/volumen
+    reales, y lectura de posiciones de cuenta real) el 2026-07-23/24."""
 
     def __init__(self, auth: SchwabAuth, risk_free_rate: float = DEFAULT_RISK_FREE_RATE):
         self.auth = auth
         self.risk_free_rate = risk_free_rate
         self._client = httpx.Client(base_url=MARKET_DATA_BASE_URL, timeout=15.0)
+        self._trader_client = httpx.Client(base_url=TRADER_API_BASE_URL, timeout=15.0)
 
     @classmethod
     def from_env(cls) -> SchwabBrokerClient:
@@ -173,3 +169,37 @@ class SchwabBrokerClient(BrokerClient):
             volume=raw.get("totalVolume", 0),
             greeks=greeks,
         )
+
+    def get_all_share_positions(self) -> dict[str, int]:
+        """Suma `longQuantity` de todas las posiciones EQUITY, a través de todas las cuentas
+        vinculadas — habilita Covered Call/Collar con la tenencia REAL en vez de una tabla
+        interna de seguimiento (ver strategy/selector.py::select_candidate_strategies). Una
+        cuenta que falle no tumba las demás; sin cuentas legibles, {} (mismo resultado que
+        MockBrokerClient, Covered Call/Collar simplemente no se ofrecen esa corrida)."""
+        headers = {"Authorization": f"Bearer {self.auth.get_valid_access_token()}"}
+        positions: dict[str, int] = {}
+        try:
+            response = self._trader_client.get("/accounts/accountNumbers", headers=headers)
+            response.raise_for_status()
+            accounts = response.json()
+        except Exception:
+            logger.exception("Fallo al listar cuentas de Schwab; sin posiciones reales esta corrida")
+            return positions
+
+        for account in accounts:
+            try:
+                response = self._trader_client.get(
+                    f"/accounts/{account['hashValue']}", params={"fields": "positions"}, headers=headers
+                )
+                response.raise_for_status()
+                for position in response.json().get("securitiesAccount", {}).get("positions", []):
+                    instrument = position.get("instrument", {})
+                    if instrument.get("assetType") != "EQUITY":
+                        continue
+                    symbol = instrument.get("symbol")
+                    qty = int(position.get("longQuantity", 0))
+                    positions[symbol] = positions.get(symbol, 0) + qty
+            except Exception:
+                logger.exception("Fallo al leer posiciones de la cuenta %s; se continúa con el resto", account.get("accountNumber"))
+
+        return positions

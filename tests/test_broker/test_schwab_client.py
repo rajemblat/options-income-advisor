@@ -119,3 +119,55 @@ def test_option_chain_falls_back_to_configured_rate_when_schwab_rate_missing(cli
         monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
         chain = client.get_option_chain("AAPL")
         assert chain.contracts[0].greeks.source == "calculated"  # no lanza pese a faltar interestRate/dividendYield
+
+
+def _position(symbol: str, asset_type: str, long_qty: float) -> dict:
+    return {"instrument": {"assetType": asset_type, "symbol": symbol}, "longQuantity": long_qty}
+
+
+def _mock_trader_get(accounts: list[dict], positions_by_hash: dict[str, list[dict]]):
+    def _get(self, path, params=None, headers=None):
+        request = httpx.Request("GET", f"https://api.schwabapi.com/trader/v1{path}")
+        if path == "/accounts/accountNumbers":
+            return httpx.Response(200, json=accounts, request=request)
+        account_hash = path.removeprefix("/accounts/")
+        payload = {"securitiesAccount": {"positions": positions_by_hash.get(account_hash, [])}}
+        return httpx.Response(200, json=payload, request=request)
+
+    return _get
+
+
+def test_get_all_share_positions_sums_equity_across_accounts(client, monkeypatch):
+    accounts = [{"accountNumber": "111", "hashValue": "HASH1"}, {"accountNumber": "222", "hashValue": "HASH2"}]
+    positions_by_hash = {
+        "HASH1": [_position("NVDA", "EQUITY", 300), _position("AAPL", "OPTION", 1)],
+        "HASH2": [_position("NVDA", "EQUITY", 50), _position("SOFI", "EQUITY", 1000)],
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_trader_get(accounts, positions_by_hash))
+
+    positions = client.get_all_share_positions()
+
+    assert positions == {"NVDA": 350, "SOFI": 1000}  # suma entre las 2 cuentas, opciones excluidas
+
+
+def test_get_all_share_positions_empty_when_accounts_call_fails(client, monkeypatch):
+    def _boom(self, path, params=None, headers=None):
+        raise httpx.ConnectError("no network", request=httpx.Request("GET", "https://api.schwabapi.com/trader/v1/x"))
+
+    monkeypatch.setattr(httpx.Client, "get", _boom)
+    assert client.get_all_share_positions() == {}
+
+
+def test_get_all_share_positions_one_account_failing_does_not_block_others(client, monkeypatch):
+    accounts = [{"accountNumber": "111", "hashValue": "HASH1"}, {"accountNumber": "222", "hashValue": "HASH2"}]
+
+    def _get(self, path, params=None, headers=None):
+        request = httpx.Request("GET", f"https://api.schwabapi.com/trader/v1{path}")
+        if path == "/accounts/accountNumbers":
+            return httpx.Response(200, json=accounts, request=request)
+        if path == "/accounts/HASH1":
+            raise httpx.ConnectError("no network", request=request)
+        return httpx.Response(200, json={"securitiesAccount": {"positions": [_position("NVDA", "EQUITY", 300)]}}, request=request)
+
+    monkeypatch.setattr(httpx.Client, "get", _get)
+    assert client.get_all_share_positions() == {"NVDA": 300}

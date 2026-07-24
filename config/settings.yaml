@@ -44,3 +44,14 @@ iv_rank:
   min_sessions_for_real_iv: 20
   full_window_sessions: 252
   hv_window_days: 20
+
+# MVP enfocado en 4 categorías (Sección "perfeccionar" — 2026-07-24): Naked Put (cash_secured_put +
+# short_put_naked), Covered Call, Collar, Iron Condor. Las otras 15 siguen en el código sin
+# borrar, solo pausadas — para reactivar alguna alcanza con agregarla acá.
+strategy:
+  enabled:
+    - cash_secured_put
+    - short_put_naked
+    - covered_call
+    - collar
+    - iron_condor

@@ -17,6 +17,8 @@ from options_advisor.storage.models import MacroSnapshot, NewsItem, Notification
 
 logger = logging.getLogger(__name__)
 
+MIN_SHARES_FOR_COVERED_STRATEGIES = 100  # 1 contrato de opción cubre 100 acciones
+
 
 def _refresh_macro_snapshot(conn: sqlite3.Connection, today: date, finnhub_api_key: str | None, fred_api_key: str | None) -> None:
     """Contexto macro: una consulta por job run (no por símbolo, es el mismo dato para todos
@@ -88,17 +90,24 @@ def _run_full_analysis(
     generadas en esta corrida (lista vacía si no hubo ninguna)."""
     _refresh_macro_snapshot(conn, today, finnhub_api_key, fred_api_key)
 
+    # Una sola consulta de posiciones reales por corrida (no por símbolo) — habilita Covered
+    # Call/Collar con la tenencia REAL de la cuenta Schwab en vez de la tabla interna
+    # `assigned_positions` (pensada para trackear asignación de CSP propia, hoy sin UI que la
+    # llene). {} en modo mock o si falla la consulta (ver broker/base.py::get_all_share_positions).
+    share_positions = broker.get_all_share_positions()
+
     new_alerts: list[dict] = []
     for symbol in symbols:
         try:
             open_positions = repo.get_open_assigned_positions(conn, symbol)
+            has_shares = share_positions.get(symbol, 0) >= MIN_SHARES_FOR_COVERED_STRATEGIES
             analysis = analyze_symbol(broker, conn, symbol, settings, finnhub_api_key=finnhub_api_key)
             _refresh_news_for_symbol(conn, symbol, today, finnhub_api_key)
             alerts = process_symbol_alerts(
                 conn,
                 analysis,
                 settings,
-                has_open_assigned_position=len(open_positions) > 0,
+                has_open_assigned_position=len(open_positions) > 0 or has_shares,
                 anthropic_api_key=anthropic_api_key,
                 finnhub_api_key=finnhub_api_key,
             )

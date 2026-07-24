@@ -85,3 +85,24 @@ def test_ratio_spreads_only_for_agresivo():
     assert c.PUT_RATIO_SPREAD not in moderado
     assert c.CALL_RATIO_SPREAD in agresivo
     assert c.PUT_RATIO_SPREAD in agresivo
+
+
+def test_enabled_strategies_none_means_no_extra_restriction():
+    without_filter = select_candidate_strategies(iv_rank=70, risk_level="agresivo")
+    with_none_filter = select_candidate_strategies(iv_rank=70, risk_level="agresivo", enabled_strategies=None)
+    assert without_filter == with_none_filter
+
+
+def test_enabled_strategies_restricts_to_mvp_scope():
+    mvp_scope = frozenset({c.CASH_SECURED_PUT, c.SHORT_PUT_NAKED, c.COVERED_CALL, c.COLLAR, c.IRON_CONDOR})
+    candidates = select_candidate_strategies(
+        iv_rank=70, risk_level="agresivo", has_open_assigned_position=True, enabled_strategies=mvp_scope
+    )
+    assert set(candidates) <= mvp_scope
+    assert c.SHORT_CALL_NAKED not in candidates  # habilitado por perfil, pero fuera del scope MVP
+    assert c.BULL_PUT_SPREAD not in candidates
+
+
+def test_enabled_strategies_can_exclude_everything():
+    candidates = select_candidate_strategies(iv_rank=70, risk_level="agresivo", enabled_strategies=frozenset())
+    assert candidates == []

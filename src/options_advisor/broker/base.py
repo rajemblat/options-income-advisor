@@ -30,3 +30,11 @@ class BrokerClient(ABC):
     @abstractmethod
     def is_authenticated(self) -> bool:
         ...
+
+    @abstractmethod
+    def get_all_share_positions(self) -> dict[str, int]:
+        """Símbolo -> cantidad de acciones actualmente en cartera, sumado a través de todas las
+        cuentas si el broker tiene noción de cuenta real. Usado para habilitar Covered Call/
+        Collar (requieren 100+ acciones ya en cartera) con la posición REAL, no una tabla
+        interna de seguimiento. {} si el broker no tiene cuentas reales (MockBrokerClient)."""
+        ...

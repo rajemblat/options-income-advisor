@@ -90,3 +90,43 @@ def test_job_premarket_digest_skips_on_non_market_day(conn, monkeypatch):
     jobs.job_premarket_digest(broker=None, conn=conn, symbols=["AAPL"], settings=load_settings(), anthropic_api_key=None)
     assert called == []
     assert repo.get_unread_notification_count(conn) == 0
+
+
+class _FakeBroker:
+    """Duck-type mínimo de BrokerClient: solo lo que _run_full_analysis necesita para esta
+    prueba de wiring (analyze_symbol/process_symbol_alerts están mockeados, no se llaman de
+    verdad)."""
+
+    def __init__(self, share_positions: dict[str, int]):
+        self._share_positions = share_positions
+
+    def get_all_share_positions(self) -> dict[str, int]:
+        return self._share_positions
+
+
+class _FakeAnalysis:
+    def __init__(self, symbol: str):
+        self.symbol = symbol
+        self.snapshot = type("S", (), {"iv_rank": 50, "symbol": symbol})()
+
+
+def test_run_full_analysis_passes_real_share_position_as_has_open_assigned_position(conn, monkeypatch):
+    captured: list[tuple[str, bool]] = []
+
+    monkeypatch.setattr(jobs, "analyze_symbol", lambda broker, conn, symbol, settings, **k: _FakeAnalysis(symbol))
+    monkeypatch.setattr(jobs, "_refresh_news_for_symbol", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "_refresh_macro_snapshot", lambda *a, **k: None)
+
+    def _fake_process_symbol_alerts(conn, analysis, settings, has_open_assigned_position, **k):
+        captured.append((analysis.symbol, has_open_assigned_position))
+        return []
+
+    monkeypatch.setattr(jobs, "process_symbol_alerts", _fake_process_symbol_alerts)
+
+    # NVDA: 300 acciones reales (>= 100, habilita Covered Call/Collar). AAPL: sin acciones.
+    broker = _FakeBroker(share_positions={"NVDA": 300})
+    settings = load_settings()
+
+    jobs._run_full_analysis(broker, conn, ["NVDA", "AAPL"], settings, TODAY, None, None, None)
+
+    assert captured == [("NVDA", True), ("AAPL", False)]

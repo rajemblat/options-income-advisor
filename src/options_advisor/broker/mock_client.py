@@ -52,6 +52,9 @@ class MockBrokerClient(BrokerClient):
     def is_authenticated(self) -> bool:
         return True
 
+    def get_all_share_positions(self) -> dict[str, int]:
+        return {}  # sin cuentas reales en modo mock — Covered Call/Collar nunca se habilitan acá
+
     # -- carga de fixtures -------------------------------------------------
 
     def _load_price_history(self, symbol: str) -> list[PriceBar]:

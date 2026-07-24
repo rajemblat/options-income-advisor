@@ -7,6 +7,7 @@ from options_advisor.broker.mock_client import MockBrokerClient
 from options_advisor.config import load_settings
 from options_advisor.indicators.pipeline import analyze_symbol
 from options_advisor.storage import db
+from options_advisor.strategy.constants import ALL_INCOME_STRATEGIES
 
 
 def test_full_pipeline_iv_rank_bootstrap_and_alert_dedup(mock_fixtures_dir):
@@ -14,6 +15,10 @@ def test_full_pipeline_iv_rank_bootstrap_and_alert_dedup(mock_fixtures_dir):
     alertas → persistencia en SQLite, simulando múltiples días para validar tanto la
     transición del bootstrap de IV Rank (Sección 4) como el dedup de alertas (Sección 6)."""
     settings = load_settings()
+    # Este test valida el motor de selección/dedup en general, no el scope acotado de
+    # producción (settings.strategy.enabled, MVP de 4 categorías) — se prueba con las 19
+    # estrategias habilitadas para no acoplar esta regresión a qué esté "en producción" hoy.
+    settings.strategy.enabled = list(ALL_INCOME_STRATEGIES)
     client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
     conn = db.connect(":memory:")
 

@@ -49,7 +49,12 @@ def process_symbol_alerts(
         return []
 
     strategy_types = select_candidate_strategies(
-        snap.iv_rank, risk_level, ma_cross_signal=snap.ma_cross_signal, rsi=snap.rsi_14, has_open_assigned_position=has_open_assigned_position
+        snap.iv_rank,
+        risk_level,
+        ma_cross_signal=snap.ma_cross_signal,
+        rsi=snap.rsi_14,
+        has_open_assigned_position=has_open_assigned_position,
+        enabled_strategies=frozenset(settings.strategy.enabled),
     )
     generated: list[dict] = []
     recent_news = finnhub_client.get_recent_news(snap.symbol, snap.snapshot_date, finnhub_api_key) if strategy_types else []

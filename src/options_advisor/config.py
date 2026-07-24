@@ -72,6 +72,13 @@ class IvRankSettings(BaseModel):
     hv_window_days: int
 
 
+class StrategySettings(BaseModel):
+    # MVP: enfocado en 4 categorías (cash_secured_put/short_put_naked cuentan como una sola
+    # categoría "Naked Put"). Las otras 15 estrategias quedan en el código sin borrar, solo
+    # pausadas acá — para reactivarlas alcanza con sumarlas a esta lista en settings.yaml.
+    enabled: list[str]
+
+
 class Settings(BaseModel):
     broker: BrokerSettings
     database: DatabaseSettings
@@ -81,6 +88,7 @@ class Settings(BaseModel):
     investor_profile: InvestorProfileSettings
     conviction_thresholds: ConvictionThresholds
     iv_rank: IvRankSettings
+    strategy: StrategySettings
 
 
 class SymbolsConfig(BaseModel):
