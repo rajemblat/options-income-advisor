@@ -6,6 +6,8 @@ import pytest
 
 from options_advisor.broker.models import AccountPosition, Greeks, OptionChain, OptionContract
 from options_advisor.dashboard.portfolio_analysis import (
+    compute_concentration,
+    compute_earnings_clusters,
     effective_projected_pnl_at_date,
     effective_projected_pnl_at_own_expiration,
     find_matching_contract_iv,
@@ -182,3 +184,38 @@ def test_effective_projected_pnl_at_own_expiration_delegates_for_options():
 def test_effective_projected_pnl_at_date_passes_through_equity_pnl():
     position = _equity_position(unrealized_pnl=-453.49)
     assert effective_projected_pnl_at_date(position, 200.0, date(2026, 12, 1), iv=None, risk_free_rate=RISK_FREE_RATE) == -453.49
+
+
+def test_compute_concentration_sums_by_symbol_and_sorts_desc():
+    rows = compute_concentration([("NVDA", 62370.0), ("NVDA", -1500.0), ("SLV", 6300.0)])
+    assert rows[0]["symbol"] == "NVDA"
+    assert rows[0]["value"] == pytest.approx(63870.0)  # abs(62370) + abs(-1500), no se cancelan
+    assert rows[1]["symbol"] == "SLV"
+    assert rows[0]["pct"] + rows[1]["pct"] == pytest.approx(100.0)
+
+
+def test_compute_concentration_empty_when_total_value_zero():
+    assert compute_concentration([]) == []
+    assert compute_concentration([("NVDA", 0.0)]) == []
+
+
+def test_compute_earnings_clusters_groups_within_window():
+    earnings = {
+        "AAPL": date(2026, 7, 28),
+        "MSFT": date(2026, 7, 30),
+        "NVDA": date(2026, 8, 25),
+    }
+    clusters = compute_earnings_clusters(earnings, window_days=10)
+    assert len(clusters) == 1
+    assert set(clusters[0]["symbols"]) == {"AAPL", "MSFT"}
+    assert clusters[0]["earliest_date"] == "2026-07-28"
+
+
+def test_compute_earnings_clusters_ignores_symbols_without_earnings_date():
+    earnings = {"AAPL": date(2026, 7, 28), "MSFT": None}
+    assert compute_earnings_clusters(earnings) == []
+
+
+def test_compute_earnings_clusters_no_cluster_when_all_far_apart():
+    earnings = {"AAPL": date(2026, 7, 28), "MSFT": date(2026, 9, 15)}
+    assert compute_earnings_clusters(earnings, window_days=10) == []

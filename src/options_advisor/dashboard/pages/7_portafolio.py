@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import date, timedelta
 
 import pandas as pd
@@ -7,11 +8,15 @@ import streamlit as st
 
 from options_advisor.dashboard.components import ACCENT, get_broker, get_connection, get_settings, icon, inject_theme, render_header, render_notification_bell
 from options_advisor.dashboard.portfolio_analysis import (
+    compute_concentration,
+    compute_earnings_clusters,
     effective_projected_pnl_at_date,
     effective_projected_pnl_at_own_expiration,
     find_matching_contract_iv,
     position_pct_return,
 )
+from options_advisor.dashboard.portfolio_narration import narrate_portfolio
+from options_advisor.market_context import finnhub_client
 
 st.set_page_config(page_title="Portafolio real", page_icon="💼", layout="wide")
 inject_theme()
@@ -171,7 +176,52 @@ else:
                 },
             )
 
+        st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
+        st.subheader("Análisis de exposición (IA)")
         st.caption(
-            "Entrega 2 (sin IA todavía): % de retorno, proyección a vencimiento propio y a fecha elegida. "
-            "El análisis narrado por IA sobre la exposición total del portafolio queda para la Entrega 3."
+            "Concentración por subyacente y riesgo de earnings simultáneo — ambos calculados con reglas fijas "
+            "(portfolio_analysis.py); la IA solo redacta en lenguaje simple sobre esos números, nunca los inventa "
+            "ni decide qué es \"riesgoso\"."
         )
+
+        if st.button("Analizar exposición", type="primary"):
+            underlying_values = [(_underlying_of(p), p.market_value) for p in filtered]
+            concentration = compute_concentration(underlying_values)
+
+            unique_underlyings = sorted({_underlying_of(p) for p in filtered})
+            finnhub_api_key = os.environ.get("FINNHUB_API_KEY")
+            with st.spinner(f"Buscando fechas de earnings para {len(unique_underlyings)} símbolo(s)..."):
+                earnings_by_symbol = {u: finnhub_client.get_next_earnings_date(u, date.today(), finnhub_api_key) for u in unique_underlyings}
+            clusters = compute_earnings_clusters(earnings_by_symbol)
+
+            context = {
+                "total_value": total_value,
+                "total_pnl": total_pnl,
+                "concentration": concentration,
+                "earnings_clusters": clusters,
+            }
+            summary, source = narrate_portfolio(context, settings.llm, os.environ.get("ANTHROPIC_API_KEY"))
+
+            st.markdown(f"**Resumen:** {summary}")
+            st.caption(f"fuente: {source}")
+
+            st.markdown("**Concentración por subyacente**")
+            conc_df = pd.DataFrame(concentration).rename(columns={"symbol": "Símbolo", "value": "Valor", "pct": "% del portafolio"})
+            st.dataframe(
+                conc_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Valor": st.column_config.NumberColumn(format="$%.2f"),
+                    "% del portafolio": st.column_config.NumberColumn(format="%.1f%%"),
+                },
+            )
+
+            st.markdown("**Clusters de earnings (riesgo simultáneo)**")
+            if clusters:
+                for cl in clusters:
+                    st.write(f"- {', '.join(cl['symbols'])} — desde {cl['earliest_date']}")
+            else:
+                st.caption("Sin clusters detectados (ventana de 10 días entre fechas de earnings).")
+
+        st.caption("Entrega 2 (sin IA): % de retorno, proyección a vencimiento propio y a fecha elegida. Entrega 3 (con IA): exposición y earnings, arriba.")

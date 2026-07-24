@@ -113,6 +113,51 @@ def effective_projected_pnl_at_date(
     return projected_pnl_at_date(position, underlying_price, target_date, iv, risk_free_rate)
 
 
+def compute_concentration(underlying_values: list[tuple[str, float]]) -> list[dict]:
+    """% del valor total del portafolio (valor absoluto de mercado, para que cortos y largos
+    sumen exposición en vez de cancelarse) por símbolo subyacente — Entrega 3 (análisis de
+    exposición). `underlying_values` = [(símbolo_subyacente, market_value), ...], una entrada
+    por posición — el caller decide qué símbolo corresponde a cada una (una opción usa el
+    subyacente, no su propio símbolo OCC). Devuelve ordenado de mayor a menor concentración;
+    lista vacía si el portafolio no tiene valor (todo en $0)."""
+    totals: dict[str, float] = {}
+    for symbol, market_value in underlying_values:
+        totals[symbol] = totals.get(symbol, 0.0) + abs(market_value)
+
+    grand_total = sum(totals.values())
+    if grand_total == 0:
+        return []
+
+    rows = [{"symbol": symbol, "value": value, "pct": value / grand_total * 100} for symbol, value in totals.items()]
+    return sorted(rows, key=lambda r: r["pct"], reverse=True)
+
+
+def compute_earnings_clusters(earnings_by_symbol: dict[str, date | None], window_days: int = 10) -> list[dict]:
+    """Agrupa símbolos del portafolio cuyas próximas fechas de earnings caen dentro de
+    `window_days` entre sí — riesgo de gap simultáneo en varias posiciones a la vez, no
+    diversificado en el tiempo (Entrega 3). Cada símbolo aparece en como máximo un cluster (el
+    primero, por orden de fecha) — un cluster de 1 solo símbolo no cuenta como riesgo
+    concentrado y se omite. Devuelve ordenado por fecha más próxima primero."""
+    dated = sorted(((symbol, d) for symbol, d in earnings_by_symbol.items() if d is not None), key=lambda x: x[1])
+
+    clusters: list[dict] = []
+    used: set[str] = set()
+    for i, (symbol, earnings_date) in enumerate(dated):
+        if symbol in used:
+            continue
+        group = [symbol]
+        for other_symbol, other_date in dated[i + 1 :]:
+            if other_symbol in used:
+                continue
+            if (other_date - earnings_date).days <= window_days:
+                group.append(other_symbol)
+        if len(group) > 1:
+            used.update(group)
+            clusters.append({"symbols": group, "earliest_date": earnings_date.isoformat()})
+
+    return clusters
+
+
 def find_matching_contract_iv(chain: OptionChain, position: AccountPosition) -> float | None:
     """IV actual del contrato exacto de `position` dentro de una cadena recién pedida al
     broker — necesaria para proyectar a una fecha ANTES del vencimiento (ver
