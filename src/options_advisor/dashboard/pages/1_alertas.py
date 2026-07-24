@@ -4,7 +4,14 @@ from datetime import date
 
 import streamlit as st
 
-from options_advisor.dashboard.components import get_connection, get_symbols, inject_theme, render_alert_card, render_header
+from options_advisor.dashboard.components import (
+    get_connection,
+    get_symbols,
+    inject_theme,
+    render_alert_card,
+    render_header,
+    render_notification_bell,
+)
 from options_advisor.storage import repository as repo
 
 st.set_page_config(page_title="Alertas", page_icon="🔔", layout="wide")
@@ -12,6 +19,7 @@ inject_theme()
 render_header("🔔", "Alertas — Ingreso a Largo Plazo")
 
 conn = get_connection()
+render_notification_bell(conn)
 symbols = ["Todos"] + get_symbols()
 selected = st.selectbox("Símbolo", symbols)
 

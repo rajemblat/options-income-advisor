@@ -437,3 +437,29 @@ def render_portfolio_summary_panel(conn: sqlite3.Connection, alert_date) -> None
 
     html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)
+
+
+def render_notification_bell(conn: sqlite3.Connection) -> None:
+    """Campanita de notificaciones en el sidebar — llamar al inicio de cada página, mismo
+    patrón que inject_theme(). Hoy la única fuente es el digest pre-apertura
+    (scheduler/jobs.py::job_premarket_digest), pensada genérica para sumar otros `kind` después
+    sin tocar esto. Reemplaza el plan original de notificar por Telegram."""
+    unread_count = repo.get_unread_notification_count(conn)
+    label = f"🔔 {unread_count}" if unread_count > 0 else "🔔"
+
+    with st.sidebar:
+        with st.popover(label, use_container_width=True):
+            notifications = repo.get_recent_notifications(conn, limit=20)
+            if not notifications:
+                st.caption("Sin notificaciones todavía.")
+                return
+
+            if unread_count > 0 and st.button("Marcar todas como leídas", key="mark_notifications_read", use_container_width=True):
+                repo.mark_all_notifications_read(conn)
+                st.rerun()
+
+            for notification in notifications:
+                marker = "🔴 " if not notification["is_read"] else ""
+                title = f"{marker}{notification['title']}"
+                with st.expander(title):
+                    st.text(notification["body"])

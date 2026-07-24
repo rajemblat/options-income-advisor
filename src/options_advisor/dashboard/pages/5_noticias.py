@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from options_advisor.dashboard.components import get_connection, get_symbols, inject_theme, render_header, render_news_card
+from options_advisor.dashboard.components import get_connection, get_symbols, inject_theme, render_header, render_news_card, render_notification_bell
 from options_advisor.dashboard.news_relevance import find_cross_symbol_news
 from options_advisor.storage import repository as repo
 
@@ -11,6 +11,7 @@ inject_theme()
 render_header("📰", "Noticias por símbolo", "Últimas noticias vía Finnhub, más recientes primero")
 
 conn = get_connection()
+render_notification_bell(conn)
 symbols_list = get_symbols()
 
 all_recent_news = [dict(r) for r in repo.get_recent_news(conn, limit=200)]

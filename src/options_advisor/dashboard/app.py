@@ -13,6 +13,7 @@ from options_advisor.dashboard.components import (
     inject_theme,
     render_header,
     render_macro_panel,
+    render_notification_bell,
     render_portfolio_summary_panel,
 )
 from options_advisor.scheduler.jobs import job_poll_and_analyze
@@ -25,6 +26,7 @@ render_header("📈", "Options Income Advisor — Fase 1", "Escenario: Ingreso a
 settings = get_settings()
 symbols = get_symbols()
 conn = get_connection()
+render_notification_bell(conn)
 
 col1, col2, col3 = st.columns(3)
 col1.metric("Modo de broker", settings.broker.mode)

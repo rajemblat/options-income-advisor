@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
-from options_advisor.dashboard.components import get_connection, get_symbols, inject_theme, render_header
+from options_advisor.dashboard.components import get_connection, get_symbols, inject_theme, render_header, render_notification_bell
 from options_advisor.storage import repository as repo
 
 WARNING_WINDOW_DAYS = 7  # ventana para marcar earnings/reunión Fed como "próximos" (Sección 4 del pedido)
@@ -15,6 +15,7 @@ inject_theme()
 render_header("👀", "Watchlist", "Último snapshot de indicadores por símbolo")
 
 conn = get_connection()
+render_notification_bell(conn)
 symbols = get_symbols()
 
 macro = repo.get_latest_macro_snapshot(conn)

@@ -4,7 +4,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from options_advisor.dashboard.components import get_connection, get_settings, get_symbols, inject_theme, render_header
+from options_advisor.dashboard.components import get_connection, get_settings, get_symbols, inject_theme, render_header, render_notification_bell
 from options_advisor.storage import repository as repo
 from options_advisor.storage.models import InvestorProfile
 
@@ -13,6 +13,7 @@ inject_theme()
 render_header("⚙️", "Configuración")
 
 conn = get_connection()
+render_notification_bell(conn)
 settings = get_settings()
 
 st.subheader("Perfil de inversor")

@@ -14,6 +14,7 @@ from options_advisor.dashboard.components import (
     get_symbols,
     inject_theme,
     render_header,
+    render_notification_bell,
 )
 
 # Paleta categórica oscura (mismo orden que .streamlit/config.toml chartCategoricalColors),
@@ -28,6 +29,7 @@ inject_theme()
 render_header("📊", "Detalle de indicadores por símbolo")
 
 conn = get_connection()
+render_notification_bell(conn)
 symbol = st.selectbox("Símbolo", get_symbols())
 
 rows = conn.execute(
