@@ -29,7 +29,7 @@ Todo lo de esta sección está commiteado y pusheado a `origin/main` (último co
    FRED `/release/dates`, además de FOMC. Se dejó de filtrar impacto "bajo".
 6. **Página "Eventos de riesgo"**: calendario combinado FOMC/CPI/empleo/earnings + sección
    nueva de calendario de earnings de toda la watchlist, ordenado por fecha próxima.
-7. **Digest pre-apertura** (`job_premarket_digest`, 08:00 ET, configurable en
+7. **Digest pre-apertura** (`job_premarket_digest`, 09:15 ET, configurable en
    `scheduler.premarket_digest_time`): corre el análisis completo y guarda un resumen
    (eventos de riesgo del día + alertas nuevas) en la tabla `notifications` — base para la
    campanita del dashboard (ver pendientes, la UI todavía no existe).
@@ -96,7 +96,7 @@ Todo lo de esta sección está commiteado y pusheado a `origin/main` (último co
 - **Confirmado corriendo ahora** (`launchctl print gui/$(id -u)/com.robertoajemblat.options-income-advisor.scheduler` → `state = running`).
 - **Sobrevive**: cerrar la terminal, cerrar sesión y volver a entrar, que la app del
   dashboard se caiga. `launchd` la reinicia sola (`KeepAlive`, `ThrottleInterval: 60s`).
-- **Con la Mac en sleep (tapa cerrada)**: el proceso se congela — el digest de las 08:00 (u
+- **Con la Mac en sleep (tapa cerrada)**: el proceso se congela — el digest de las 09:15 (u
   otro job programado durante el sleep) **no dispara ni se pone al día solo** al despertar.
   `caffeinate -i` quedó corriendo en background para evitar sleep por inactividad, pero **no
   puede evitar el sleep que fuerza el hardware al cerrar la tapa** en una laptop standalone.

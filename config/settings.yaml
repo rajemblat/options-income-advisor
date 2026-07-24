@@ -23,7 +23,7 @@ scheduler:
   market_close_snapshot_time: "15:55"
   market_hours_start: "09:30"
   market_hours_end: "16:00"
-  premarket_digest_time: "08:00"   # resumen por Telegram antes de la apertura (09:30 ET)
+  premarket_digest_time: "09:15"   # resumen en el dashboard antes de la apertura (09:30 ET)
 
 # Perfil de inversor por defecto (Sección 2 de la hoja de ruta). Se puede sobreescribir vía dashboard.
 investor_profile:
