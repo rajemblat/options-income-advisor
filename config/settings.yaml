@@ -1,7 +1,7 @@
 # Configuración de Fase 1. Editar libremente sin tocar código.
 
 broker:
-  mode: mock            # "mock" | "schwab" — cambiar a "schwab" solo cuando lleguen las credenciales
+  mode: schwab           # "mock" | "schwab" — credenciales reales verificadas, cuenta live
   fixtures_dir: data/fixtures
 
 # Usado solo por el fallback de cálculo de griegos (Black-Scholes-Merton) cuando el broker no los provee.
