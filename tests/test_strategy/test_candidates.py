@@ -8,7 +8,7 @@ from py_vollib.black_scholes_merton import black_scholes_merton
 from options_advisor.broker.models import OptionChain, OptionContract
 from options_advisor.indicators.greeks import calculate_greeks
 from options_advisor.strategy import constants as c
-from options_advisor.strategy.candidates import build_candidate
+from options_advisor.strategy.candidates import _coverage_pct, _has_good_support, build_candidate
 
 AS_OF = date(2026, 1, 1)
 UNDERLYING_PRICE = 100.0
@@ -174,3 +174,100 @@ def test_build_candidate_default_target_short_delta_matches_module_constant(chai
     default_call = build_candidate(c.CASH_SECURED_PUT, chain)
     explicit_call = build_candidate(c.CASH_SECURED_PUT, chain, target_short_delta=TARGET_SHORT_DELTA)
     assert default_call.strikes == explicit_call.strikes
+
+
+# --- Refinamiento de selección por perfil de riesgo (cobertura mínima + soporte técnico,
+# 2026-07-24) --- UNDERLYING_PRICE=100.0, strikes disponibles en `chain`: 80/90/95/97.5/100/
+# 102.5/105/110/120 para cada tipo de opción y vencimiento.
+
+
+def test_coverage_pct_put_and_call():
+    assert _coverage_pct("put", strike=90.0, underlying_price=100.0) == pytest.approx(0.10)
+    assert _coverage_pct("call", strike=110.0, underlying_price=100.0) == pytest.approx(0.10)
+
+
+def test_has_good_support_put_strike_below_sma_and_price_above():
+    assert _has_good_support("put", strike=90.0, underlying_price=100.0, support_sma_values=[95.0]) is True
+
+
+def test_has_good_support_put_strike_above_sma_fails():
+    assert _has_good_support("put", strike=97.5, underlying_price=100.0, support_sma_values=[95.0]) is False
+
+
+def test_has_good_support_call_is_symmetric_with_resistance():
+    assert _has_good_support("call", strike=110.0, underlying_price=100.0, support_sma_values=[105.0]) is True
+    assert _has_good_support("call", strike=102.5, underlying_price=100.0, support_sma_values=[105.0]) is False
+
+
+def test_has_good_support_any_sma_in_list_is_enough():
+    # SMA8=97.5 no sirve de piso (muy cerca), pero SMA20=95 sí — alcanza con que UNA confirme.
+    assert _has_good_support("put", strike=90.0, underlying_price=100.0, support_sma_values=[97.5, 95.0]) is True
+
+
+def test_has_good_support_empty_or_none_values_means_not_applicable():
+    assert _has_good_support("put", strike=97.5, underlying_price=100.0, support_sma_values=[]) is True
+    assert _has_good_support("put", strike=97.5, underlying_price=100.0, support_sma_values=[None, None]) is True
+
+
+def test_build_candidate_min_coverage_pushes_strike_further_otm(chain):
+    """Sin restricción, un delta objetivo cercano al dinero (0.40) elegiría un strike cerca de
+    97.5. Con cobertura mínima de 12%, debe saltar a un strike que si cumpla (80, el único a
+    ≥12% de 100) en vez de descartar el candidato — pedido explícito del usuario: buscar el
+    siguiente strike, no descartar."""
+    unconstrained = build_candidate(c.CASH_SECURED_PUT, chain, target_short_delta=0.40)
+    constrained = build_candidate(c.CASH_SECURED_PUT, chain, target_short_delta=0.40, min_coverage_pct=0.12)
+    assert unconstrained is not None and constrained is not None
+    assert unconstrained.strikes["short_strike"] > constrained.strikes["short_strike"]
+    assert _coverage_pct("put", constrained.strikes["short_strike"], UNDERLYING_PRICE) >= 0.12
+
+
+def test_build_candidate_support_requirement_filters_out_strike_above_sma(chain):
+    """SMA de referencia en 95: un delta objetivo que caería en 97.5 debe saltar a 90 (o más
+    OTM) para respetar que el strike quede por debajo de la SMA."""
+    build = build_candidate(c.CASH_SECURED_PUT, chain, target_short_delta=0.40, support_sma_values=[95.0])
+    assert build is not None
+    assert build.strikes["short_strike"] <= 95.0
+
+
+def test_build_candidate_covered_call_support_uses_resistance(chain):
+    build = build_candidate(c.COVERED_CALL, chain, target_short_delta=0.40, support_sma_values=[105.0])
+    assert build is not None
+    assert build.strikes["short_strike"] >= 105.0
+
+
+def test_build_candidate_iron_condor_applies_support_to_both_sold_legs(chain):
+    build = build_candidate(c.IRON_CONDOR, chain, target_short_delta=0.40, support_sma_values=[95.0, 105.0])
+    assert build is not None
+    assert build.strikes["put_short_strike"] <= 95.0
+    assert build.strikes["call_short_strike"] >= 105.0
+
+
+def test_build_candidate_collar_support_applies_only_to_sold_call(chain):
+    """El put comprado (protección) no tiene restricción de soporte — solo la call vendida."""
+    build = build_candidate(c.COLLAR, chain, target_short_delta=0.40, support_sma_values=[105.0])
+    assert build is not None
+    assert build.strikes["call_strike"] >= 105.0
+
+
+def test_build_candidate_returns_none_when_no_strike_satisfies_min_coverage(chain):
+    """Ningún strike de la cadena de prueba llega a 50% de cobertura (el más lejano es 20%)."""
+    assert build_candidate(c.CASH_SECURED_PUT, chain, target_short_delta=0.40, min_coverage_pct=0.50) is None
+
+
+def test_build_candidate_zero_constraints_matches_unconstrained_behavior(chain):
+    """min_coverage_pct=0.0 y support_sma_values=None (los defaults) deben dar exactamente el
+    mismo resultado que no pasar estos parámetros — sin cambio de comportamiento para las
+    estrategias que no threadean el refinamiento (Bull Put Spread, etc., y como red de
+    seguridad para las que sí)."""
+    plain = build_candidate(c.CASH_SECURED_PUT, chain, target_short_delta=0.25)
+    explicit_defaults = build_candidate(c.CASH_SECURED_PUT, chain, target_short_delta=0.25, min_coverage_pct=0.0, support_sma_values=None)
+    assert plain.strikes == explicit_defaults.strikes
+
+
+def test_build_candidate_non_mvp_strategy_ignores_new_params(chain):
+    """Bull Put Spread no threadea min_coverage_pct/support_sma_values — build_candidate no le
+    pasa estos parámetros aunque se le den a la función top-level (quedan sin usar para esa
+    estrategia), mismo comportamiento que antes del refinamiento."""
+    without = build_candidate(c.BULL_PUT_SPREAD, chain, target_short_delta=0.25)
+    with_constraints = build_candidate(c.BULL_PUT_SPREAD, chain, target_short_delta=0.25, min_coverage_pct=0.30, support_sma_values=[999.0])
+    assert without.strikes == with_constraints.strikes

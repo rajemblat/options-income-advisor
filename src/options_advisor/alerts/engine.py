@@ -17,6 +17,16 @@ from options_advisor.strategy.selector import select_candidate_strategies
 
 logger = logging.getLogger(__name__)
 
+_SMA_FIELD_BY_PERIOD = {8: "sma_8", 20: "sma_20", 50: "sma_50", 200: "sma_200"}
+
+
+def _resolve_support_sma_values(snap, periods: list[int]) -> list[float | None]:
+    """Traduce los períodos configurados por perfil (settings.strategy.support_sma_periods,
+    ej. [8, 20]) a los valores concretos ya calculados en el snapshot del símbolo — None si
+    ese período no está entre los que el motor calcula (Sección 'perfil de riesgo' refinado,
+    2026-07-24)."""
+    return [getattr(snap, _SMA_FIELD_BY_PERIOD[p], None) for p in periods if p in _SMA_FIELD_BY_PERIOD]
+
 
 def _resolve_risk_profile(conn: sqlite3.Connection, settings: Settings) -> tuple[str, int]:
     """El perfil guardado en la DB (editable desde el dashboard) tiene prioridad sobre el
@@ -65,6 +75,8 @@ def process_symbol_alerts(
 
     target_short_delta = settings.strategy.target_short_delta.for_risk_level(risk_level)
     iv_rank_high_threshold = settings.strategy.iv_rank_high_threshold.for_risk_level(risk_level)
+    min_coverage_pct = settings.strategy.min_coverage_pct.for_risk_level(risk_level)
+    support_sma_values = _resolve_support_sma_values(snap, settings.strategy.support_sma_periods.for_risk_level(risk_level))
 
     strategy_types = select_candidate_strategies(
         snap.iv_rank,
@@ -80,7 +92,9 @@ def process_symbol_alerts(
         recent_news = finnhub_client.get_recent_news(snap.symbol, snap.snapshot_date, finnhub_api_key) if strategy_types else []
 
     for strategy_type in strategy_types:
-        build = candidate_builder.build_candidate(strategy_type, analysis.chain, target_short_delta)
+        build = candidate_builder.build_candidate(
+            strategy_type, analysis.chain, target_short_delta, min_coverage_pct=min_coverage_pct, support_sma_values=support_sma_values
+        )
         if build is None:
             continue
 

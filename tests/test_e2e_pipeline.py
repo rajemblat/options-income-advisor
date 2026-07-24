@@ -19,6 +19,12 @@ def test_full_pipeline_iv_rank_bootstrap_and_alert_dedup(mock_fixtures_dir):
     # producción (settings.strategy.enabled, MVP de 4 categorías) — se prueba con las 19
     # estrategias habilitadas para no acoplar esta regresión a qué esté "en producción" hoy.
     settings.strategy.enabled = list(ALL_INCOME_STRATEGIES)
+    # Tampoco es sobre el refinamiento de cobertura mínima/soporte técnico por perfil (tiene
+    # sus propios tests en test_candidates.py) — se desactiva acá para no acoplar esta
+    # regresión genérica a si la fixture TST cumple o no esos requisitos más estrictos.
+    for level in ("conservador", "moderado", "agresivo"):
+        setattr(settings.strategy.min_coverage_pct, level, 0.0)
+        setattr(settings.strategy.support_sma_periods, level, [])
     client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
     conn = db.connect(":memory:")
 

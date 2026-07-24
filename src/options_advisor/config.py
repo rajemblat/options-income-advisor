@@ -85,6 +85,19 @@ class IvRankSettings(BaseModel):
     hv_window_days: int
 
 
+class RiskLevelSupportSmaParams(BaseModel):
+    """Qué SMA(s) aceptar como "buen soporte/resistencia" por perfil de riesgo (Sección
+    'perfil de riesgo' refinado, 2026-07-24) — conservador solo SMA8 (más estricto), normal y
+    agresivo aceptan SMA8 O SMA20 (cualquiera de las dos alcanza, más permisivo)."""
+
+    conservador: list[int]
+    moderado: list[int]
+    agresivo: list[int]
+
+    def for_risk_level(self, risk_level: RiskLevel) -> list[int]:
+        return getattr(self, risk_level)
+
+
 class StrategySettings(BaseModel):
     # MVP: enfocado en 4 categorías (cash_secured_put/short_put_naked cuentan como una sola
     # categoría "Naked Put"). Las otras 15 estrategias quedan en el código sin borrar, solo
@@ -95,6 +108,11 @@ class StrategySettings(BaseModel):
     # filtro visual, cambia qué candidatos arma strategy/candidates.py.
     target_short_delta: RiskLevelFloatParams
     iv_rank_high_threshold: RiskLevelFloatParams
+    # Refinamiento 2026-07-24 (pedido explícito del usuario, 3 preguntas de diseño confirmadas
+    # — ver NOTES.md): cobertura mínima (% que el subyacente debe poder moverse antes de llegar
+    # al strike vendido) y qué SMA(s) debe respetar el strike como soporte/resistencia técnico.
+    min_coverage_pct: RiskLevelFloatParams
+    support_sma_periods: RiskLevelSupportSmaParams
 
 
 class Settings(BaseModel):

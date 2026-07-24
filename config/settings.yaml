@@ -57,9 +57,10 @@ strategy:
     - iron_condor
   # Delta objetivo de la pata corta: más bajo = strike más OTM = más colchón de precio, menos
   # prima. Agresivo se acerca más al dinero (más prima, menos margen antes de perder).
+  # moderado bajó de 0.25 a 0.20 el 2026-07-24 (pedido explícito del usuario, confirmado).
   target_short_delta:
     conservador: 0.15
-    moderado: 0.25
+    moderado: 0.20
     agresivo: 0.35
   # IV Rank mínimo para considerar vender prima. Conservador solo vende cuando la prima está
   # realmente cara (más colchón de valor); agresivo acepta oportunidades con menos IV Rank.
@@ -67,3 +68,16 @@ strategy:
     conservador: 60
     moderado: 50
     agresivo: 40
+  # Refinamiento 2026-07-24: cobertura mínima (% que el subyacente debe poder moverse antes de
+  # llegar al strike vendido) — conservador sin mínimo fijo (el delta bajo + buen soporte ya
+  # da cobertura amplia de forma natural, pedido explícito del usuario).
+  min_coverage_pct:
+    conservador: 0.0
+    moderado: 0.12
+    agresivo: 0.08
+  # Qué SMA(s) debe respetar el strike vendido como soporte (puts) o resistencia (calls)
+  # técnico — conservador más estricto (solo SMA8), normal/agresivo aceptan SMA8 o SMA20.
+  support_sma_periods:
+    conservador: [8]
+    moderado: [8, 20]
+    agresivo: [8, 20]

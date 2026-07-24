@@ -45,6 +45,81 @@ def _pick_by_target_delta(contracts: list[OptionContract], target_delta: float) 
     return min(contracts, key=lambda ct: abs(abs(ct.greeks.delta) - target_delta))
 
 
+def _coverage_pct(option_type: OptionType, strike: float, underlying_price: float) -> float:
+    """Mismo cálculo que alerts/formatting.py::compute_coverage, duplicado acá a propósito:
+    ahí es un dato informativo post-hoc sobre una alerta ya armada; acá es un FILTRO que decide
+    qué strikes son elegibles antes de armar el candidato — importar entre módulos de capas
+    distintas (alertas → estrategia) invertiría la dependencia."""
+    if option_type == "put":
+        return (underlying_price - strike) / underlying_price
+    return (strike - underlying_price) / underlying_price
+
+
+def _has_good_support(option_type: OptionType, strike: float, underlying_price: float, support_sma_values: list[float | None]) -> bool:
+    """"Buen soporte" (Sección 'perfil de riesgo' refinado, 2026-07-24): al menos UNA de las
+    SMA de referencia del perfil debe actuar de piso real para un put vendido — el precio
+    sigue por ENCIMA de la media (todavía no se rompió) y el strike vendido queda POR DEBAJO o
+    igual a esa media (la media queda entre precio y strike, colchón técnico adicional al del
+    delta). Para una call vendida es el espejo: la media actúa de techo (precio por debajo,
+    strike por encima). `support_sma_values` ya viene resuelto por el caller (ver
+    alerts/engine.py) a los valores concretos de las SMA que el perfil acepta — conservador
+    solo SMA8, normal/agresivo SMA8 o SMA20 (cualquiera de las dos alcanza).
+
+    Lista vacía o todo None = no hay ninguna SMA para evaluar (caller no pasó requisito de
+    soporte — estrategias fuera del MVP —, o hay muy poco historial de precio todavía para
+    calcular ninguna SMA) → el chequeo se considera "no aplicable" y pasa, no se descarta el
+    candidato por falta de dato (mismo criterio que el resto del motor: dato faltante relaja
+    el filtro, no lo hace fallar)."""
+    values = [sma for sma in support_sma_values if sma is not None]
+    if not values:
+        return True
+    for sma in values:
+        if option_type == "put":
+            if underlying_price > sma and strike <= sma:
+                return True
+        else:
+            if underlying_price < sma and strike >= sma:
+                return True
+    return False
+
+
+def _pick_short_leg(
+    contracts: list[OptionContract],
+    target_delta: float,
+    option_type: OptionType,
+    underlying_price: float | None,
+    min_coverage_pct: float,
+    support_sma_values: list[float | None],
+) -> OptionContract | None:
+    """Elige la pata VENDIDA: arranca del mismo criterio de siempre (strike más cercano al
+    delta objetivo) pero restringido a los strikes que cumplen el mínimo de cobertura del
+    perfil Y tienen buen soporte técnico — si el strike del delta objetivo no alcanza ninguno
+    de los dos, se sigue buscando más OTM hasta encontrar uno que sí cumpla ambos (pedido
+    explícito del usuario 2026-07-24: nunca descartar el candidato por esto, ajustar el
+    strike). Sin `underlying_price` (no debería pasar en producción, pero algunos tests viejos
+    arman contratos a mano) cae al criterio de siempre, sin filtro, porque no hay con qué
+    evaluar cobertura/soporte. Sin ninguna restricción real pedida (min_coverage_pct<=0 Y sin
+    ninguna SMA) también cae al criterio de siempre — mantiene el comportamiento exacto de
+    antes de este refinamiento para las estrategias fuera del MVP, que no pasan estos
+    parámetros (Sección 'perfil de riesgo' refinado, 2026-07-24). None si NINGÚN strike de la
+    cadena cumple ambos requisitos cuando sí hay una restricción real pedida."""
+    if not contracts:
+        return None
+    no_real_constraint = min_coverage_pct <= 0.0 and not any(v is not None for v in support_sma_values)
+    if underlying_price is None or no_real_constraint:
+        return _pick_by_target_delta(contracts, target_delta)
+
+    eligible = [
+        ct
+        for ct in contracts
+        if _coverage_pct(option_type, ct.strike, underlying_price) >= min_coverage_pct
+        and _has_good_support(option_type, ct.strike, underlying_price, support_sma_values)
+    ]
+    if not eligible:
+        return None
+    return min(eligible, key=lambda ct: abs(abs(ct.greeks.delta) - target_delta))
+
+
 def _pick_further_otm(contracts: list[OptionContract], reference: OptionContract, option_type: OptionType) -> OptionContract | None:
     """Devuelve el contrato inmediatamente más OTM que `reference` (strike más bajo para puts,
     más alto para calls). Genérico sobre qué pata es la de referencia — sirve tanto para
@@ -86,12 +161,19 @@ def _nearest_expiration_or_none(chain: OptionChain, dte_range: tuple[int, int]) 
         return None
 
 
-def _build_single_short_leg(strategy_type: str, chain: OptionChain, option_type: OptionType, target_short_delta: float) -> CandidateBuild | None:
+def _build_single_short_leg(
+    strategy_type: str,
+    chain: OptionChain,
+    option_type: OptionType,
+    target_short_delta: float,
+    min_coverage_pct: float = 0.0,
+    support_sma_values: list[float | None] | None = None,
+) -> CandidateBuild | None:
     expiration = _nearest_expiration_or_none(chain, SINGLE_LEG_DTE_RANGE)
     if expiration is None:
         return None
     contracts = _contracts_for(chain, option_type, expiration)
-    short = _pick_by_target_delta(contracts, target_short_delta)
+    short = _pick_short_leg(contracts, target_short_delta, option_type, chain.underlying_price, min_coverage_pct, support_sma_values or [])
     if short is None:
         return None
     return CandidateBuild(
@@ -104,14 +186,23 @@ def _build_single_short_leg(strategy_type: str, chain: OptionChain, option_type:
     )
 
 
-def _build_vertical_spread(strategy_type: str, chain: OptionChain, option_type: OptionType, target_short_delta: float = TARGET_SHORT_DELTA) -> CandidateBuild | None:
+def _build_vertical_spread(
+    strategy_type: str,
+    chain: OptionChain,
+    option_type: OptionType,
+    target_short_delta: float = TARGET_SHORT_DELTA,
+    min_coverage_pct: float = 0.0,
+    support_sma_values: list[float | None] | None = None,
+) -> CandidateBuild | None:
     """Credit spread: vende la pata cercana al dinero (target delta), compra la pata más OTM
-    como cobertura. Sirve tanto para Bull Put Spread (puts) como Bear Call Spread (calls)."""
+    como cobertura. Sirve tanto para Bull Put Spread (puts) como Bear Call Spread (calls) —
+    esas dos NO pasan min_coverage_pct/support_sma_values (fuera del MVP, sin cambios de
+    comportamiento); Iron Condor sí, para su pata de puts."""
     expiration = _nearest_expiration_or_none(chain, SINGLE_LEG_DTE_RANGE)
     if expiration is None:
         return None
     contracts = _contracts_for(chain, option_type, expiration)
-    short = _pick_by_target_delta(contracts, target_short_delta)
+    short = _pick_short_leg(contracts, target_short_delta, option_type, chain.underlying_price, min_coverage_pct, support_sma_values or [])
     if short is None:
         return None
     long = _pick_further_otm(contracts, short, option_type)
@@ -150,15 +241,23 @@ def _build_debit_vertical_spread(strategy_type: str, chain: OptionChain, option_
     )
 
 
-def _build_collar(chain: OptionChain, target_short_delta: float = TARGET_SHORT_DELTA) -> CandidateBuild | None:
+def _build_collar(
+    chain: OptionChain,
+    target_short_delta: float = TARGET_SHORT_DELTA,
+    min_coverage_pct: float = 0.0,
+    support_sma_values: list[float | None] | None = None,
+) -> CandidateBuild | None:
     """Vende un call OTM (ingreso) + compra un put OTM (protección) sobre 100 acciones ya en
     cartera, misma expiración. Deltas objetivo simétricas (simplificación documentada — un
     collar real suele ajustar cada pata para calzar costo, acá se prioriza consistencia con
-    el resto del motor)."""
+    el resto del motor). min_coverage_pct/support_sma_values solo restringen la call VENDIDA
+    (resistencia como techo) — el put comprado es protección, no le aplica el filtro."""
     expiration = _nearest_expiration_or_none(chain, SINGLE_LEG_DTE_RANGE)
     if expiration is None:
         return None
-    short_call = _pick_by_target_delta(_contracts_for(chain, "call", expiration), target_short_delta)
+    short_call = _pick_short_leg(
+        _contracts_for(chain, "call", expiration), target_short_delta, "call", chain.underlying_price, min_coverage_pct, support_sma_values or []
+    )
     long_put = _pick_by_target_delta(_contracts_for(chain, "put", expiration), target_short_delta)
     if short_call is None or long_put is None:
         return None
@@ -249,13 +348,21 @@ def _build_short_condor(strategy_type: str, chain: OptionChain, option_type: Opt
     )
 
 
-def _build_iron_condor(chain: OptionChain, target_short_delta: float = TARGET_SHORT_DELTA) -> CandidateBuild | None:
-    put_spread = _build_vertical_spread(c.IRON_CONDOR, chain, "put", target_short_delta)
+def _build_iron_condor(
+    chain: OptionChain,
+    target_short_delta: float = TARGET_SHORT_DELTA,
+    min_coverage_pct: float = 0.0,
+    support_sma_values: list[float | None] | None = None,
+) -> CandidateBuild | None:
+    """Ambas patas vendidas (put y call) pasan por el filtro de cobertura/soporte — Iron Condor
+    tiene cobertura a la baja Y al alza, cada una evaluada independiente contra la SMA de
+    referencia como piso/techo respectivamente."""
+    put_spread = _build_vertical_spread(c.IRON_CONDOR, chain, "put", target_short_delta, min_coverage_pct, support_sma_values)
     expiration = _nearest_expiration_or_none(chain, SINGLE_LEG_DTE_RANGE)
     if put_spread is None or expiration is None:
         return None
     call_contracts = _contracts_for(chain, "call", expiration)
-    short_call = _pick_by_target_delta(call_contracts, target_short_delta)
+    short_call = _pick_short_leg(call_contracts, target_short_delta, "call", chain.underlying_price, min_coverage_pct, support_sma_values or [])
     if short_call is None:
         return None
     long_call = _pick_further_otm(call_contracts, short_call, "call")
@@ -319,18 +426,33 @@ def _build_calendar_or_diagonal(
     )
 
 
-def build_candidate(strategy_type: str, chain: OptionChain, target_short_delta: float = TARGET_SHORT_DELTA) -> CandidateBuild | None:
+def build_candidate(
+    strategy_type: str,
+    chain: OptionChain,
+    target_short_delta: float = TARGET_SHORT_DELTA,
+    min_coverage_pct: float = 0.0,
+    support_sma_values: list[float | None] | None = None,
+) -> CandidateBuild | None:
     """Construye los strikes/vencimiento concretos para una estrategia dada, a partir de la
     cadena de opciones. Devuelve None si no hay contratos suficientes en la cadena para armarla.
 
     `target_short_delta`: delta objetivo de la(s) pata(s) corta(s), ajustado por perfil de
     riesgo (settings.strategy.target_short_delta) — más bajo = más OTM = más colchón, menos
     prima. Solo threadeado en las 4 estrategias del MVP (Sección 'perfil de riesgo'
-    2026-07-24); el resto sigue con el default del módulo, pausadas de todos modos."""
+    2026-07-24); el resto sigue con el default del módulo, pausadas de todos modos.
+
+    `min_coverage_pct`/`support_sma_values` (Sección 'perfil de riesgo' refinado, 2026-07-24):
+    filtran qué strikes son elegibles para la(s) pata(s) VENDIDA(S) antes de elegir por delta —
+    cobertura mínima (settings.strategy.min_coverage_pct) y que el strike se apoye en alguna
+    SMA de referencia del perfil (settings.strategy.support_sma_periods, resuelto a valores
+    concretos por el caller). Si el strike del delta objetivo no cumple, se sigue buscando más
+    OTM hasta encontrar uno que sí — nunca se descarta el candidato por esto solo, salvo que
+    NINGÚN strike de la cadena cumpla. Igual que target_short_delta, solo threadeado en las 4
+    estrategias del MVP; el resto ignora estos parámetros (comportamiento sin cambios)."""
     if strategy_type in (c.CASH_SECURED_PUT, c.SHORT_PUT_NAKED):
-        return _build_single_short_leg(strategy_type, chain, "put", target_short_delta)
+        return _build_single_short_leg(strategy_type, chain, "put", target_short_delta, min_coverage_pct, support_sma_values)
     if strategy_type in (c.COVERED_CALL, c.SHORT_CALL_NAKED):
-        return _build_single_short_leg(strategy_type, chain, "call", target_short_delta)
+        return _build_single_short_leg(strategy_type, chain, "call", target_short_delta, min_coverage_pct, support_sma_values)
     if strategy_type == c.BULL_PUT_SPREAD:
         return _build_vertical_spread(strategy_type, chain, "put", target_short_delta)
     if strategy_type == c.BEAR_CALL_SPREAD:
@@ -340,9 +462,9 @@ def build_candidate(strategy_type: str, chain: OptionChain, target_short_delta: 
     if strategy_type == c.BEAR_PUT_SPREAD:
         return _build_debit_vertical_spread(strategy_type, chain, "put")
     if strategy_type == c.COLLAR:
-        return _build_collar(chain, target_short_delta)
+        return _build_collar(chain, target_short_delta, min_coverage_pct, support_sma_values)
     if strategy_type == c.IRON_CONDOR:
-        return _build_iron_condor(chain, target_short_delta)
+        return _build_iron_condor(chain, target_short_delta, min_coverage_pct, support_sma_values)
     if strategy_type == c.CALENDAR_PUT_SPREAD:
         return _build_calendar_or_diagonal(strategy_type, chain, same_strike=True, option_type="put")
     if strategy_type == c.CALENDAR_CALL_SPREAD:
