@@ -6,7 +6,7 @@ import time
 import streamlit as st
 
 from options_advisor.dashboard.components import ACCENT, get_broker, get_connection, get_settings, icon, inject_theme, render_header, render_notification_bell
-from options_advisor.config import load_symbols, load_universe_symbols
+from options_advisor.config import load_priority_watchlist_symbols, load_symbols, load_universe_symbols
 from options_advisor.scheduler.jobs import job_poll_and_analyze
 
 st.set_page_config(page_title="Escaneo de mercado", page_icon="🔍", layout="wide")
@@ -22,11 +22,14 @@ render_notification_bell(conn)
 settings = get_settings()
 
 watchlist = load_symbols()
+priority_watchlist = load_priority_watchlist_symbols()
 universe = load_universe_symbols()
-combined_universe = sorted(set(watchlist) | set(universe))
+always_included = sorted(set(watchlist) | set(priority_watchlist))
+combined_universe = sorted(set(always_included) | set(universe))
 
 st.markdown(
-    f"**Universo de partida**: {len(watchlist)} símbolos de tu watchlist (siempre incluidos, sin importar el ranking) "
+    f"**Universo de partida**: {len(watchlist)} símbolos de tu watchlist fija + {len(priority_watchlist)} de tu "
+    f"watchlist real de thinkorswim (siempre incluidos, sin importar el ranking) "
     f"+ {len(universe)} large-caps líquidos de referencia = **{len(combined_universe)} símbolos únicos**."
 )
 st.caption(
@@ -54,9 +57,9 @@ else:
         st.success(f"Fase 1 lista en {st.session_state['scan_elapsed']:.1f}s — {len(shortlist)} candidatos rankeados por volatilidad histórica.")
         st.write(", ".join(shortlist))
 
-        final_symbols = sorted(set(shortlist) | set(watchlist))
+        final_symbols = sorted(set(shortlist) | set(always_included))
         st.markdown(f"<hr class='oia-divider'>", unsafe_allow_html=True)
-        st.markdown(f"**Fase 2** correría el análisis completo sobre **{len(final_symbols)} símbolos** (shortlist + tu watchlist).")
+        st.markdown(f"**Fase 2** correría el análisis completo sobre **{len(final_symbols)} símbolos** (shortlist + tu watchlist fija + tu watchlist real de thinkorswim).")
         st.caption(
             "Con Finnhub limitado a 60 llamadas/min y narración por Claude en cada alerta nueva, esto puede tardar "
             "varios minutos — quedate en esta página hasta que termine."

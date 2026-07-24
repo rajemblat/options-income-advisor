@@ -137,6 +137,17 @@ def load_universe_symbols(path: Path | None = None) -> list[str]:
     return SymbolsConfig.model_validate(raw).symbols
 
 
+def load_priority_watchlist_symbols(path: Path | None = None) -> list[str]:
+    """Watchlist real del usuario (thinkorswim, ~95 símbolos) — universo PRIORITARIO para el
+    escaneo, unido en dashboard/pages/8_escaneo.py con load_symbols() (13 fijos) y
+    load_universe_symbols() (large-caps genéricos). Ver config/watchlist_thinkorswim.yaml
+    para la lista de símbolos excluidos y por qué."""
+    path = path or (PROJECT_ROOT / "config" / "watchlist_thinkorswim.yaml")
+    with open(path) as f:
+        raw = yaml.safe_load(f)
+    return SymbolsConfig.model_validate(raw).symbols
+
+
 def configure_logging(path: Path | None = None) -> None:
     path = path or (PROJECT_ROOT / "config" / "logging.yaml")
     with open(path) as f:

@@ -74,21 +74,26 @@ Todo lo de esta sección está commiteado y pusheado a `origin/main` (último co
     carga normal). `AccountPosition` ahora parsea el símbolo OCC de cada opción (formato
     estable, no depende de `description`). Probado en vivo: portafolio pasa de -$23,674 hoy
     a -$17,427 proyectado al 2026-10-22.
-17. **Escaneo de universo amplio** (`dashboard/pages/8_escaneo.py`): universo = watchlist real
-    (13, siempre incluidos) + `config/universe_sp500.yaml` (386 large-caps de referencia,
-    NO es un feed en vivo — Schwab/Finnhub no tienen endpoint de "dame el S&P 500 actual").
-    Fase 1 (`SchwabBrokerClient.screen_universe`, gratis/rápida): 1-2 llamadas batch filtran
-    por optionable/precio/liquidez y rankean por volatilidad histórica (rango 52 semanas ÷
-    precio) — probado en vivo, 385 símbolos → 60 candidatos en 1 segundo. Fase 2 (cara, varios
-    minutos): corre el pipeline existente sobre shortlist + watchlist, gatillada por botón
+17. **Escaneo de universo amplio** (`dashboard/pages/8_escaneo.py`): universo = watchlist fija
+    (13, `config/symbols.yaml`) + watchlist real de thinkorswim (96, `config/watchlist_thinkorswim.yaml`,
+    siempre incluidos sin importar el ranking) + `config/universe_sp500.yaml` (386 large-caps de
+    referencia, NO es un feed en vivo — Schwab/Finnhub no tienen endpoint de "dame el S&P 500
+    actual"). Fase 1 (`SchwabBrokerClient.screen_universe`, gratis/rápida): 1-2 llamadas batch
+    filtran por optionable/precio/liquidez y rankean por volatilidad histórica (rango 52 semanas
+    ÷ precio) — probado en vivo, 385 símbolos → 60 candidatos en 1 segundo. Fase 2 (cara, varios
+    minutos): corre el pipeline existente sobre shortlist + ambas watchlists, gatillada por botón
     explícito, no automática. De paso: `get_quote`/`get_quotes` ahora soportan índices
     (`$SPX`/`$RUT`/`$NDX`/`$VIX`, confirmados en vivo con precios reales — no tienen bid/ask).
+    **Corrección 2026-07-24**: una entrada anterior de esta nota decía que la lista real de
+    thinkorswim ya estaba integrada — no era cierto, solo se había recibido y acordado, nunca
+    escrita a un archivo ni unida en `/escaneo`. Confirmado y corregido en vivo (ver auditoría
+    del usuario más abajo).
 
 ## Watchlist real del usuario (thinkorswim) — ya disponible
 
-Lista completa (~95 símbolos) recibida y usada como prioritaria en el escaneo de universo
-(punto 17 arriba, siempre incluida sin importar el ranking). Aclaraciones pendientes de
-confirmar con el usuario:
+Lista completa (96 símbolos) en `config/watchlist_thinkorswim.yaml`, usada como prioritaria en
+el escaneo de universo (punto 17 arriba, siempre incluida sin importar el ranking). Aclaraciones
+pendientes de confirmar con el usuario:
 - **BTC**: en Schwab resuelve a una ETF apalancada (`assetSubType: ETF`, ~$28-29, rango 52
   semanas $25-56) — **NO es Bitcoin spot**. Si el usuario quiere BTC real, hace falta el
   formato `BINANCE:BTCUSDT` (confirmado funcional en otra prueba de esta sesión), pero la
@@ -129,6 +134,18 @@ confirmar con el usuario:
 
 ## Estado del scheduler — leer antes de dejar la Mac
 
+- **CRÍTICO, causó un bug real el 2026-07-24**: `launchd` mantiene el proceso del scheduler
+  vivo entre commits — no se reinicia solo al cambiar código. Un commit a las 08:46 quedó
+  corriendo con código viejo durante ~4hs y ~10 commits más (fix de emojis, deltas por perfil
+  de riesgo, etc.), generando 234 alertas con la lógica vieja sin que nada lo avisara. Detectado
+  comparando el timestamp de la alerta más reciente contra el emoji/lógica que debía tener según
+  el commit vigente. **Regla en adelante: después de CUALQUIER commit que toque
+  `scheduler/jobs.py` o algo de lo que depende (candidates.py, config.py, selector.py, etc.),
+  correr `launchctl kickstart -k gui/$(id -u)/com.robertoajemblat.options-income-advisor.scheduler`
+  antes de dar el cambio por aplicado.** El dashboard de Streamlit tiene el mismo problema con
+  módulos que no son el archivo de la página actual (ej. `config.py`): el hot-reload de
+  Streamlit no siempre los recarga — si un cambio a un módulo compartido no aparece en el
+  navegador tras refrescar, matar y relanzar el proceso de `streamlit run` resuelve.
 - **Confirmado corriendo ahora** (`launchctl print gui/$(id -u)/com.robertoajemblat.options-income-advisor.scheduler` → `state = running`).
 - **Sobrevive**: cerrar la terminal, cerrar sesión y volver a entrar, que la app del
   dashboard se caiga. `launchd` la reinicia sola (`KeepAlive`, `ThrottleInterval: 60s`).

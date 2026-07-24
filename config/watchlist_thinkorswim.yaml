@@ -1,0 +1,111 @@
+# Watchlist real del usuario, pasada por thinkorswim (2026-07-24) — universo PRIORITARIO para
+# el escaneo de mercado amplio (dashboard/pages/8_escaneo.py), unida ahí con
+# config/symbols.yaml (13, siempre incluidos) y config/universe_sp500.yaml (large-caps
+# genéricos). NO reemplaza config/symbols.yaml — ese sigue siendo el watchlist que analiza el
+# scheduler cada 30 min; agregar acá ~95 símbolos ahí habría multiplicado el tiempo de cada
+# corrida regular (Finnhub 60 req/min es el límite real). Si en algún momento se quiere que
+# ESTA lista sea también el watchlist "de siempre", avisar explícitamente.
+#
+# Excluidos de esta lista, sin resolver todavía (ver NOTES.md):
+#   - SPX, RUT, NDX, VIX: funcionan como quote con prefijo $ ($SPX/$RUT/$NDX/$VIX, confirmado
+#     en vivo), pero no se probó si la cadena de OPCIONES de índices funciona igual que la de
+#     acciones — no sumados hasta confirmar eso.
+#   - BTC: en Schwab resuelve a una ETF apalancada, no Bitcoin real — excluido hasta que el
+#     usuario confirme si quiere ese ETF o Bitcoin spot real (necesita otro formato de símbolo).
+symbols:
+  - AAL
+  - CCL
+  - NCLH
+  - UAL
+  - DAL
+  - T
+  - LUV
+  - GM
+  - FISV
+  - DIS
+  - ABNB
+  - VZ
+  - DLO
+  - AAPL
+  - COTY
+  - NKE
+  - XYZ
+  - F
+  - DKNG
+  - VNQ
+  - CAR
+  - MELI
+  - COF
+  - SLV
+  - TGT
+  - MMM
+  - KSS
+  - NFLX
+  - GDX
+  - SBUX
+  - BAC
+  - TMF
+  - MA
+  - PG
+  - BA
+  - V
+  - BITI
+  - LLY
+  - MSFT
+  - GOOGL
+  - JEPI
+  - CMG
+  - LNC
+  - EWW
+  - XLF
+  - SQQQ
+  - PEP
+  - WFC
+  - LCID
+  - SOFI
+  - C
+  - DIA
+  - JPM
+  - UPS
+  - NU
+  - SPY
+  - WMT
+  - VTI
+  - GLD
+  - IAUM
+  - SPYI
+  - TLT
+  - IWM
+  - META
+  - NVDA
+  - CVX
+  - ARGT
+  - AMZN
+  - EWZ
+  - JEPQ
+  - QQQ
+  - GS
+  - ETHA
+  - AA
+  - UNH
+  - ORCL
+  - OXY
+  - IBIT
+  - MSTR
+  - AMD
+  - YPF
+  - SMH
+  - RIOT
+  - COIN
+  - TXN
+  - TSLA
+  - HUT
+  - RIVN
+  - INTC
+  - USO
+  - EWY
+  - UVXY
+  - SPCX
+  - OKLO
+  - AXP
+  - HOOD
