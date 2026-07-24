@@ -43,13 +43,13 @@ with st.form("investor_profile_form"):
     risk_level_labels = {"conservador": "Conservador", "moderado": "Normal", "agresivo": "Agresivo"}
     risk_level_keys = ["conservador", "moderado", "agresivo"]
     risk_level = st.selectbox(
-        "Perfil de riesgo — ajusta qué tan OTM se eligen los strikes y el IV Rank mínimo para vender prima",
+        "Perfil de riesgo por default (ya NO decide qué alertas se generan, ver nota abajo)",
         risk_level_keys,
         format_func=lambda k: risk_level_labels[k],
         index=risk_level_keys.index(current.risk_level if current else defaults.risk_level),
     )
     threshold_override = st.number_input(
-        "Umbral de convicción manual (vacío = usar el default del perfil)",
+        "Umbral de convicción manual — solo aplica a este perfil por default (vacío = usar el default del perfil)",
         min_value=0,
         max_value=100,
         value=current.conviction_threshold_override if current and current.conviction_threshold_override else 0,
@@ -72,11 +72,24 @@ with st.form("investor_profile_form"):
         st.success("Perfil guardado.")
         st.rerun()
 
+st.info(
+    "Desde el 2026-07-24, cada corrida de análisis (\"Correr análisis ahora\", el scheduler "
+    "automático, y el escaneo) evalúa **los 3 perfiles a la vez** — Conservador/Normal/Agresivo "
+    "ya no compiten por un único \"perfil activo\", los 3 generan sus propias alertas siempre. "
+    "El perfil que elijas acá arriba **no decide qué se genera**; para ver solo las alertas de "
+    "un perfil puntual, usá el filtro de perfil en la página **Alertas** (ahí sí filtra, y se "
+    "puede combinar con el filtro de estrategia). Este selector queda como valor por default "
+    "para el único caso donde todavía importa un perfil único (tests y llamadas directas al "
+    "motor sin especificar perfil, no la operación normal del dashboard).",
+    icon="ℹ️",
+)
+
 st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
 st.subheader("Qué cambia cada perfil (config/settings.yaml)")
 st.caption(
     "No es solo un filtro visual: el delta objetivo y el IV Rank mínimo cambian qué strikes "
-    "elige el motor al armar cada candidato, antes de llegar a puntuarlo."
+    "elige el motor al armar cada candidato, antes de llegar a puntuarlo. Esto aplica a los 3 "
+    "perfiles en cada corrida, no solo al que esté seleccionado arriba."
 )
 st.table(
     {
