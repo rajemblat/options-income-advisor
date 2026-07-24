@@ -7,6 +7,7 @@ from statistics import NormalDist
 
 from py_vollib.black_scholes_merton import black_scholes_merton
 
+from options_advisor.broker.models import OptionContract
 from options_advisor.strategy import constants as c
 from options_advisor.strategy.candidates import CandidateBuild, Leg
 
@@ -35,6 +36,8 @@ class PayoffResult:
     dte: int = 0
     underlying_price: float = 0.0
     is_estimate: bool = False
+    annualized_return_pct: float | None = None
+    early_close_projection: list[dict] = field(default_factory=list)
 
 
 def _leg_dict(leg: Leg) -> dict:
@@ -160,6 +163,73 @@ def _probability_of_profit(
     return max(0.0, min(1.0, round(pop, 4)))
 
 
+def annualized_return_pct(max_profit: float | None, max_loss: float | None, dte: int) -> float | None:
+    """(beneficio_máximo / riesgo_máximo) * (365/DTE) * 100 — pedido explícito del usuario
+    2026-07-24 para comparar eficiencia de capital entre estrategias, no solo el crédito
+    nominal. None si el riesgo no está acotado (max_loss=inf, no hay "capital en riesgo"
+    finito con el que dividir), es 0, o si DTE es 0 (división por cero)."""
+    if max_profit is None or max_loss is None or max_loss in (0, float("inf")) or dte <= 0:
+        return None
+    return round((max_profit / max_loss) * (365 / dte) * 100, 2)
+
+
+_EARLY_CLOSE_TARGETS = (0.30, 0.50, 1.00)
+
+
+def _reprice_leg(contract: OptionContract, years_remaining: float, underlying_price: float, risk_free_rate: float) -> float:
+    if years_remaining <= 0:
+        return _intrinsic(contract.option_type, contract.strike, underlying_price)
+    flag = "c" if contract.option_type == "call" else "p"
+    return black_scholes_merton(flag, underlying_price, contract.strike, years_remaining, risk_free_rate, contract.implied_volatility, 0.0)
+
+
+def _pnl_at_days_elapsed(legs: list[Leg], net_premium: float, underlying_price: float, dte: int, days_elapsed: int, risk_free_rate: float) -> float:
+    """P&L de la posición si pasaron `days_elapsed` días desde hoy, manteniendo precio del
+    subyacente e IV de cada pata constantes ('si nada cambia', mismo criterio que
+    dashboard/portfolio_analysis.py) — repriceando cada pata con Black-Scholes al tiempo
+    restante en vez de usar solo valor intrínseco (que asumiría que ya venció)."""
+    years_remaining = max(dte - days_elapsed, 0) / 365
+    total = net_premium
+    for leg in legs:
+        sign = 1 if leg.side == "buy" else -1
+        value = _reprice_leg(leg.contract, years_remaining, underlying_price, risk_free_rate)
+        total += sign * leg.quantity * _CONTRACT_MULTIPLIER * value
+    return total
+
+
+def early_close_projection(
+    legs: list[Leg], net_premium: float, underlying_price: float, dte: int, risk_free_rate: float, max_profit: float | None
+) -> list[dict]:
+    """Días aproximados para alcanzar 30%/50%/100% del beneficio máximo si se cerrara la
+    posición antes del vencimiento (pedido explícito del usuario 2026-07-24). SIMPLIFICACIÓN
+    real y documentada: asume que el precio del subyacente y la IV de cada pata NO cambian
+    desde hoy — solo modela el decaimiento de tiempo (theta) puro, ignorando movimiento de
+    precio (delta/gamma) y cambios de IV (vega), los dos factores que más mueven el P&L día a
+    día en la práctica. Es un orden de magnitud de cuánto tarda el decaimiento puro en llegar a
+    cada nivel, no una fecha garantizada — mismo espíritu que `payoff_is_estimate` en otras
+    estrategias, pero acá aplica siempre que hay beneficio máximo finito, no solo en
+    calendars/diagonals.
+
+    Un solo escaneo día por día (no búsqueda binaria: el decaimiento no es necesariamente
+    monótono para todas las combinaciones de patas posibles, más seguro no asumirlo) revisando
+    los 3 objetivos a la vez, en vez de un escaneo separado por objetivo. `days` queda en None
+    si ese nivel no se alcanza dentro del DTE bajo este escenario (el precio actual no cae en
+    la zona de beneficio máximo, por ejemplo)."""
+    if max_profit is None or max_profit <= 0 or dte <= 0:
+        return []
+    targets = {pct: max_profit * pct for pct in _EARLY_CLOSE_TARGETS}
+    days_needed: dict[float, int | None] = dict.fromkeys(_EARLY_CLOSE_TARGETS)
+    for day in range(dte + 1):
+        pending = [pct for pct, needed in days_needed.items() if needed is None]
+        if not pending:
+            break
+        pnl = _pnl_at_days_elapsed(legs, net_premium, underlying_price, dte, day, risk_free_rate)
+        for pct in pending:
+            if pnl >= targets[pct]:
+                days_needed[pct] = day
+    return [{"pct": round(pct * 100), "days": days_needed[pct]} for pct in _EARLY_CLOSE_TARGETS]
+
+
 def _generic_multileg_payoff(
     legs: list[Leg], underlying_price: float, dte: int, risk_free_rate: float, include_stock: bool = False
 ) -> PayoffResult:
@@ -198,6 +268,8 @@ def _generic_multileg_payoff(
         probability_of_profit=round(pop, 4),
         dte=dte,
         underlying_price=underlying_price,
+        annualized_return_pct=annualized_return_pct(max_profit, max_loss, dte),
+        early_close_projection=early_close_projection(legs, net_premium, underlying_price, dte, risk_free_rate, max_profit),
     )
 
 

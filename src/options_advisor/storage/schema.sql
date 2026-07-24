@@ -77,7 +77,9 @@ CREATE TABLE IF NOT EXISTS candidate_contracts (
     probability_of_profit REAL,
     dte INTEGER,
     underlying_price REAL,
-    payoff_is_estimate INTEGER
+    payoff_is_estimate INTEGER,
+    annualized_return_pct REAL,
+    early_close_projection_json TEXT
 );
 
 -- Noticias recientes por símbolo (Finnhub /company-news). UNIQUE(symbol, url) para poder

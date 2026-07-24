@@ -58,6 +58,8 @@ class CandidateContract(BaseModel):
     dte: int | None = None
     underlying_price: float | None = None
     payoff_is_estimate: bool = False
+    annualized_return_pct: float | None = None
+    early_close_projection: list[dict] = []
 
 
 class Alert(BaseModel):

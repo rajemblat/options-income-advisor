@@ -52,6 +52,18 @@ def test_cash_secured_put():
     assert 0.0 < result.probability_of_profit < 1.0
     assert result.is_estimate is False
 
+    # Rendimiento anualizado: (200 / 9800) * (365/30) * 100 — pedido 2026-07-24.
+    assert result.annualized_return_pct == pytest.approx((200.0 / 9800.0) * (365 / 30) * 100, abs=0.01)
+
+    # Cierre anticipado (pedido 2026-07-24): con el precio bien por encima del strike (105 vs
+    # 100), el 100% del beneficio máximo solo se alcanza exactamente al vencimiento (día 30) —
+    # antes de eso siempre queda valor extrínseco en la pata vendida. 30%/50% se alcanzan antes.
+    projection = {p["pct"]: p["days"] for p in result.early_close_projection}
+    assert set(projection) == {30, 50, 100}
+    assert projection[100] == 30
+    assert projection[30] is not None and projection[50] is not None
+    assert projection[30] <= projection[50] <= projection[100]
+
 
 def test_bull_put_spread():
     short = _contract("put", strike=100.0, mid=2.0, dte=30)
@@ -228,6 +240,33 @@ def test_short_call_condor_profits_in_the_outer_tails():
     assert 0.0 < result.probability_of_profit < 1.0
     mid_price = (90.0 + 110.0) / 2
     assert payoff._pnl_at(build.legs, result.net_premium, mid_price, False, 100.0) < 0  # pierde en el centro
+
+
+def test_annualized_return_pct_basic():
+    assert payoff.annualized_return_pct(max_profit=200.0, max_loss=9800.0, dte=30) == pytest.approx((200 / 9800) * (365 / 30) * 100, abs=0.01)
+
+
+def test_annualized_return_pct_none_when_loss_unbounded():
+    assert payoff.annualized_return_pct(max_profit=200.0, max_loss=float("inf"), dte=30) is None
+
+
+def test_annualized_return_pct_none_when_loss_zero():
+    assert payoff.annualized_return_pct(max_profit=200.0, max_loss=0.0, dte=30) is None
+
+
+def test_annualized_return_pct_none_when_dte_zero():
+    assert payoff.annualized_return_pct(max_profit=200.0, max_loss=9800.0, dte=0) is None
+
+
+def test_annualized_return_pct_none_when_missing_data():
+    assert payoff.annualized_return_pct(max_profit=None, max_loss=9800.0, dte=30) is None
+    assert payoff.annualized_return_pct(max_profit=200.0, max_loss=None, dte=30) is None
+
+
+def test_early_close_projection_empty_without_bounded_max_profit():
+    short = _contract("put", strike=100.0, mid=2.0, dte=30)
+    assert payoff.early_close_projection([Leg("sell", short)], net_premium=200.0, underlying_price=105.0, dte=30, risk_free_rate=RISK_FREE_RATE, max_profit=None) == []
+    assert payoff.early_close_projection([Leg("sell", short)], net_premium=200.0, underlying_price=105.0, dte=0, risk_free_rate=RISK_FREE_RATE, max_profit=200.0) == []
 
 
 def test_unknown_strategy_raises():

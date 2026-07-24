@@ -186,3 +186,42 @@ def test_format_alert_message_includes_dividend_warning():
     text = format_alert_message(context, "comentario")
     assert "⚠ Ex-dividendo el 2026-08-15" in text
     assert "Call $285.00 vendida" in text
+
+
+def test_format_alert_message_includes_annualized_return():
+    context = {**_BASE_CONTEXT, "next_earnings_date": None, "annualized_return_pct": 24.83}
+    text = format_alert_message(context, "comentario")
+    assert "↻ Rendimiento anualizado (sobre riesgo máximo): 24.8%" in text
+
+
+def test_format_alert_message_omits_annualized_return_when_none():
+    context = {**_BASE_CONTEXT, "next_earnings_date": None, "annualized_return_pct": None}
+    text = format_alert_message(context, "comentario")
+    assert "Rendimiento anualizado" not in text
+
+
+def test_format_alert_message_includes_early_close_projection():
+    context = {
+        **_BASE_CONTEXT,
+        "next_earnings_date": None,
+        "early_close_projection": [{"pct": 30, "days": 5}, {"pct": 50, "days": 12}, {"pct": 100, "days": 30}],
+    }
+    text = format_alert_message(context, "comentario")
+    assert "◔ Cierre anticipado (si precio/IV no cambian, solo decaimiento de tiempo): 30% en 5d · 50% en 12d · 100% en 30d" in text
+
+
+def test_format_alert_message_early_close_projection_shows_not_reached():
+    context = {
+        **_BASE_CONTEXT,
+        "next_earnings_date": None,
+        "early_close_projection": [{"pct": 30, "days": None}, {"pct": 50, "days": None}, {"pct": 100, "days": 30}],
+    }
+    text = format_alert_message(context, "comentario")
+    assert "30%: no alcanzado" in text
+    assert "50%: no alcanzado" in text
+
+
+def test_format_alert_message_omits_early_close_when_empty():
+    context = {**_BASE_CONTEXT, "next_earnings_date": None, "early_close_projection": []}
+    text = format_alert_message(context, "comentario")
+    assert "Cierre anticipado" not in text

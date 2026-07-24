@@ -145,6 +145,8 @@ def process_symbol_alerts(
                 dte=payoff.dte,
                 underlying_price=payoff.underlying_price,
                 payoff_is_estimate=payoff.is_estimate,
+                annualized_return_pct=payoff.annualized_return_pct,
+                early_close_projection=payoff.early_close_projection,
             ),
         )
 
@@ -172,6 +174,8 @@ def process_symbol_alerts(
             next_earnings_date=snap.next_earnings_date,
             recent_news=recent_news,
             next_ex_dividend_date=analysis.quote.next_ex_dividend_date,
+            annualized_return_pct=payoff.annualized_return_pct,
+            early_close_projection=payoff.early_close_projection,
         )
         narrative_text, narrative_source = narrator.narrate_alert(context, settings.llm, anthropic_api_key)
 

@@ -107,6 +107,8 @@ def build_narration_context(
     next_earnings_date: date | None = None,
     recent_news: list[dict] | None = None,
     next_ex_dividend_date: date | None = None,
+    annualized_return_pct: float | None = None,
+    early_close_projection: list[dict] | None = None,
 ) -> dict:
     return {
         "symbol": symbol,
@@ -132,4 +134,6 @@ def build_narration_context(
         "probability_of_profit": probability_of_profit,
         "dte": dte,
         "payoff_is_estimate": payoff_is_estimate,
+        "annualized_return_pct": annualized_return_pct,
+        "early_close_projection": early_close_projection or [],
     }

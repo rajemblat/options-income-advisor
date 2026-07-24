@@ -164,6 +164,19 @@ def _liquidity_lines(warnings: list[dict]) -> list[str]:
     ]
 
 
+def _annualized_return_line(annualized_return_pct: float | None) -> str | None:
+    if annualized_return_pct is None:
+        return None
+    return f"↻ Rendimiento anualizado (sobre riesgo máximo): {annualized_return_pct:.1f}%"
+
+
+def _early_close_line(projection: list[dict]) -> str | None:
+    if not projection:
+        return None
+    parts = [f"{p['pct']}% en {p['days']}d" if p["days"] is not None else f"{p['pct']}%: no alcanzado" for p in projection]
+    return f"◔ Cierre anticipado (si precio/IV no cambian, solo decaimiento de tiempo): {' · '.join(parts)}"
+
+
 def _leg_line(leg: dict) -> str:
     side_icon = "↓ Venta" if leg["side"] == "sell" else "↑ Compra"
     option_label = "Put" if leg["option_type"] == "put" else "Call"
@@ -218,6 +231,14 @@ def format_alert_message(context: dict, comment: str) -> str:
 
     dte = context.get("dte")
     lines.append(f"○ DTE: {dte if dte is not None else 'N/D'} días")
+
+    annualized_line = _annualized_return_line(context.get("annualized_return_pct"))
+    if annualized_line:
+        lines.append(annualized_line)
+
+    early_close_line = _early_close_line(context.get("early_close_projection") or [])
+    if early_close_line:
+        lines.append(early_close_line)
 
     if context.get("payoff_is_estimate"):
         lines.append(

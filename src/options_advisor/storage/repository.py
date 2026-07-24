@@ -175,8 +175,8 @@ def insert_candidate_contract(conn: sqlite3.Connection, candidate: CandidateCont
             (symbol, snapshot_date, strategy_type, expiration_date, strikes_json,
              delta, gamma, theta, vega, rho, greeks_source, conviction_score, scoring_breakdown_json,
              legs_json, net_premium, max_profit, max_loss, breakevens_json, probability_of_profit,
-             dte, underlying_price, payoff_is_estimate)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             dte, underlying_price, payoff_is_estimate, annualized_return_pct, early_close_projection_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             candidate.symbol,
@@ -201,6 +201,8 @@ def insert_candidate_contract(conn: sqlite3.Connection, candidate: CandidateCont
             candidate.dte,
             candidate.underlying_price,
             int(candidate.payoff_is_estimate),
+            candidate.annualized_return_pct,
+            json.dumps(candidate.early_close_projection),
         ),
     )
     conn.commit()

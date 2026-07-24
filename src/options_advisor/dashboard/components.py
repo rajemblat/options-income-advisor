@@ -447,7 +447,22 @@ def render_alert_card(
             f"<div class='oia-metric-tile'><div class='label'>{icon('clock', size=13)} DTE</div>"
             f"<div class='value'>{candidate['dte'] if candidate['dte'] is not None else 'N/D'} días</div></div>"
         )
+        annualized_return_pct = candidate["annualized_return_pct"]
+        if annualized_return_pct is not None:
+            html.append(
+                f"<div class='oia-metric-tile'><div class='label'>{icon('bar-chart', size=13, color=ACCENT)} Rend. anualizado</div>"
+                f"<div class='value'>{annualized_return_pct:.1f}%</div></div>"
+            )
         html.append("</div>")
+
+        early_close_json = candidate["early_close_projection_json"]
+        early_close_projection = json.loads(early_close_json) if early_close_json else []
+        if early_close_projection:
+            parts = [f"{p['pct']}% en {p['days']}d" if p["days"] is not None else f"{p['pct']}%: no alcanzado" for p in early_close_projection]
+            html.append(
+                f"<div style='color:{TEXT_SECONDARY}; font-size:0.82rem; margin-top:0.4rem;'>{icon('clock', size=13)} "
+                f"Cierre anticipado (si precio/IV no cambian): {' · '.join(parts)}</div>"
+            )
 
         if is_estimate:
             html.append(

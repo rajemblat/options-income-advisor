@@ -20,6 +20,8 @@ _NEW_COLUMNS_BY_TABLE = {
         "dte": "INTEGER",
         "underlying_price": "REAL",
         "payoff_is_estimate": "INTEGER",
+        "annualized_return_pct": "REAL",
+        "early_close_projection_json": "TEXT",
     },
     "indicator_snapshots": {
         "next_earnings_date": "TEXT",
