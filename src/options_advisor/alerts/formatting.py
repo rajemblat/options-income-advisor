@@ -80,14 +80,14 @@ def format_alert_message(context: dict, comment: str) -> str:
     lines = ["🔔 Alerta de Opción", _earnings_line(context), f"📍 {context['symbol']} — {label}"]
 
     if context.get("underlying_price") is not None:
-        lines.append(f"💲 Precio actual del subyacente: ${context['underlying_price']:,.2f}")
+        lines.append(f"🏷️ Precio actual del subyacente: ${context['underlying_price']:,.2f}")
 
     lines.append(SEPARATOR)
     legs = context.get("legs") or []
     if legs:
         lines.extend(_leg_line(leg) for leg in legs)
         if context["strategy_type"] == "covered_call":
-            lines.append(f"📎 Requiere 100 acciones de {context['symbol']} en cartera (o asignación previa).")
+            lines.append(f"🔖 Requiere 100 acciones de {context['symbol']} en cartera (o asignación previa).")
     else:
         lines.append(f"Strikes: {context.get('strikes', {})}")
     lines.append(SEPARATOR)
@@ -95,9 +95,9 @@ def format_alert_message(context: dict, comment: str) -> str:
     net_premium = context.get("net_premium")
     if net_premium is not None:
         kind = "crédito" if net_premium >= 0 else "débito"
-        lines.append(f"💵 Prima neta: {_fmt_money(abs(net_premium))} ({kind})")
+        lines.append(f"💰 Prima neta: {_fmt_money(abs(net_premium))} ({kind})")
     else:
-        lines.append("💵 Prima neta: N/D")
+        lines.append("💰 Prima neta: N/D")
 
     lines.append(f"📈 Beneficio máximo: {_fmt_money(context.get('max_profit'))}")
     lines.append(f"📉 Pérdida máxima (riesgo): {_fmt_money(context.get('max_loss'))}")
@@ -124,6 +124,6 @@ def format_alert_message(context: dict, comment: str) -> str:
         lines.extend(f"  • {item['headline']} ({item.get('source', 'N/D')})" for item in news)
 
     lines.append(SEPARATOR)
-    lines.append(f"💡 Comentario: {comment}")
+    lines.append(f"💬 Comentario: {comment}")
 
     return "\n".join(lines)

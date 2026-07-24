@@ -336,8 +336,8 @@ def render_alert_card(
     probability_of_profit = candidate["probability_of_profit"] if candidate else None
 
     narrative = alert["narrative_text"] or ""
-    if "💡 Comentario:" in narrative:
-        comment = narrative.split("💡 Comentario:", 1)[1].strip()
+    if "💬 Comentario:" in narrative:
+        comment = narrative.split("💬 Comentario:", 1)[1].strip()
     else:
         comment = narrative or "Sin comentario disponible."
 
