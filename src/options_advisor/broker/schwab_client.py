@@ -111,17 +111,33 @@ class SchwabBrokerClient(BrokerClient):
             },
         )
         underlying_price = data["underlyingPrice"]
+        # Schwab devuelve la tasa libre de riesgo y el dividend yield vigentes junto con la
+        # cadena — más precisos que la tasa fija de config/settings.yaml, usados en el fallback
+        # de Black-Scholes-Merton cuando Schwab no da griegos (ver _parse_contract). Con `None`
+        # o 0 caemos al valor fijo de config, mismo comportamiento que antes.
+        interest_rate = (data.get("interestRate") or 0) / 100 or self.risk_free_rate
+        dividend_yield = (data.get("dividendYield") or 0) / 100
+
         contracts = []
         for option_type, exp_map_key in (("call", "callExpDateMap"), ("put", "putExpDateMap")):
             for _exp_key, strikes in data.get(exp_map_key, {}).items():
                 for _strike_key, contract_list in strikes.items():
                     for raw in contract_list:
-                        contracts.append(self._parse_contract(symbol, option_type, raw, underlying_price, today))
+                        contracts.append(
+                            self._parse_contract(symbol, option_type, raw, underlying_price, today, interest_rate, dividend_yield)
+                        )
 
         return OptionChain(symbol=symbol, as_of=today, underlying_price=underlying_price, contracts=contracts)
 
     def _parse_contract(
-        self, symbol: str, option_type: OptionType, raw: dict, underlying_price: float, as_of: date
+        self,
+        symbol: str,
+        option_type: OptionType,
+        raw: dict,
+        underlying_price: float,
+        as_of: date,
+        interest_rate: float,
+        dividend_yield: float,
     ) -> OptionContract:
         expiration = date.fromisoformat(raw["expirationDate"].split("T")[0])
         strike = raw["strikePrice"]
@@ -140,7 +156,8 @@ class SchwabBrokerClient(BrokerClient):
                 expiration=expiration,
                 as_of_date=as_of,
                 implied_volatility=implied_volatility,
-                risk_free_rate=self.risk_free_rate,
+                risk_free_rate=interest_rate,
+                dividend_yield=dividend_yield,
             )
 
         return OptionContract(
