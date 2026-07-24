@@ -4,7 +4,6 @@ from datetime import date
 
 import pytest
 
-from options_advisor.alerts import notifier
 from options_advisor.config import load_settings
 from options_advisor.market_context import finnhub_client
 from options_advisor.scheduler import jobs
@@ -57,7 +56,7 @@ def test_refresh_news_for_symbol_skips_items_without_url(conn, monkeypatch):
     assert repo.get_recent_news(conn, symbol="AAPL") == []
 
 
-def test_job_premarket_digest_sends_summary_with_risk_events_and_new_alerts(conn, monkeypatch):
+def test_job_premarket_digest_saves_dashboard_notification_with_risk_events_and_new_alerts(conn, monkeypatch):
     monkeypatch.setattr(jobs, "is_market_day", lambda d: True)
     monkeypatch.setattr(
         jobs,
@@ -72,21 +71,21 @@ def test_job_premarket_digest_sends_summary_with_risk_events_and_new_alerts(conn
         ),
     )
 
-    captured = {}
-    monkeypatch.setattr(notifier, "send_text", lambda text: captured.setdefault("text", text))
-
     jobs.job_premarket_digest(broker=None, conn=conn, symbols=["AAPL"], settings=load_settings(), anthropic_api_key=None)
 
-    assert "FOMC" in captured["text"]
-    assert "AAPL" in captured["text"]
-    assert "Cash-Secured Put" in captured["text"]
+    assert repo.get_unread_notification_count(conn) == 1
+    notification = repo.get_recent_notifications(conn, limit=1)[0]
+    assert notification["kind"] == "premarket_digest"
+    assert "FOMC" in notification["body"]
+    assert "AAPL" in notification["body"]
+    assert "Cash-Secured Put" in notification["body"]
 
 
 def test_job_premarket_digest_skips_on_non_market_day(conn, monkeypatch):
     monkeypatch.setattr(jobs, "is_market_day", lambda d: False)
     called = []
     monkeypatch.setattr(jobs, "_run_full_analysis", lambda *a, **k: called.append(1))
-    monkeypatch.setattr(notifier, "send_text", lambda text: called.append(2))
 
     jobs.job_premarket_digest(broker=None, conn=conn, symbols=["AAPL"], settings=load_settings(), anthropic_api_key=None)
     assert called == []
+    assert repo.get_unread_notification_count(conn) == 0

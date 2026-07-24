@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import date
+from datetime import date, datetime
 
-from options_advisor.alerts import notifier
 from options_advisor.alerts.digest import build_premarket_digest_text
 from options_advisor.alerts.engine import process_symbol_alerts
 from options_advisor.broker.base import BrokerClient
@@ -14,7 +13,7 @@ from options_advisor.indicators.pipeline import analyze_symbol
 from options_advisor.market_context import economic_calendar, finnhub_client, fred_client, kalshi_client
 from options_advisor.scheduler.market_calendar import is_market_day
 from options_advisor.storage import repository as repo
-from options_advisor.storage.models import MacroSnapshot, NewsItem
+from options_advisor.storage.models import MacroSnapshot, NewsItem, Notification
 
 logger = logging.getLogger(__name__)
 
@@ -143,10 +142,11 @@ def job_premarket_digest(
 ) -> None:
     """Corre antes de la apertura (hora configurable en settings.scheduler.premarket_digest_time):
     hace la misma corrida completa que job_poll_and_analyze (así detecta alertas nuevas de esta
-    ventana, no solo repite el cierre del día anterior) y además envía un resumen a Telegram con
-    los eventos de riesgo de HOY (FOMC/CPI/empleo/earnings) y las alertas nuevas — pensado para
-    leerlo antes de que abra el mercado. Sin TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID configurados,
-    el análisis igual corre pero no se envía nada (mismo comportamiento no-op que notifier.notify)."""
+    ventana, no solo repite el cierre del día anterior) y guarda un resumen como notificación del
+    dashboard (campanita 🔔) con los eventos de riesgo de HOY (FOMC/CPI/empleo/earnings) y las
+    alertas nuevas — pensado para leerlo antes de que abra el mercado. No usa Telegram: ese canal
+    (alerts/notifier.py) queda implementado pero inerte para cuando se decida activarlo más
+    adelante."""
     today = date.today()
     if not is_market_day(today):
         logger.info("%s no es día de mercado, se salta el digest pre-apertura", today)
@@ -159,4 +159,7 @@ def job_premarket_digest(
     earnings_by_symbol = {symbol: repo.get_latest_next_earnings_date(conn, symbol) for symbol in symbols}
 
     text = build_premarket_digest_text(upcoming_events, earnings_by_symbol, new_alerts, today)
-    notifier.send_text(text)
+    repo.insert_notification(
+        conn,
+        Notification(kind="premarket_digest", title=f"Resumen pre-apertura — {today.isoformat()}", body=text, created_at=datetime.now()),
+    )

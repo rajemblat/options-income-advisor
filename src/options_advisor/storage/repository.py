@@ -11,6 +11,7 @@ from options_advisor.storage.models import (
     InvestorProfile,
     MacroSnapshot,
     NewsItem,
+    Notification,
 )
 
 
@@ -256,6 +257,29 @@ def get_alerts_for_date(conn: sqlite3.Connection, alert_date: date) -> list[sqli
         """,
         (alert_date.isoformat(),),
     ).fetchall()
+
+
+def insert_notification(conn: sqlite3.Connection, notification: Notification) -> int:
+    cur = conn.execute(
+        "INSERT INTO notifications (created_at, kind, title, body, is_read) VALUES (?, ?, ?, ?, 0)",
+        (notification.created_at.isoformat(), notification.kind, notification.title, notification.body),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_unread_notification_count(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) AS n FROM notifications WHERE is_read = 0").fetchone()
+    return row["n"]
+
+
+def get_recent_notifications(conn: sqlite3.Connection, limit: int = 20) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM notifications ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+
+
+def mark_all_notifications_read(conn: sqlite3.Connection) -> None:
+    conn.execute("UPDATE notifications SET is_read = 1 WHERE is_read = 0")
+    conn.commit()
 
 
 def get_investor_profile(conn: sqlite3.Connection) -> InvestorProfile | None:

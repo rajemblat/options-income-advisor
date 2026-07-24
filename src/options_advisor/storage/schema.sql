@@ -112,6 +112,18 @@ CREATE TABLE IF NOT EXISTS alerts (
     FOREIGN KEY (candidate_contract_id) REFERENCES candidate_contracts(id)
 );
 
+-- Notificaciones internas del dashboard (campanita 🔔) — hoy solo las llena el digest
+-- pre-apertura (scheduler/jobs.py::job_premarket_digest), pensado genérico para sumar otros
+-- `kind` más adelante sin cambiar el esquema.
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    is_read INTEGER NOT NULL DEFAULT 0
+);
+
 -- Perfil de inversor (fila única, herramienta de un solo usuario)
 CREATE TABLE IF NOT EXISTS investor_profile (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -140,3 +152,4 @@ CREATE INDEX IF NOT EXISTS idx_iv_snapshots_symbol_date ON iv_snapshots(symbol, 
 CREATE INDEX IF NOT EXISTS idx_indicator_snapshots_symbol_date ON indicator_snapshots(symbol, snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_alerts_symbol_date ON alerts(symbol, alert_date);
 CREATE INDEX IF NOT EXISTS idx_news_items_symbol_published ON news_items(symbol, published_at);
+CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications(is_read);

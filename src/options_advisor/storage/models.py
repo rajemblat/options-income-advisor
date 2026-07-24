@@ -97,6 +97,13 @@ class NewsItem(BaseModel):
     fetched_date: date
 
 
+class Notification(BaseModel):
+    kind: str
+    title: str
+    body: str
+    created_at: datetime
+
+
 class InvestorProfile(BaseModel):
     capital_available: float
     loss_tolerance_pct: float
