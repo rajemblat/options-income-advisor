@@ -5,6 +5,7 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
+from options_advisor.config import load_priority_watchlist_symbols
 from options_advisor.dashboard.components import ACCENT, get_connection, get_symbols, icon, inject_theme, render_header, render_notification_bell
 from options_advisor.storage import repository as repo
 
@@ -16,7 +17,7 @@ render_header(icon("eye", size=24, color=ACCENT), "Watchlist", "Último snapshot
 
 conn = get_connection()
 render_notification_bell(conn)
-symbols = get_symbols()
+symbols = sorted(set(get_symbols()) | set(load_priority_watchlist_symbols()))
 
 macro = repo.get_latest_macro_snapshot(conn)
 fed_meeting_date = date.fromisoformat(macro["fed_meeting_date"]) if macro and macro["fed_meeting_date"] else None
@@ -47,6 +48,12 @@ for symbol in symbols:
 if not rows:
     st.info("Todavía no hay snapshots. Andá a la página principal y corré el análisis.")
 else:
+    if len(rows) < len(symbols):
+        st.caption(
+            f"Mostrando {len(rows)} de {len(symbols)} símbolos de tu watchlist (13 fijos + tu lista real de "
+            "thinkorswim) — el resto todavía no tiene un snapshot generado. Corré el análisis desde la página "
+            "principal o el escaneo para completarlos."
+        )
     df = pd.DataFrame(rows)[
         [
             "symbol",
