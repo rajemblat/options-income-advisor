@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 MIN_SHARES_FOR_COVERED_STRATEGIES = 100  # 1 contrato de opción cubre 100 acciones
 
+# Cada corrida evalúa los 3 perfiles fijos, no solo el activo en investor_profile — el
+# selector de perfil en el dashboard (Alertas/Configuración) pasó a ser un FILTRO sobre
+# alertas ya generadas, no un disparador de análisis (pedido explícito del usuario
+# 2026-07-24: "Correr análisis ahora" debe cubrir los 3 perfiles de una sola corrida).
+RISK_LEVELS = ("conservador", "moderado", "agresivo")
+
 
 def _refresh_macro_snapshot(conn: sqlite3.Connection, today: date, finnhub_api_key: str | None, fred_api_key: str | None) -> None:
     """Contexto macro: una consulta por job run (no por símbolo, es el mismo dato para todos
@@ -50,11 +56,13 @@ def _refresh_macro_snapshot(conn: sqlite3.Connection, today: date, finnhub_api_k
         logger.exception("Fallo al refrescar el contexto macro; se continúa con el análisis por símbolo")
 
 
-def _refresh_news_for_symbol(conn: sqlite3.Connection, symbol: str, today: date, finnhub_api_key: str | None) -> None:
-    """Noticias recientes por símbolo. Falla aislada (igual que el contexto macro): un
-    problema con Finnhub nunca debe tumbar el análisis de indicadores/alertas del símbolo."""
+def _refresh_news_for_symbol(conn: sqlite3.Connection, symbol: str, today: date, news_rows: list[dict]) -> None:
+    """Persiste las noticias ya traídas de Finnhub (una sola vez por símbolo en
+    `_run_full_analysis`, ver ahí) — separado de la llamada a la API para no pedirlas dos
+    veces por símbolo (antes: una acá y otra en process_symbol_alerts para el narrador).
+    Falla aislada (igual que el contexto macro): un problema al persistir nunca debe tumbar
+    el análisis de indicadores/alertas del símbolo."""
     try:
-        rows = finnhub_client.get_recent_news(symbol, today, finnhub_api_key)
         items = [
             NewsItem(
                 symbol=symbol,
@@ -65,12 +73,12 @@ def _refresh_news_for_symbol(conn: sqlite3.Connection, symbol: str, today: date,
                 summary=row.get("summary"),
                 fetched_date=today,
             )
-            for row in rows
+            for row in news_rows
             if row.get("headline") and row.get("url")
         ]
         repo.insert_news_items(conn, items)
     except Exception:
-        logger.exception("Fallo al refrescar noticias de %s; se continúa con el resto del análisis", symbol)
+        logger.exception("Fallo al guardar noticias de %s; se continúa con el resto del análisis", symbol)
 
 
 def _run_full_analysis(
@@ -83,11 +91,17 @@ def _run_full_analysis(
     finnhub_api_key: str | None,
     fred_api_key: str | None,
 ) -> list[dict]:
-    """Macro + noticias + indicadores + alertas para todos los símbolos — el cuerpo real de una
-    corrida, compartido por el polling regular y el digest pre-apertura (job_premarket_digest
-    necesita saber qué alertas salieron de SU corrida, no solo que el job terminó). Un fallo en
-    un símbolo no tumba el resto (Sección 6 del plan de Fase 1). Devuelve las alertas nuevas
-    generadas en esta corrida (lista vacía si no hubo ninguna)."""
+    """Macro + noticias + indicadores + alertas (para los 3 perfiles de riesgo) de todos los
+    símbolos — el cuerpo real de una corrida, compartido por el polling regular y el digest
+    pre-apertura (job_premarket_digest necesita saber qué alertas salieron de SU corrida, no
+    solo que el job terminó). Un fallo en un símbolo no tumba el resto (Sección 6 del plan de
+    Fase 1). Devuelve las alertas nuevas generadas en esta corrida (lista vacía si no hubo
+    ninguna).
+
+    Lo caro por símbolo (quote/historial/cadena de opciones en analyze_symbol, earnings y
+    noticias de Finnhub) se pide UNA sola vez y se reusa para los 3 perfiles — ni Finnhub ni
+    el indicator_snapshot del día se triplican, solo se triplica lo que realmente depende del
+    perfil (selección de strikes, scoring, narración de Claude)."""
     _refresh_macro_snapshot(conn, today, finnhub_api_key, fred_api_key)
 
     # Una sola consulta de posiciones reales por corrida (no por símbolo) — habilita Covered
@@ -102,17 +116,24 @@ def _run_full_analysis(
             open_positions = repo.get_open_assigned_positions(conn, symbol)
             has_shares = share_positions.get(symbol, 0) >= MIN_SHARES_FOR_COVERED_STRATEGIES
             analysis = analyze_symbol(broker, conn, symbol, settings, finnhub_api_key=finnhub_api_key)
-            _refresh_news_for_symbol(conn, symbol, today, finnhub_api_key)
-            alerts = process_symbol_alerts(
-                conn,
-                analysis,
-                settings,
-                has_open_assigned_position=len(open_positions) > 0 or has_shares,
-                anthropic_api_key=anthropic_api_key,
-                finnhub_api_key=finnhub_api_key,
-            )
-            logger.info("%s: iv_rank=%s, %d alerta(s) nueva(s)", symbol, analysis.snapshot.iv_rank, len(alerts))
-            new_alerts.extend(alerts)
+            recent_news = finnhub_client.get_recent_news(symbol, analysis.snapshot.snapshot_date, finnhub_api_key)
+            _refresh_news_for_symbol(conn, symbol, today, recent_news)
+
+            symbol_alert_count = 0
+            for risk_level in RISK_LEVELS:
+                alerts = process_symbol_alerts(
+                    conn,
+                    analysis,
+                    settings,
+                    has_open_assigned_position=len(open_positions) > 0 or has_shares,
+                    anthropic_api_key=anthropic_api_key,
+                    finnhub_api_key=finnhub_api_key,
+                    risk_level=risk_level,
+                    recent_news=recent_news,
+                )
+                symbol_alert_count += len(alerts)
+                new_alerts.extend(alerts)
+            logger.info("%s: iv_rank=%s, %d alerta(s) nueva(s) (3 perfiles)", symbol, analysis.snapshot.iv_rank, symbol_alert_count)
         except Exception:
             logger.exception("Fallo al procesar %s; se continúa con el resto de los símbolos", symbol)
 

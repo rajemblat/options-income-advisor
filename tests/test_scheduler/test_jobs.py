@@ -5,7 +5,6 @@ from datetime import date
 import pytest
 
 from options_advisor.config import load_settings
-from options_advisor.market_context import finnhub_client
 from options_advisor.scheduler import jobs
 from options_advisor.storage import db
 from options_advisor.storage import repository as repo
@@ -20,40 +19,23 @@ def conn():
     return db.connect(":memory:")
 
 
-def test_refresh_news_for_symbol_persists_items(conn, monkeypatch):
-    monkeypatch.setattr(
-        finnhub_client,
-        "get_recent_news",
-        lambda symbol, as_of, api_key, **kwargs: [
-            {"headline": "AAPL news", "source": "Yahoo", "url": "https://x/1", "summary": "s", "published_at": None}
-        ],
-    )
-    jobs._refresh_news_for_symbol(conn, "AAPL", TODAY, "fake-key")
+def test_refresh_news_for_symbol_persists_items(conn):
+    news_rows = [{"headline": "AAPL news", "source": "Yahoo", "url": "https://x/1", "summary": "s", "published_at": None}]
+    jobs._refresh_news_for_symbol(conn, "AAPL", TODAY, news_rows)
 
     result = repo.get_recent_news(conn, symbol="AAPL")
     assert len(result) == 1
     assert result[0]["headline"] == "AAPL news"
 
 
-def test_refresh_news_for_symbol_never_raises_on_finnhub_failure(conn, monkeypatch):
-    def _boom(*args, **kwargs):
-        raise RuntimeError("Finnhub caído")
-
-    monkeypatch.setattr(finnhub_client, "get_recent_news", _boom)
-    jobs._refresh_news_for_symbol(conn, "AAPL", TODAY, "fake-key")  # no debe lanzar
-
+def test_refresh_news_for_symbol_never_raises_on_bad_rows(conn):
+    jobs._refresh_news_for_symbol(conn, "AAPL", TODAY, [{"headline": None}])  # no debe lanzar
     assert repo.get_recent_news(conn, symbol="AAPL") == []
 
 
-def test_refresh_news_for_symbol_skips_items_without_url(conn, monkeypatch):
-    monkeypatch.setattr(
-        finnhub_client,
-        "get_recent_news",
-        lambda symbol, as_of, api_key, **kwargs: [
-            {"headline": "sin url", "source": "Yahoo", "url": None, "summary": "s", "published_at": None}
-        ],
-    )
-    jobs._refresh_news_for_symbol(conn, "AAPL", TODAY, "fake-key")
+def test_refresh_news_for_symbol_skips_items_without_url(conn):
+    news_rows = [{"headline": "sin url", "source": "Yahoo", "url": None, "summary": "s", "published_at": None}]
+    jobs._refresh_news_for_symbol(conn, "AAPL", TODAY, news_rows)
     assert repo.get_recent_news(conn, symbol="AAPL") == []
 
 
@@ -107,18 +89,19 @@ class _FakeBroker:
 class _FakeAnalysis:
     def __init__(self, symbol: str):
         self.symbol = symbol
-        self.snapshot = type("S", (), {"iv_rank": 50, "symbol": symbol})()
+        self.snapshot = type("S", (), {"iv_rank": 50, "symbol": symbol, "snapshot_date": TODAY})()
 
 
 def test_run_full_analysis_passes_real_share_position_as_has_open_assigned_position(conn, monkeypatch):
-    captured: list[tuple[str, bool]] = []
+    captured: list[tuple[str, bool, str]] = []
 
     monkeypatch.setattr(jobs, "analyze_symbol", lambda broker, conn, symbol, settings, **k: _FakeAnalysis(symbol))
+    monkeypatch.setattr(jobs.finnhub_client, "get_recent_news", lambda *a, **k: [])
     monkeypatch.setattr(jobs, "_refresh_news_for_symbol", lambda *a, **k: None)
     monkeypatch.setattr(jobs, "_refresh_macro_snapshot", lambda *a, **k: None)
 
-    def _fake_process_symbol_alerts(conn, analysis, settings, has_open_assigned_position, **k):
-        captured.append((analysis.symbol, has_open_assigned_position))
+    def _fake_process_symbol_alerts(conn, analysis, settings, has_open_assigned_position, risk_level, **k):
+        captured.append((analysis.symbol, has_open_assigned_position, risk_level))
         return []
 
     monkeypatch.setattr(jobs, "process_symbol_alerts", _fake_process_symbol_alerts)
@@ -129,4 +112,13 @@ def test_run_full_analysis_passes_real_share_position_as_has_open_assigned_posit
 
     jobs._run_full_analysis(broker, conn, ["NVDA", "AAPL"], settings, TODAY, None, None, None)
 
-    assert captured == [("NVDA", True), ("AAPL", False)]
+    # Una corrida evalúa los 3 perfiles fijos por símbolo (Sección "Correr análisis ahora"
+    # cubre los 3 perfiles a la vez, no solo el activo).
+    assert captured == [
+        ("NVDA", True, "conservador"),
+        ("NVDA", True, "moderado"),
+        ("NVDA", True, "agresivo"),
+        ("AAPL", False, "conservador"),
+        ("AAPL", False, "moderado"),
+        ("AAPL", False, "agresivo"),
+    ]

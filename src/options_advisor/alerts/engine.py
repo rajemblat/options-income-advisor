@@ -37,12 +37,27 @@ def process_symbol_alerts(
     has_open_assigned_position: bool = False,
     anthropic_api_key: str | None = None,
     finnhub_api_key: str | None = None,
+    risk_level: str | None = None,
+    recent_news: list[dict] | None = None,
 ) -> list[dict]:
     """Corre selector → candidatos → scoring → filtro de umbral → dedup → narrador → persistencia
     para un símbolo ya analizado (Sección 6 de la hoja de ruta). Devuelve las alertas nuevas
-    efectivamente generadas en esta corrida (lista vacía si no hubo ninguna)."""
+    efectivamente generadas en esta corrida (lista vacía si no hubo ninguna).
+
+    risk_level: si se pasa explícito (jobs.py lo hace una vez por cada uno de los 3 perfiles
+    fijos por corrida), pisa el perfil activo guardado en la DB y usa el umbral default de ese
+    perfil — conviction_threshold_override no aplica acá porque es un override de UN perfil
+    activo, no tiene sentido aplicado a los 3 a la vez. Si se omite (callers de un solo perfil,
+    tests), se resuelve como antes desde investor_profile/settings.
+
+    recent_news: si se pasa (jobs.py lo trae una sola vez por símbolo, no por perfil, ya que
+    las noticias no dependen del perfil de riesgo), se reusa en vez de pedirlo de nuevo a
+    Finnhub — evita triplicar esa llamada al evaluar los 3 perfiles."""
     snap = analysis.snapshot
-    risk_level, threshold = _resolve_risk_profile(conn, settings)
+    if risk_level is not None:
+        threshold = settings.conviction_thresholds.for_risk_level(risk_level)
+    else:
+        risk_level, threshold = _resolve_risk_profile(conn, settings)
 
     if snap.iv_rank is None:
         logger.info("%s: IV Rank no disponible todavía, sin candidatos posibles", snap.symbol)
@@ -61,7 +76,8 @@ def process_symbol_alerts(
         iv_rank_high_threshold=iv_rank_high_threshold,
     )
     generated: list[dict] = []
-    recent_news = finnhub_client.get_recent_news(snap.symbol, snap.snapshot_date, finnhub_api_key) if strategy_types else []
+    if recent_news is None:
+        recent_news = finnhub_client.get_recent_news(snap.symbol, snap.snapshot_date, finnhub_api_key) if strategy_types else []
 
     for strategy_type in strategy_types:
         build = candidate_builder.build_candidate(strategy_type, analysis.chain, target_short_delta)
@@ -80,7 +96,7 @@ def process_symbol_alerts(
         if score < threshold:
             continue  # filtro de exclusión: no alcanza el umbral mínimo del perfil (Sección 6.3)
 
-        dedup_key = dedup.build_dedup_key(snap.symbol, strategy_type, build.expiration_date, build.strikes, snap.snapshot_date)
+        dedup_key = dedup.build_dedup_key(snap.symbol, strategy_type, build.expiration_date, build.strikes, snap.snapshot_date, risk_level)
         if repo.alert_exists(conn, dedup_key):
             continue  # mismo candidato ya alertado hoy
 
