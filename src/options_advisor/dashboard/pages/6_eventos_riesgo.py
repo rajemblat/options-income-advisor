@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date
 
+import pandas as pd
 import streamlit as st
 
 from options_advisor.alerts.risk_calendar import build_risk_calendar
@@ -50,3 +51,17 @@ else:
         "histórico de earnings pasados calibrado por símbolo todavía. Bajo = otros eventos macro que Finnhub "
         "reporta con impacto menor. Earnings vacíos para un símbolo = no se pudo verificar (ver página Watchlist)."
     )
+
+st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
+st.subheader("📅 Calendario de earnings — toda la watchlist")
+
+earnings_rows = [
+    {"Símbolo": symbol, "Próximos earnings": d.isoformat() if d else None, "_sort": d or date.max}
+    for symbol, d in earnings_by_symbol.items()
+]
+earnings_df = pd.DataFrame(sorted(earnings_rows, key=lambda r: r["_sort"]))[["Símbolo", "Próximos earnings"]]
+st.dataframe(earnings_df, use_container_width=True, hide_index=True)
+st.caption(
+    "Ordenado por fecha más próxima primero (Finnhub `/calendar/earnings`). 'None' = no se pudo "
+    "verificar la fecha todavía — confirmá manualmente antes de operar ese símbolo."
+)
