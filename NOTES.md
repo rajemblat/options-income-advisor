@@ -264,9 +264,13 @@ pendientes de confirmar con el usuario:
 - ~~Control de liquidez (spread bid/ask)~~ — **hecho hoy**, ver punto 24 arriba. Todavía no
   se usa open interest/volumen para nada — podría sumar una segunda señal de liquidez además
   del spread (ej. advertir si OI o volumen están muy bajos incluso con spread angosto).
-- Rankings de mercado (ganadoras/perdedoras, más activas): Schwab (heredado de TD Ameritrade)
-  probablemente tiene un endpoint `/marketdata/v1/movers/{index}` — no verificado todavía,
-  evaluar antes de buscar otra fuente.
+- Rankings de mercado (ganadoras/perdedoras, más activas): **confirmado en vivo hoy** —
+  `/marketdata/v1/movers/$SPX` (heredado de TD Ameritrade) funciona y devuelve top movers reales
+  con symbol/precio/%change/volumen (probado: INTC -8.6%, NVDA -0.9%, T +4.7%, ...). Sin
+  implementar todavía — falta decidir el caso de uso concreto (¿una sección nueva en el
+  dashboard? ¿alimentar el escaneo de universo con esto en vez de/además de la lista fija?).
+  Es una decisión de producto, no una limitación técnica — confirmar con el usuario antes de
+  construir algo.
 - Cripto vía Schwab `/quote` (BTC/ETH spot) confirmado gratis y funcional — anotado como
   "barato" en el backlog original, sin implementar.
 
