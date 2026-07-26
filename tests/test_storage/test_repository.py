@@ -117,3 +117,31 @@ def test_get_alerts_for_date_joins_candidate_fields(conn):
     assert aapl["strategy_type"] == "cash_secured_put"
     assert aapl["delta"] == 0.3
     assert aapl["max_loss"] == 500.0
+
+
+def _insert_candidate_with_annualized_return(conn, symbol: str, annualized_return_pct: float | None) -> None:
+    repo.insert_candidate_contract(
+        conn,
+        CandidateContract(
+            symbol=symbol,
+            snapshot_date=date(2026, 7, 24),
+            strategy_type="cash_secured_put",
+            expiration_date=date(2026, 8, 15),
+            strikes={"short": 100},
+            greeks_source="calculated",
+            conviction_score=80,
+            scoring_breakdown={},
+            annualized_return_pct=annualized_return_pct,
+        ),
+    )
+
+
+def test_get_average_annualized_return_pct_averages_recent_candidates(conn):
+    _insert_candidate_with_annualized_return(conn, "AAPL", 10.0)
+    _insert_candidate_with_annualized_return(conn, "MSFT", 20.0)
+    _insert_candidate_with_annualized_return(conn, "TSLA", None)  # ignorado, sin dato
+    assert repo.get_average_annualized_return_pct(conn) == pytest.approx(15.0)
+
+
+def test_get_average_annualized_return_pct_none_without_data(conn):
+    assert repo.get_average_annualized_return_pct(conn) is None

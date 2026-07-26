@@ -4,25 +4,41 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-24.
+Última actualización: 2026-07-25.
 
 ## En progreso ahora
 
-- **Calculadora de interés compuesto** en la página Configuración — arrancando.
+- **Buscador de noticias por símbolo libre** en la página Noticias — arrancando (ver tarea 1 de
+  "Pendiente" para el detalle).
 
 ## Pendiente, no empezado
 
-1. **Buscador de noticias por símbolo libre** en la página Noticias: cualquier símbolo (no solo
-   watchlist), cotización + noticias en tiempo real al buscar, error claro si el símbolo no
-   existe. Pregunta del usuario sin responder todavía: ¿llamada en vivo cada vez, o cachear
-   ~5 min para no golpear rate limits si se repite la búsqueda?
-2. **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
+1. **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
    selector de semana o rango desde/hasta, earnings de la watchlist (y opcionalmente universo
    amplio) dentro de ese rango, ordenados por fecha.
-3. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
+2. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
    movimiento, aplicado por igual a todos los subyacentes de posiciones abiertas, recalculado
    con el motor de `payoff.py` existente. Muestra total proyectado vs. hoy (diferencia $ y %).
    Disclaimer de que es una simplificación (todo se mueve igual), no una predicción real.
+3. **Pestaña "Operaciones" — réplica automática de operaciones reales** (pedido 2026-07-25):
+   detectar en tiempo real cuando se abre una posición nueva en la cuenta real de Schwab (ej.
+   vender 1 Put de TSLA strike 320 vence 21/8) y generar automáticamente una "alerta" con el
+   mismo formato completo de las alertas de oportunidades (P&L, breakeven, POP, % cobertura,
+   noticias recientes, comentario del narrador) pero aplicada a la operación YA ejecutada, no
+   a una sugerencia. Después de las 3 tareas de arriba. Respuestas a las 3 preguntas de diseño:
+   1. Detección: comparar el snapshot de `get_all_positions()` de la corrida actual contra el
+      snapshot guardado de la corrida anterior (nueva tabla, ej. `position_snapshots`, con
+      symbol OCC + quantity por cuenta) — una posición de tipo OPTION que aparece nueva o con
+      cantidad corta mayor que antes = operación nueva. Usa el parseo OCC que ya existe en
+      `AccountPosition` (broker/models.py), no depende de `description`.
+   2. Frecuencia: la misma corrida del scheduler existente (`job_poll_and_analyze`, cron
+      `*/{poll_interval_minutes}` en horario de mercado — ver `scheduler/runner.py`), no un
+      scheduler aparte — evita pegarle dos veces a la API de Schwab y mantiene todo el pipeline
+      sincronizado a un solo "tick".
+   3. Sí, tabla separada (ej. `real_trade_alerts`) y página propia "Operaciones" — no mezclar
+      con `candidate_contracts`/`alerts`, que representan sugerencias no ejecutadas. Mezclarlas
+      rompería la semántica actual de esas tablas (candidato vs. hecho real) y complicaría
+      cualquier reporte futuro que separe "lo que sugerimos" de "lo que hiciste".
 
 ## Bloqueado — esperando al usuario (de antes de hoy, sigue vigente)
 
@@ -52,6 +68,10 @@ es el estado ACTUAL de qué falta.
     SMA8/SMA20) — las 3 preguntas de diseño confirmadas por el usuario antes de implementar.
 12. Rendimiento anualizado sobre capital en riesgo + proyección de cierre anticipado
     (30%/50%/100%, con disclaimer de que asume precio/IV constantes).
+13. Calculadora de interés compuesto en Configuración — prellenada con el promedio real de
+    rendimiento anualizado de las alertas (no un número arbitrario), tabla + gráfico año a año,
+    disclaimer de que es proyección. Verificado en navegador (screenshot) y con 11 tests
+    (`test_compound_interest.py`, `test_repository.py`) — 279/279 tests del repo en verde.
 
 ## Cómo se usa este archivo
 

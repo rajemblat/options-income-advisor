@@ -241,6 +241,24 @@ def insert_alert(conn: sqlite3.Connection, alert: Alert) -> int | None:
     return cur.lastrowid if cur.rowcount > 0 else None
 
 
+def get_average_annualized_return_pct(conn: sqlite3.Connection, limit: int = 200) -> float | None:
+    """Promedio de annualized_return_pct de los candidatos más recientes — usado para
+    prellenar la calculadora de interés compuesto en Configuración (pedido 2026-07-24) con un
+    valor de referencia real en vez de un número arbitrario. None si todavía no hay ningún
+    candidato con este dato calculado (símbolos sin analizar, o antes de este campo existir)."""
+    row = conn.execute(
+        """
+        SELECT AVG(annualized_return_pct) AS avg_pct FROM (
+            SELECT annualized_return_pct FROM candidate_contracts
+            WHERE annualized_return_pct IS NOT NULL
+            ORDER BY id DESC LIMIT ?
+        )
+        """,
+        (limit,),
+    ).fetchone()
+    return round(row["avg_pct"], 2) if row and row["avg_pct"] is not None else None
+
+
 def get_alerts(conn: sqlite3.Connection, symbol: str | None = None, limit: int = 100) -> list[sqlite3.Row]:
     if symbol:
         return conn.execute(
