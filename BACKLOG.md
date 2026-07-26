@@ -100,6 +100,16 @@ es el estado ACTUAL de qué falta.
     sola posición supera el 25%/100% del capital configurado en Configuración — en la alerta de
     WhatsApp y en la tarjeta del dashboard. Verificado con 13 tests nuevos —
     295/295 tests del repo en verde.
+16. **Bug real encontrado por el usuario y corregido**: la alerta de Collar no avisaba que hace
+    falta tener/comprar 100 acciones del subyacente (sin ellas la call vendida es un Call
+    desnudo, riesgo no acotado) — la advertencia solo existía para Covered Call. Se unificó en
+    `share_requirement_line()` (`alerts/formatting.py`), usada por el texto de WhatsApp y la
+    tarjeta del dashboard, y se sumó precio actual + costo total de las 100 acciones al texto
+    ("Requiere 100 acciones de X a $Y (~$Z)"). Confirmado con un ejemplo real (AAPL, cadena
+    mock): el cálculo de beneficio/pérdida máxima YA incluía correctamente el valor de las
+    acciones (Collar cap en el put protector, $814 de pérdida máxima vs. Covered Call sin
+    protección, $27,492 — casi el costo total de las acciones menos la prima); el bug era solo
+    de texto, no de números. 7 tests nuevos — 302/302 tests del repo en verde.
 
 ## Cómo se usa este archivo
 

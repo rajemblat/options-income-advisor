@@ -37,6 +37,28 @@ def strategy_label(strategy_type: str) -> str:
     return STRATEGY_LABELS.get(strategy_type, strategy_type)
 
 
+# Covered Call y Collar dependen de tener (o adquirir) 100 acciones del subyacente antes de
+# vender la call — sin esas acciones, la call vendida sería un Call desnudo (riesgo NO acotado),
+# no una posición cubierta. Bug real encontrado 2026-07-26: esta advertencia se mostraba SOLO
+# para Covered Call, nunca para Collar, pese a que el Collar depende exactamente de la misma
+# posición de acciones (el put comprado protege el riesgo de las acciones, no reemplaza tenerlas).
+STOCK_REQUIRED_STRATEGIES = {"covered_call", "collar"}
+
+
+def share_requirement_line(strategy_type: str, symbol: str, underlying_price: float | None) -> str | None:
+    """None si la estrategia no depende de tener acciones. El cálculo de beneficio/pérdida
+    máxima (`strategy/payoff.py::_pnl_at`) ya incluye el valor de esas 100 acciones — esta línea
+    es solo la advertencia explícita en el texto, no afecta ningún número."""
+    if strategy_type not in STOCK_REQUIRED_STRATEGIES:
+        return None
+    if underlying_price is None:
+        return f"Requiere 100 acciones de {symbol} en cartera (o asignación previa)."
+    return (
+        f"Requiere 100 acciones de {symbol} a {_fmt_money(underlying_price)} "
+        f"(~{_fmt_money(underlying_price * 100)}) en cartera (o asignación previa)."
+    )
+
+
 def _earnings_line(context: dict) -> str:
     next_earnings = context.get("next_earnings_date")
     if not next_earnings:
@@ -222,8 +244,9 @@ def format_alert_message(context: dict, comment: str) -> str:
     lines.append(SEPARATOR)
     if legs:
         lines.extend(_leg_line(leg) for leg in legs)
-        if context["strategy_type"] == "covered_call":
-            lines.append(f"▸ Requiere 100 acciones de {context['symbol']} en cartera (o asignación previa).")
+        share_line = share_requirement_line(context["strategy_type"], context["symbol"], context.get("underlying_price"))
+        if share_line:
+            lines.append(f"▸ {share_line}")
     else:
         lines.append(f"Strikes: {context.get('strikes', {})}")
     lines.append(SEPARATOR)

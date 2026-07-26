@@ -4,7 +4,13 @@ from datetime import date
 
 import pytest
 
-from options_advisor.alerts.formatting import assess_dividend_risk, assess_liquidity, compute_coverage, format_alert_message
+from options_advisor.alerts.formatting import (
+    assess_dividend_risk,
+    assess_liquidity,
+    compute_coverage,
+    format_alert_message,
+    share_requirement_line,
+)
 
 _BASE_CONTEXT = {
     "symbol": "AAPL",
@@ -258,3 +264,53 @@ def test_format_alert_message_omits_capital_at_risk_without_capital_available():
     text = format_alert_message(context, "comentario")
     assert "Riesgo real" not in text
     assert "arriesga" not in text
+
+
+_DUMMY_LEG = {
+    "side": "sell",
+    "quantity": 1,
+    "option_type": "call",
+    "strike": 290.0,
+    "expiration": "2026-08-21",
+    "premium": 1.31,
+}
+
+
+def test_share_requirement_line_none_for_strategies_without_stock():
+    assert share_requirement_line("cash_secured_put", "AAPL", 200.0) is None
+    assert share_requirement_line("iron_condor", "AAPL", 200.0) is None
+
+
+def test_share_requirement_line_includes_price_and_total_cost_for_covered_call():
+    line = share_requirement_line("covered_call", "AAPL", 276.23)
+    assert line == "Requiere 100 acciones de AAPL a $276.23 (~$27,623.00) en cartera (o asignación previa)."
+
+
+def test_share_requirement_line_includes_price_and_total_cost_for_collar():
+    """Bug real encontrado 2026-07-26: esta línea no se mostraba nunca para Collar, solo para
+    Covered Call — pese a que el Collar depende de la misma posición de 100 acciones (el put
+    comprado protege esas acciones, no las reemplaza)."""
+    line = share_requirement_line("collar", "AAPL", 276.23)
+    assert line == "Requiere 100 acciones de AAPL a $276.23 (~$27,623.00) en cartera (o asignación previa)."
+
+
+def test_share_requirement_line_falls_back_without_underlying_price():
+    assert share_requirement_line("covered_call", "AAPL", None) == "Requiere 100 acciones de AAPL en cartera (o asignación previa)."
+
+
+def test_format_alert_message_shows_share_requirement_for_collar():
+    context = {**_BASE_CONTEXT, "strategy_type": "collar", "next_earnings_date": None, "legs": [_DUMMY_LEG], "underlying_price": 276.23}
+    text = format_alert_message(context, "comentario")
+    assert "Requiere 100 acciones de AAPL a $276.23 (~$27,623.00)" in text
+
+
+def test_format_alert_message_shows_share_requirement_for_covered_call():
+    context = {**_BASE_CONTEXT, "strategy_type": "covered_call", "next_earnings_date": None, "legs": [_DUMMY_LEG], "underlying_price": 276.23}
+    text = format_alert_message(context, "comentario")
+    assert "Requiere 100 acciones de AAPL a $276.23 (~$27,623.00)" in text
+
+
+def test_format_alert_message_omits_share_requirement_for_cash_secured_put():
+    context = {**_BASE_CONTEXT, "strategy_type": "cash_secured_put", "next_earnings_date": None, "legs": [_DUMMY_LEG]}
+    text = format_alert_message(context, "comentario")
+    assert "Requiere 100 acciones" not in text

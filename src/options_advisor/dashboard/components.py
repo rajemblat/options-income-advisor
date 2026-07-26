@@ -10,7 +10,13 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
-from options_advisor.alerts.formatting import assess_dividend_risk, assess_liquidity, compute_coverage, strategy_label
+from options_advisor.alerts.formatting import (
+    assess_dividend_risk,
+    assess_liquidity,
+    compute_coverage,
+    share_requirement_line,
+    strategy_label,
+)
 from options_advisor.broker import get_broker_client
 from options_advisor.broker.base import BrokerClient
 from options_advisor.config import PROJECT_ROOT, Settings, load_settings, load_symbols
@@ -535,10 +541,10 @@ def render_alert_card(
     if legs:
         html.append("<div style='margin-top:0.8rem;'>")
         html.extend(_leg_row_html(leg) for leg in legs)
-        if strategy_type == "covered_call":
+        share_line = share_requirement_line(strategy_type, alert["symbol"], underlying_price)
+        if share_line:
             html.append(
-                f"<div style='color:{TEXT_MUTED}; font-size:0.85rem; margin-top:0.4rem;'>{icon('info', size=14)} "
-                f"Requiere 100 acciones de {alert['symbol']} en cartera (o asignación previa).</div>"
+                f"<div style='color:{TEXT_MUTED}; font-size:0.85rem; margin-top:0.4rem;'>{icon('info', size=14)} {share_line}</div>"
             )
         html.append("</div>")
 
