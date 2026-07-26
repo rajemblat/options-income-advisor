@@ -4,23 +4,20 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-25.
+Última actualización: 2026-07-26.
 
 ## En progreso ahora
 
-- **Buscador de noticias por símbolo libre** en la página Noticias — arrancando (ver tarea 1 de
-  "Pendiente" para el detalle).
+- **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
+  arrancando (ver tarea 1 de "Pendiente" para el detalle).
 
 ## Pendiente, no empezado
 
-1. **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
-   selector de semana o rango desde/hasta, earnings de la watchlist (y opcionalmente universo
-   amplio) dentro de ese rango, ordenados por fecha.
-2. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
+1. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
    movimiento, aplicado por igual a todos los subyacentes de posiciones abiertas, recalculado
    con el motor de `payoff.py` existente. Muestra total proyectado vs. hoy (diferencia $ y %).
    Disclaimer de que es una simplificación (todo se mueve igual), no una predicción real.
-3. **Pestaña "Operaciones" — réplica automática de operaciones reales** (pedido 2026-07-25):
+2. **Pestaña "Operaciones" — réplica automática de operaciones reales** (pedido 2026-07-25):
    detectar en tiempo real cuando se abre una posición nueva en la cuenta real de Schwab (ej.
    vender 1 Put de TSLA strike 320 vence 21/8) y generar automáticamente una "alerta" con el
    mismo formato completo de las alertas de oportunidades (P&L, breakeven, POP, % cobertura,
@@ -72,6 +69,9 @@ es el estado ACTUAL de qué falta.
     rendimiento anualizado de las alertas (no un número arbitrario), tabla + gráfico año a año,
     disclaimer de que es proyección. Verificado en navegador (screenshot) y con 11 tests
     (`test_compound_interest.py`, `test_repository.py`) — 279/279 tests del repo en verde.
+14. Buscador de noticias por símbolo libre en Noticias (cotización + noticias de cualquier
+    símbolo, cacheado 5 min) + fix del botón ☰ para reabrir el sidebar. Verificado en navegador
+    (NFLX en vivo) y con 3 tests nuevos — 282/282 tests del repo en verde.
 
 ## Cómo se usa este archivo
 
