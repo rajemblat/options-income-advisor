@@ -187,6 +187,24 @@ def _leg_line(leg: dict) -> str:
     )
 
 
+def _capital_at_risk_lines(max_loss: float | None, capital_available: float | None) -> list[str]:
+    """Riesgo real en dólares de esta posición sola vs. el capital configurado en
+    Configuración — sumado 2026-07-26 al agregar índices (RUT/NDX): cash_secured_put/
+    short_put_naked sobre un índice pueden arriesgar notional de cientos de miles de dólares,
+    y nada en el motor filtra por tamaño de posición, así que se avisa en vez de excluir."""
+    if max_loss is None or math.isinf(max_loss) or not capital_available:
+        return []
+    pct = max_loss / capital_available
+    if pct >= 1.0:
+        return [
+            f"⚠ Esta posición sola arriesga {_fmt_money(max_loss)} — {pct * 100:.0f}% de tu capital "
+            f"configurado ({_fmt_money(capital_available)}). Muy por encima de tu tamaño de cuenta."
+        ]
+    if pct >= 0.25:
+        return [f"⚠ Riesgo real: {_fmt_money(max_loss)} ({pct * 100:.0f}% de tu capital configurado) si llega a la pérdida máxima."]
+    return []
+
+
 def format_alert_message(context: dict, comment: str) -> str:
     """Arma el bloque de alerta completo (emojis + patas + métricas de riesgo/retorno +
     comentario). Todo lo numérico viene ya calculado por `strategy/payoff.py` — el único
@@ -219,6 +237,7 @@ def format_alert_message(context: dict, comment: str) -> str:
 
     lines.append(f"▲ Beneficio máximo: {_fmt_money(context.get('max_profit'))}")
     lines.append(f"▽ Pérdida máxima (riesgo): {_fmt_money(context.get('max_loss'))}")
+    lines.extend(_capital_at_risk_lines(context.get("max_loss"), context.get("capital_available")))
 
     breakevens = context.get("breakevens") or []
     breakevens_str = " / ".join(f"${b:,.2f}" for b in breakevens) if breakevens else "N/D"

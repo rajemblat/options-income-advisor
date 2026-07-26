@@ -16,6 +16,7 @@ from options_advisor.dashboard.portfolio_analysis import (
     position_pct_return,
 )
 from options_advisor.dashboard.portfolio_narration import narrate_portfolio
+from options_advisor.broker.models import index_quote_symbol
 from options_advisor.market_context import finnhub_client
 
 st.set_page_config(page_title="Portafolio real", page_icon="💼", layout="wide")
@@ -32,7 +33,12 @@ settings = get_settings()
 
 
 def _underlying_of(position) -> str:
-    return position.underlying_symbol if (position.asset_type == "OPTION" and position.underlying_symbol) else position.symbol
+    """Símbolo a usar para pedir cotización/cadena de este subyacente. Para opciones de índice
+    (root OCC "pelado", ej. "RUT") convierte al símbolo `$`-prefijado que Schwab exige para
+    cotizar (`index_quote_symbol`) — para todo lo demás no cambia nada."""
+    if position.asset_type == "OPTION" and position.underlying_symbol:
+        return index_quote_symbol(position.underlying_symbol)
+    return position.symbol
 
 
 def _display_symbol(position) -> str:
@@ -128,13 +134,15 @@ else:
             option_positions_needing_chain = [
                 p for p in filtered if p.asset_type == "OPTION" and p.expiration and p.expiration > target_date
             ]
-            underlyings_needing_chain = sorted({p.underlying_symbol for p in option_positions_needing_chain if p.underlying_symbol})
+            underlyings_needing_chain = sorted({index_quote_symbol(p.underlying_symbol) for p in option_positions_needing_chain if p.underlying_symbol})
 
             with st.spinner(f"Pidiendo cadenas de opciones en vivo para {len(underlyings_needing_chain)} subyacente(s)..."):
                 chains = {}
                 for u in underlyings_needing_chain:
                     max_dte = max(
-                        (p.expiration - date.today()).days for p in option_positions_needing_chain if p.underlying_symbol == u
+                        (p.expiration - date.today()).days
+                        for p in option_positions_needing_chain
+                        if index_quote_symbol(p.underlying_symbol) == u
                     )
                     try:
                         chains[u] = broker.get_option_chain(u, expiration_range_days=(0, max_dte + 5))
@@ -146,7 +154,7 @@ else:
                     current_price = quotes[_underlying_of(p)].last_price if _underlying_of(p) in quotes else None
                     iv = None
                     if p.asset_type == "OPTION" and p.expiration and p.expiration > target_date:
-                        chain = chains.get(p.underlying_symbol)
+                        chain = chains.get(index_quote_symbol(p.underlying_symbol)) if p.underlying_symbol else None
                         iv = find_matching_contract_iv(chain, p) if chain else None
                     proj_pnl = effective_projected_pnl_at_date(p, current_price, target_date, iv, settings.market.risk_free_rate)
                     proj_rows.append(

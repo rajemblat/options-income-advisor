@@ -69,6 +69,9 @@ def process_symbol_alerts(
     else:
         risk_level, threshold = _resolve_risk_profile(conn, settings)
 
+    profile = repo.get_investor_profile(conn)
+    capital_available = profile.capital_available if profile else settings.investor_profile.capital_available
+
     if snap.iv_rank is None:
         logger.info("%s: IV Rank no disponible todavía, sin candidatos posibles", snap.symbol)
         return []
@@ -176,6 +179,7 @@ def process_symbol_alerts(
             next_ex_dividend_date=analysis.quote.next_ex_dividend_date,
             annualized_return_pct=payoff.annualized_return_pct,
             early_close_projection=payoff.early_close_projection,
+            capital_available=capital_available,
         )
         narrative_text, narrative_source = narrator.narrate_alert(context, settings.llm, anthropic_api_key)
 

@@ -225,3 +225,36 @@ def test_format_alert_message_omits_early_close_when_empty():
     context = {**_BASE_CONTEXT, "next_earnings_date": None, "early_close_projection": []}
     text = format_alert_message(context, "comentario")
     assert "Cierre anticipado" not in text
+
+
+def test_format_alert_message_flags_capital_at_risk_exceeding_account_size():
+    context = {**_BASE_CONTEXT, "next_earnings_date": None, "max_loss": 590_000.0, "capital_available": 50_000.0}
+    text = format_alert_message(context, "comentario")
+    assert "Esta posición sola arriesga $590,000.00 — 1180% de tu capital configurado ($50,000.00)" in text
+
+
+def test_format_alert_message_flags_capital_at_risk_above_quarter_of_account():
+    context = {**_BASE_CONTEXT, "next_earnings_date": None, "max_loss": 15_000.0, "capital_available": 50_000.0}
+    text = format_alert_message(context, "comentario")
+    assert "Riesgo real: $15,000.00 (30% de tu capital configurado)" in text
+
+
+def test_format_alert_message_omits_capital_at_risk_when_small():
+    context = {**_BASE_CONTEXT, "next_earnings_date": None, "max_loss": 500.0, "capital_available": 50_000.0}
+    text = format_alert_message(context, "comentario")
+    assert "Riesgo real" not in text
+    assert "arriesga" not in text
+
+
+def test_format_alert_message_omits_capital_at_risk_for_unbounded_loss():
+    context = {**_BASE_CONTEXT, "next_earnings_date": None, "max_loss": float("inf"), "capital_available": 50_000.0}
+    text = format_alert_message(context, "comentario")
+    assert "Riesgo real" not in text
+    assert "arriesga" not in text
+
+
+def test_format_alert_message_omits_capital_at_risk_without_capital_available():
+    context = {**_BASE_CONTEXT, "next_earnings_date": None, "max_loss": 590_000.0, "capital_available": None}
+    text = format_alert_message(context, "comentario")
+    assert "Riesgo real" not in text
+    assert "arriesga" not in text

@@ -8,21 +8,17 @@ es el estado ACTUAL de qué falta.
 
 ## En progreso ahora
 
-- **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
-  arrancando (ver tarea 1 de "Pendiente" para el detalle).
+- **Rediseño de página principal estilo CNBC** (siguiente en el orden confirmado 2026-07-26).
 
-## Pendiente, no empezado
+## Pendiente, no empezado — orden confirmado por el usuario 2026-07-26
 
-1. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
-   movimiento, aplicado por igual a todos los subyacentes de posiciones abiertas, recalculado
-   con el motor de `payoff.py` existente. Muestra total proyectado vs. hoy (diferencia $ y %).
-   Disclaimer de que es una simplificación (todo se mueve igual), no una predicción real.
-2. **Pestaña "Operaciones" — réplica automática de operaciones reales** (pedido 2026-07-25):
+1. **Pestaña "Operaciones" — réplica automática de operaciones reales** (pedido 2026-07-25):
    detectar en tiempo real cuando se abre una posición nueva en la cuenta real de Schwab (ej.
    vender 1 Put de TSLA strike 320 vence 21/8) y generar automáticamente una "alerta" con el
    mismo formato completo de las alertas de oportunidades (P&L, breakeven, POP, % cobertura,
    noticias recientes, comentario del narrador) pero aplicada a la operación YA ejecutada, no
-   a una sugerencia. Después de las 3 tareas de arriba. Respuestas a las 3 preguntas de diseño:
+   a una sugerencia. Complejidad: **alta** (volumen de código, no decisiones pendientes — las
+   3 preguntas de diseño ya están resueltas). Respuestas a las 3 preguntas de diseño:
    1. Detección: comparar el snapshot de `get_all_positions()` de la corrida actual contra el
       snapshot guardado de la corrida anterior (nueva tabla, ej. `position_snapshots`, con
       symbol OCC + quantity por cuenta) — una posición de tipo OPTION que aparece nueva o con
@@ -36,12 +32,37 @@ es el estado ACTUAL de qué falta.
       con `candidate_contracts`/`alerts`, que representan sugerencias no ejecutadas. Mezclarlas
       rompería la semántica actual de esas tablas (candidato vs. hecho real) y complicaría
       cualquier reporte futuro que separe "lo que sugerimos" de "lo que hiciste".
+2. **3 funcionalidades de Fed/FRED**: bloqueo de días de riesgo CPI/NFP, semáforo de
+   volatilidad, alertas proactivas. Complejidad: **media** — `market_context/fred_client.py` y
+   `economic_calendar.py` ya resuelven fechas de FOMC/CPI/empleo, es integración sobre una base
+   ya construida, no invención desde cero.
+3. **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
+   selector de semana o rango desde/hasta, earnings de la watchlist (y opcionalmente universo
+   amplio) dentro de ese rango, ordenados por fecha. Complejidad: **baja** — página de
+   filtro/tabla sobre datos de earnings que ya se usan para el aviso de clusters simultáneos.
+4. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
+   movimiento, aplicado por igual a todos los subyacentes de posiciones abiertas, recalculado
+   con el motor de `payoff.py` existente. Muestra total proyectado vs. hoy (diferencia $ y %).
+   Disclaimer de que es una simplificación (todo se mueve igual), no una predicción real.
+   Complejidad: **baja/media** — reusa el motor de payoff existente, con precedente directo
+   (rendimiento anualizado + cierre anticipado ya hicieron algo similar).
 
-## Bloqueado — esperando al usuario (de antes de hoy, sigue vigente)
+## Bloqueado / diferido — decisión de producto o diseño pendiente
 
-- **BTC real (spot) y opciones sobre índices** ($SPX/$RUT/$NDX/$VIX): necesita que el usuario
-  confirme qué quiere (BTC: ETF apalancado que ya trae Schwab vs. spot real vía
-  `BINANCE:BTCUSDT`) y una prueba en vivo de la cadena de opciones de índices antes de sumarlos.
+- **SPX 0DTE**: evaluado 2026-07-26, **no se integra al motor existente**. El buscador de
+  expiraciones (`strategy/candidates.py:15-17`) sólo busca ventanas de 25-50 días — 0 DTE nunca
+  entra en ese rango. El IV Rank (`iv_rank.min_sessions_for_real_iv: 20` en `settings.yaml`) es
+  un percentil sobre ~20-252 sesiones diarias, sin sentido para una decisión intradía. Merece
+  ser un módulo separado (cadencia de polling propia, indicadores intradía propios — rango de
+  apertura/VWAP/movimiento esperado del día en vez de RSI/SMA/IV Rank diario —, selección de
+  strike y métrica de retorno propias). Diseño pendiente, no programar sin conversación previa.
+- **VIX como subyacente del motor**: diferido. VIX se basa en futuros, no en spot — el fallback
+  de Black-Scholes del motor calcularía griegos con el precio spot en vez del futuro relevante,
+  lo cual da griegos incorrectos si hay contango/backwardation (frecuente en VIX). Falta decidir
+  cómo tratar esto antes de sumarlo.
+- **BTC real (spot)**: confirmado 2026-07-26 — usar Finnhub `BINANCE:BTCUSDT` en vez del ETF
+  apalancado de Schwab. Pendiente de implementar (mostrar precio real, no motor de opciones —
+  BTC spot no tiene cadena de opciones en Schwab).
 
 ## Terminado y verificado hoy (ver NOTES.md para el detalle técnico completo de cada uno)
 
@@ -72,6 +93,13 @@ es el estado ACTUAL de qué falta.
 14. Buscador de noticias por símbolo libre en Noticias (cotización + noticias de cualquier
     símbolo, cacheado 5 min) + fix del botón ☰ para reabrir el sidebar. Verificado en navegador
     (NFLX en vivo) y con 3 tests nuevos — 282/282 tests del repo en verde.
+15. RUT + NDX sumados al motor existente (`config/symbols.yaml`, plazos normales) +
+    `index_quote_symbol()` en `broker/models.py` para traducir el root OCC "pelado" al símbolo
+    `$`-prefijado que Schwab exige al cotizar/pedir cadena (usado en Portafolio real para
+    subyacentes de índice). Badge de riesgo real en dólares (⚠) cuando la pérdida máxima de una
+    sola posición supera el 25%/100% del capital configurado en Configuración — en la alerta de
+    WhatsApp y en la tarjeta del dashboard. Verificado con 13 tests nuevos —
+    295/295 tests del repo en verde.
 
 ## Cómo se usa este archivo
 

@@ -438,12 +438,39 @@ def _dividend_caveat_html(warnings: list[dict]) -> str:
     )
 
 
+def _capital_at_risk_caveat_html(max_loss: float | None, capital_available: float | None) -> str:
+    """Riesgo real en dólares de ESTA posición sola vs. el capital configurado en
+    Configuración. Pedido explícito 2026-07-26 al sumar índices (SPX/RUT/NDX): el motor no
+    filtra por tamaño de posición (cash_secured_put/short_put_naked sobre un índice pueden
+    arriesgar cientos de miles de dólares de notional, spread muy distinto a una acción de
+    $50-500), así que se muestra el riesgo explícito en vez de excluir la estrategia —
+    decisión del usuario, no del motor. `max_loss` en `inf` (riesgo no acotado) ya se muestra
+    como "Ilimitado" en la tarjeta de Pérdida máxima; ese caso no necesita este cálculo."""
+    if max_loss is None or math.isinf(max_loss) or not capital_available:
+        return ""
+    pct = max_loss / capital_available
+    if pct >= 1.0:
+        return (
+            f"<div class='oia-caveat' style='color:{CRITICAL};'>{icon('alert-triangle', size=15, color=CRITICAL)} "
+            f"Esta posición sola arriesga {_fmt_money(max_loss)} — {pct * 100:.0f}% de tu capital configurado "
+            f"({_fmt_money(capital_available)}). Muy por encima de tu tamaño de cuenta.</div>"
+        )
+    if pct >= 0.25:
+        return (
+            f"<div class='oia-caveat' style='color:{WARNING};'>{icon('alert-triangle', size=15, color=WARNING)} "
+            f"Riesgo real: {_fmt_money(max_loss)} ({pct * 100:.0f}% de tu capital configurado, "
+            f"{_fmt_money(capital_available)}) si esta posición sola llega a la pérdida máxima.</div>"
+        )
+    return ""
+
+
 def render_alert_card(
     alert: sqlite3.Row,
     candidate: sqlite3.Row | None,
     next_earnings_date: str | None = None,
     fed_meeting_date: str | None = None,
     next_ex_dividend_date: str | None = None,
+    capital_available: float | None = None,
 ) -> None:
     """Tarjeta premium de una alerta: patas, prima, beneficio/pérdida máxima, breakevens,
     probabilidad de beneficio y el comentario del narrador — mismos datos que el bloque de
@@ -501,6 +528,9 @@ def render_alert_card(
     dividend_caveat = _dividend_caveat_html(assess_dividend_risk(legs, next_ex_dividend_date))
     if dividend_caveat:
         html.append(dividend_caveat)
+    capital_caveat = _capital_at_risk_caveat_html(candidate["max_loss"] if candidate else None, capital_available)
+    if capital_caveat:
+        html.append(capital_caveat)
 
     if legs:
         html.append("<div style='margin-top:0.8rem;'>")

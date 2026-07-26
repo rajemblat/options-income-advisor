@@ -59,6 +59,29 @@ class OptionContract(BaseModel):
         return round((self.bid + self.ask) / 2, 4)
 
 
+# El root OCC de una opción de índice (parseado por `_parse_occ_option_symbol` en
+# schwab_client.py) es el ticker "pelado" (ej. "RUT", "NDX", weeklies "RUTW"/"NDXW") — pero
+# `get_quote`/`get_quotes`/`get_option_chain` de Schwab exigen el símbolo con prefijo `$`
+# (ej. "$RUT"). Sin este mapeo, cualquier página que pida cotización/cadena para el
+# `underlying_symbol` de una posición de opción de índice real falla en silencio (no matchea
+# nada en el dict de `get_quotes`, o el request de cadena usa un símbolo que Schwab no reconoce).
+_INDEX_OCC_ROOT_TO_QUOTE_SYMBOL = {
+    "RUT": "$RUT",
+    "RUTW": "$RUT",
+    "NDX": "$NDX",
+    "NDXW": "$NDX",
+    "SPX": "$SPX",
+    "SPXW": "$SPX",
+    "VIX": "$VIX",
+}
+
+
+def index_quote_symbol(underlying_symbol: str) -> str:
+    """Convierte un root OCC de índice a su símbolo de cotización (`$`-prefijado). Para
+    cualquier otro símbolo (acciones/ETFs normales) lo devuelve sin cambios."""
+    return _INDEX_OCC_ROOT_TO_QUOTE_SYMBOL.get(underlying_symbol, underlying_symbol)
+
+
 class AccountPosition(BaseModel):
     """Una posición real de cuenta. Entrega 1: símbolo, cantidad, precio de entrada, valor
     actual, P&L. Entrega 2 (análisis sin IA): se suman underlying_symbol/option_type/strike/

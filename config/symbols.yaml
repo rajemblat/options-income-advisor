@@ -6,6 +6,11 @@ symbols:
   - SPY
   - QQQ
   - IWM
+  # Índices (cash-settled) — sumados 2026-07-26, plazos normales (no 0DTE, ver NOTES.md).
+  # $SPX y $VIX quedan afuera por ahora (SPX: uso real del usuario es 0DTE, incompatible con
+  # este motor de 25-50 DTE; VIX: basado en futuros, griegos por BS quedarían mal calculados).
+  - $RUT
+  - $NDX
   # Large caps ultra-líquidos — buenos para Cash-Secured Put / Covered Call
   - AAPL
   - MSFT

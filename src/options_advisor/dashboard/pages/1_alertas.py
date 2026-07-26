@@ -54,6 +54,8 @@ if selected_risk != "Todos":
 
 macro = repo.get_latest_macro_snapshot(conn)
 fed_meeting_date = macro["fed_meeting_date"] if macro else None
+investor_profile = repo.get_investor_profile(conn)
+capital_available = investor_profile.capital_available if investor_profile else None
 
 rows = []
 for alert in alerts:
@@ -75,4 +77,5 @@ else:
             next_earnings_date=next_earnings_date,
             fed_meeting_date=fed_meeting_date,
             next_ex_dividend_date=next_ex_dividend_date,
+            capital_available=capital_available,
         )
