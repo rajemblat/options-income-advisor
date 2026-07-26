@@ -7,6 +7,7 @@ import sqlite3
 from datetime import datetime
 
 import streamlit as st
+import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from options_advisor.alerts.formatting import assess_dividend_risk, assess_liquidity, compute_coverage, strategy_label
@@ -110,7 +111,16 @@ def inject_theme() -> None:
     st.markdown(
         f"""
         <style>
+        /* Ocultamos el menú/footer/toolbar por defecto de Streamlit, pero NO el botón nativo
+        de expandir el sidebar (stExpandSidebarButton) — vive dentro de stToolbar, y ocultar
+        todo el contenedor con visibility:hidden lo tapaba a él también, dejando el sidebar
+        colapsado sin ninguna forma de reabrirlo (bug reportado 2026-07-26). */
         #MainMenu, footer, [data-testid="stToolbar"] {{ visibility: hidden; height: 0; }}
+        [data-testid="stExpandSidebarButton"] {{
+            visibility: visible !important;
+            height: 28px !important;
+            overflow: visible !important;
+        }}
 
         html, body, [class*="css"] {{
             -webkit-font-smoothing: antialiased;
@@ -201,6 +211,74 @@ def inject_theme() -> None:
         </style>
         """,
         unsafe_allow_html=True,
+    )
+    _render_sidebar_toggle()
+
+
+def _render_sidebar_toggle() -> None:
+    """Ícono ☰ fijo arriba a la izquierda para abrir/cerrar el sidebar de forma confiable
+    (bug reportado 2026-07-26: el CSS de arriba oculta [data-testid="stToolbar"] completo
+    para limpiar el chrome de Streamlit, y eso se llevaba puesto al botón nativo de expandir
+    el sidebar — quedaba colapsado sin ninguna forma de reabrirlo). En vez de depender de que
+    ese control nativo siga existiendo con el mismo data-testid en la próxima versión de
+    Streamlit, este botón vive fuera del iframe del componente (inyectado en
+    window.parent.document) y solo delega el toggle real en los botones nativos de Streamlit
+    (stExpandSidebarButton / stSidebarCollapseButton), así seguimos usando su manejo de estado
+    interno en vez de mover el sidebar a mano con CSS."""
+    components.html(
+        """
+        <script>
+        (function() {
+            const doc = window.parent.document;
+            if (doc.getElementById('oia-sidebar-toggle')) { return; }
+
+            const style = doc.createElement('style');
+            style.textContent = `
+                #oia-sidebar-toggle {
+                    position: fixed;
+                    top: 14px;
+                    left: 14px;
+                    z-index: 999999;
+                    width: 34px;
+                    height: 34px;
+                    border-radius: 8px;
+                    border: 1px solid rgba(255,255,255,0.15);
+                    background: #1c1d22;
+                    color: #e6e6e6;
+                    font-size: 18px;
+                    line-height: 1;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    cursor: pointer;
+                    user-select: none;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+                }
+                #oia-sidebar-toggle:hover { background: #26272e; }
+            `;
+            doc.head.appendChild(style);
+
+            const btn = doc.createElement('div');
+            btn.id = 'oia-sidebar-toggle';
+            btn.title = 'Abrir/cerrar menú';
+            btn.textContent = '☰';
+            function clickable(container) {
+                if (!container) { return null; }
+                return container.tagName === 'BUTTON' ? container : (container.querySelector('button') || container);
+            }
+            btn.addEventListener('click', function() {
+                const sidebar = doc.querySelector('[data-testid="stSidebar"]');
+                const expanded = sidebar && sidebar.getAttribute('aria-expanded') === 'true';
+                const target = expanded
+                    ? clickable(doc.querySelector('[data-testid="stSidebarCollapseButton"]'))
+                    : clickable(doc.querySelector('[data-testid="stExpandSidebarButton"]'));
+                if (target) { target.click(); }
+            });
+            doc.body.appendChild(btn);
+        })();
+        </script>
+        """,
+        height=0,
     )
 
 
