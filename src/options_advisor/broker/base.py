@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import date
 
-from options_advisor.broker.models import AccountPosition, OptionChain, PriceBar, Quote
+from options_advisor.broker.models import AccountPosition, Mover, OptionChain, PriceBar, Quote
 
 
 class BrokerClient(ABC):
@@ -52,6 +52,15 @@ class BrokerClient(ABC):
         """Todas las posiciones reales (acciones, opciones, ETFs) de todas las cuentas
         vinculadas — página de portafolio real, Entrega 1. [] si el broker no tiene cuentas
         reales (MockBrokerClient)."""
+        ...
+
+    @abstractmethod
+    def get_movers(self, index: str, sort: str, frequency: int = 0) -> list[Mover]:
+        """Top movers de un índice de referencia (`$SPX`/`$DJI`/`$COMPX`/etc.), usado en la
+        página principal estilo CNBC. `sort` es uno de `PERCENT_CHANGE_UP`,
+        `PERCENT_CHANGE_DOWN`, `VOLUME`, `TRADES` (valores del endpoint real de Schwab).
+        [] fuera de horario de mercado (el endpoint real no tiene datos que devolver) o en
+        modo mock si no hay fixture cargada."""
         ...
 
     @abstractmethod

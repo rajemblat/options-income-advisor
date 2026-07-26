@@ -20,6 +20,14 @@ class Quote(BaseModel):
     # calendarizado). Usado para advertir sobre riesgo de asignación anticipada en calls
     # vendidas (Covered Call/Collar/Iron Condor) que vencen después del ex-date.
     next_ex_dividend_date: date | None = None
+    # Ticker estilo CNBC (sumado 2026-07-26): variación vs. cierre anterior (incluye
+    # after-hours/pre-market, es lo que Schwab llama `netChange`/`netPercentChange` — el precio
+    # "actual" sea cual sea la sesión). `post_market_change_pct` es la variación ADICIONAL
+    # ocurrida específicamente después del cierre regular (`postMarketChange` de Schwab) — None
+    # si no hay sesión extendida en curso o el broker no la expone (modo mock).
+    net_change: float = 0.0
+    net_change_pct: float = 0.0
+    post_market_change_pct: float | None = None
 
 
 class PriceBar(BaseModel):
@@ -80,6 +88,23 @@ def index_quote_symbol(underlying_symbol: str) -> str:
     """Convierte un root OCC de índice a su símbolo de cotización (`$`-prefijado). Para
     cualquier otro símbolo (acciones/ETFs normales) lo devuelve sin cambios."""
     return _INDEX_OCC_ROOT_TO_QUOTE_SYMBOL.get(underlying_symbol, underlying_symbol)
+
+
+MoverDirection = Literal["up", "down"]
+
+
+class Mover(BaseModel):
+    """Una fila del endpoint `/movers` de Schwab (heredado de TD Ameritrade) — confirmado en
+    vivo 2026-07-25 (ver NOTES.md). `change_pct` viene siempre con el signo correcto (positivo
+    para `direction == "up"`, negativo para `direction == "down"`) independientemente de cómo
+    lo devuelva el broker."""
+
+    symbol: str
+    description: str
+    last_price: float
+    change_pct: float
+    direction: MoverDirection
+    total_volume: int
 
 
 class AccountPosition(BaseModel):

@@ -8,7 +8,8 @@ es el estado ACTUAL de qué falta.
 
 ## En progreso ahora
 
-- **Rediseño de página principal estilo CNBC** (siguiente en el orden confirmado 2026-07-26).
+Ninguno — el rediseño de página principal estilo CNBC (ver "Terminado y verificado hoy" #17)
+fue lo último que se cerró, sigue el punto 1 de "Pendiente" abajo.
 
 ## Pendiente, no empezado — orden confirmado por el usuario 2026-07-26
 
@@ -110,6 +111,19 @@ es el estado ACTUAL de qué falta.
     acciones (Collar cap en el put protector, $814 de pérdida máxima vs. Covered Call sin
     protección, $27,492 — casi el costo total de las acciones menos la prima); el bug era solo
     de texto, no de números. 7 tests nuevos — 302/302 tests del repo en verde.
+17. **Rediseño de página principal estilo CNBC**: indicador de sesión de mercado (pre-market/
+    abierto/after-hours/cerrado, punto pulsante verde/ámbar/gris según sesión — usa
+    `market_session()` de `scheduler/market_calendar.py`), carrusel de cotizaciones (cinta
+    horizontal con scroll infinito en CSS puro, verde/rojo según variación, símbolos de la
+    watchlist), y sección Market Movers (ganadoras/perdedoras de `$SPX` vía el endpoint
+    `/movers` de Schwab confirmado en vivo el 2026-07-25). Página principal renombrada de
+    "app" a "General" en el menú lateral (migrado a `st.navigation`/`st.Page` en `app.py`, las
+    demás páginas de `pages/` quedaron sin tocar — Streamlit no permite sobreescribir esa
+    etiqueta con la detección automática de carpeta). Verificado en navegador en vivo (modo
+    `schwab` real, mercado cerrado: badge gris correcto, ticker con precios reales, movers
+    vacío con el mensaje esperado) y con 21 tests nuevos (`Mover`/`get_movers` en mock y
+    Schwab, campos `net_change`/`net_change_pct`/`post_market_change_pct` de `Quote`,
+    `market_session()`) — 323/323 tests del repo en verde.
 
 ## Cómo se usa este archivo
 

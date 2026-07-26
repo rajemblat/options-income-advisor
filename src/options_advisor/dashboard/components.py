@@ -19,8 +19,10 @@ from options_advisor.alerts.formatting import (
 )
 from options_advisor.broker import get_broker_client
 from options_advisor.broker.base import BrokerClient
+from options_advisor.broker.models import Mover, Quote
 from options_advisor.config import PROJECT_ROOT, Settings, load_settings, load_symbols
 from options_advisor.dashboard.portfolio_summary import summarize_portfolio
+from options_advisor.scheduler.market_calendar import MarketSession, market_session
 from options_advisor.storage import db
 from options_advisor.storage import repository as repo
 
@@ -105,6 +107,19 @@ def get_connection() -> sqlite3.Connection:
 @st.cache_resource
 def get_broker() -> BrokerClient:
     return get_broker_client(get_settings())
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_quotes(symbols: tuple[str, ...]) -> dict[str, Quote]:
+    """Cotizaciones para el carrusel estilo CNBC — cacheadas 60s para no pegarle a la API de
+    Schwab en cada rerun de Streamlit (cualquier click o widget dispara uno)."""
+    return get_broker().get_quotes(list(symbols))
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_movers(index: str, sort: str) -> list[Mover]:
+    """Top movers para la sección Market Movers — mismo motivo de cache que `cached_quotes`."""
+    return get_broker().get_movers(index, sort)
 
 
 def get_anthropic_api_key() -> str | None:
@@ -214,6 +229,50 @@ def inject_theme() -> None:
             font-size: 0.82rem;
             margin-top: 0.3rem;
         }}
+
+        .oia-session-dot {{
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }}
+        .oia-session-dot.oia-pulse {{
+            animation: oia-pulse-anim 1.6s ease-in-out infinite;
+        }}
+        @keyframes oia-pulse-anim {{
+            0% {{ box-shadow: 0 0 0 0 rgba(12,163,12,0.55); }}
+            70% {{ box-shadow: 0 0 0 6px rgba(12,163,12,0); }}
+            100% {{ box-shadow: 0 0 0 0 rgba(12,163,12,0); }}
+        }}
+
+        .oia-ticker {{
+            overflow: hidden;
+            white-space: nowrap;
+            border: 1px solid {BORDER};
+            border-radius: 0.75rem;
+            background: {SURFACE};
+            padding: 0.65rem 0;
+            margin-bottom: 1rem;
+        }}
+        .oia-ticker-track {{
+            display: inline-block;
+            white-space: nowrap;
+            animation: oia-ticker-scroll 45s linear infinite;
+        }}
+        .oia-ticker:hover .oia-ticker-track {{
+            animation-play-state: paused;
+        }}
+        .oia-ticker-item {{
+            display: inline-block;
+            padding: 0 1.5rem;
+            font-size: 0.92rem;
+            color: {TEXT_PRIMARY};
+            border-right: 1px dashed {BORDER};
+        }}
+        @keyframes oia-ticker-scroll {{
+            from {{ transform: translateX(0); }}
+            to {{ transform: translateX(-50%); }}
+        }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -295,6 +354,89 @@ def render_header(icon_html: str, title: str, subtitle: str | None = None) -> No
     )
     if subtitle:
         st.markdown(f"<div style='color:{TEXT_MUTED}; margin-top:0.4rem;'>{subtitle}</div>", unsafe_allow_html=True)
+
+
+_SESSION_LABELS: dict[MarketSession, str] = {
+    "abierto": "Mercado abierto",
+    "pre-market": "Pre-market",
+    "after-hours": "After-hours",
+    "cerrado": "Mercado cerrado",
+}
+
+
+def render_market_session_badge() -> None:
+    """Indicador de sesión estilo CNBC (punto pulsante verde con el mercado abierto, ámbar en
+    pre/after-market por la menor liquidez, gris cuando está cerrado) — Sección 'Rediseño de
+    página principal estilo CNBC' 2026-07-26."""
+    session = market_session()
+    label = _SESSION_LABELS[session]
+    if session == "abierto":
+        color, pulse_class = GOOD, " oia-pulse"
+    elif session in ("pre-market", "after-hours"):
+        color, pulse_class = WARNING, ""
+    else:
+        color, pulse_class = TEXT_MUTED, ""
+    dot = f"<span class='oia-session-dot{pulse_class}' style='background:{color};'></span>"
+    st.markdown(
+        f"<div class='oia-pill' style='color:{color}; border-color:{color}44; background:{color}1a; "
+        f"font-size:0.85rem;'>{dot} {label}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_quote_ticker(quotes: dict[str, Quote]) -> None:
+    """Cinta de cotizaciones estilo CNBC — scroll horizontal infinito en CSS puro (sin JS),
+    verde/rojo según el signo de `net_change_pct`. La fila se duplica una vez para que el loop
+    de la animación (traslada -50%) no muestre un salto/corte al llegar al final."""
+    items = list(quotes.values())
+    if not items:
+        return
+
+    def _item_html(q: Quote) -> str:
+        color = GOOD if q.net_change_pct >= 0 else CRITICAL
+        arrow = "trending-up" if q.net_change_pct >= 0 else "trending-down"
+        return (
+            "<span class='oia-ticker-item'>"
+            f"<b>{q.symbol}</b> ${q.last_price:,.2f} "
+            f"<span style='color:{color};'>{icon(arrow, size=13, color=color)} {q.net_change_pct:+.2f}%</span>"
+            "</span>"
+        )
+
+    row_html = "".join(_item_html(q) for q in items)
+    st.markdown(f"<div class='oia-ticker'><div class='oia-ticker-track'>{row_html}{row_html}</div></div>", unsafe_allow_html=True)
+
+
+def render_market_movers_panel(index: str = "$SPX") -> None:
+    """Ganadoras/perdedoras del índice de referencia, estilo CNBC — endpoint `/movers`
+    confirmado en vivo 2026-07-25 (ver NOTES.md). Vacío fuera de horario de mercado (el
+    endpoint real no tiene datos que devolver) o en modo mock sin fixture cargada."""
+    gainers = cached_movers(index, "PERCENT_CHANGE_UP")
+    losers = cached_movers(index, "PERCENT_CHANGE_DOWN")
+
+    html = ["<div class='oia-card'>", f"<div style='font-size:1.1rem; font-weight:700;'>{icon('bar-chart', size=18, color=ACCENT)} Market Movers · {index}</div>"]
+
+    if not gainers and not losers:
+        html.append(f"<div style='color:{TEXT_MUTED}; margin-top:0.4rem;'>Sin datos de movers ahora mismo (fuera de horario de mercado, o sin fixture en modo mock).</div>")
+        html.append("</div>")
+        st.markdown("".join(html), unsafe_allow_html=True)
+        return
+
+    def _rows(movers: list[Mover], color: str) -> str:
+        if not movers:
+            return f"<div style='color:{TEXT_MUTED}; font-size:0.85rem;'>Sin datos.</div>"
+        return "".join(
+            "<div class='oia-leg-row'>"
+            f"<span><b>{m.symbol}</b> · {m.description}</span>"
+            f"<span style='color:{color}; font-weight:700;'>{m.change_pct:+.2f}% · ${m.last_price:,.2f}</span>"
+            "</div>"
+            for m in movers[:8]
+        )
+
+    html.append("<div style='display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:1.5rem; margin-top:0.8rem;'>")
+    html.append(f"<div><div style='color:{GOOD}; font-weight:700; margin-bottom:0.4rem;'>{icon('trending-up', size=15, color=GOOD)} Ganadoras</div>{_rows(gainers, GOOD)}</div>")
+    html.append(f"<div><div style='color:{CRITICAL}; font-weight:700; margin-bottom:0.4rem;'>{icon('trending-down', size=15, color=CRITICAL)} Perdedoras</div>{_rows(losers, CRITICAL)}</div>")
+    html.append("</div></div>")
+    st.markdown("".join(html), unsafe_allow_html=True)
 
 
 def score_pill_html(score: int) -> str:

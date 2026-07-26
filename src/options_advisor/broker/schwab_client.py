@@ -9,7 +9,7 @@ import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from options_advisor.broker.base import BrokerClient
-from options_advisor.broker.models import AccountPosition, Greeks, OptionChain, OptionContract, OptionType, PriceBar, Quote
+from options_advisor.broker.models import AccountPosition, Greeks, Mover, OptionChain, OptionContract, OptionType, PriceBar, Quote
 from options_advisor.broker.schwab_auth import DEFAULT_TOKEN_STORE_PATH, SchwabAuth
 from options_advisor.indicators.greeks import calculate_greeks
 
@@ -32,6 +32,35 @@ def _parse_schwab_date(raw: str | None) -> date | None:
         return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
     except ValueError:
         return None
+
+
+def _parse_quote_change_fields(quote: dict) -> dict:
+    """`netChange`/`netPercentChange` reflejan el precio "actual" (incluye pre/after-market si
+    hay sesión extendida en curso) vs. el cierre anterior. `postMarketChange`/
+    `postMarketPercentChange` son el movimiento ADICIONAL específicamente después del cierre
+    regular — ausentes (no `None` explícito, la clave no está) fuera de esa sesión, de ahí el
+    `.get()` en vez de indexar directo."""
+    return {
+        "net_change": quote.get("netChange", 0.0),
+        "net_change_pct": quote.get("netPercentChange", 0.0),
+        "post_market_change_pct": quote.get("postMarketPercentChange"),
+    }
+
+
+def _parse_mover(item: dict) -> Mover:
+    """Normaliza una fila del endpoint `/movers` — `change` viene de Schwab ya wireado al
+    signo de `direction` en la práctica, pero se fuerza acá para no depender de esa convención
+    (ver Mover.change_pct en broker/models.py)."""
+    direction = item.get("direction", "up")
+    magnitude = abs(item.get("change", 0.0))
+    return Mover(
+        symbol=item["symbol"],
+        description=item.get("description", ""),
+        last_price=item.get("last", 0.0),
+        change_pct=magnitude if direction == "up" else -magnitude,
+        direction=direction,
+        total_volume=item.get("totalVolume", 0),
+    )
 
 
 def _parse_next_ex_dividend_date(fundamental: dict) -> date | None:
@@ -116,6 +145,7 @@ class SchwabBrokerClient(BrokerClient):
             bid=quote.get("bidPrice", last_price),
             ask=quote.get("askPrice", last_price),
             next_ex_dividend_date=_parse_next_ex_dividend_date(data[symbol].get("fundamental") or {}),
+            **_parse_quote_change_fields(quote),
         )
 
     def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
@@ -142,8 +172,17 @@ class SchwabBrokerClient(BrokerClient):
                 bid=quote.get("bidPrice", last_price),  # índices sin bid/ask, ver get_quote()
                 ask=quote.get("askPrice", last_price),
                 next_ex_dividend_date=_parse_next_ex_dividend_date(entry.get("fundamental") or {}),
+                **_parse_quote_change_fields(quote),
             )
         return quotes
+
+    def get_movers(self, index: str, sort: str, frequency: int = 0) -> list[Mover]:
+        try:
+            data = self._get(f"/movers/{index}", params={"sort": sort, "frequency": frequency})
+        except Exception:
+            logger.exception("Fallo al pedir movers de Schwab para %s; se omite", index)
+            return []
+        return [_parse_mover(item) for item in data.get("screeners", [])]
 
     def get_price_history(self, symbol: str, lookback_days: int) -> list[PriceBar]:
         data = self._get(

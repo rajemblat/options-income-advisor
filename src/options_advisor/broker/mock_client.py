@@ -12,6 +12,7 @@ from options_advisor.broker.base import BrokerClient
 from options_advisor.broker.models import (
     AccountPosition,
     Greeks,
+    Mover,
     OptionChain,
     OptionContract,
     OptionType,
@@ -130,16 +131,40 @@ class MockBrokerClient(BrokerClient):
         as_of_date = self._resolve_as_of_date(symbol)
         bar = self._price_on_or_before(symbol, as_of_date)
         spread = round(bar.close * 0.0005, 2)
+        history = [b for b in self._load_price_history(symbol) if b.trade_date < bar.trade_date]
+        net_change = round(bar.close - history[-1].close, 4) if history else 0.0
+        net_change_pct = round(net_change / history[-1].close * 100, 4) if history else 0.0
         return Quote(
             symbol=symbol,
             as_of=as_of_date,
             last_price=bar.close,
             bid=round(bar.close - spread, 2),
             ask=round(bar.close + spread, 2),
+            net_change=net_change,
+            net_change_pct=net_change_pct,
+            # Sin sesión extendida simulada en las fixtures — el modo mock no tiene datos de
+            # pre/after-market, a diferencia del cierre regular (arriba, sí calculado).
+            post_market_change_pct=None,
         )
 
     def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
         return {symbol: self.get_quote(symbol) for symbol in symbols}
+
+    def get_movers(self, index: str, sort: str, frequency: int = 0) -> list[Mover]:
+        """Sin datos reales de mercado en modo mock — un puñado de filas representativas fijas
+        para poder desarrollar/ver la sección de Market Movers sin credenciales de Schwab."""
+        canned = [
+            Mover(symbol="NVDA", description="NVIDIA Corp", last_price=185.32, change_pct=4.71, direction="up", total_volume=62_000_000),
+            Mover(symbol="TSLA", description="Tesla Inc", last_price=298.10, change_pct=3.85, direction="up", total_volume=88_000_000),
+            Mover(symbol="AAPL", description="Apple Inc", last_price=241.55, change_pct=1.92, direction="up", total_volume=45_000_000),
+            Mover(symbol="INTC", description="Intel Corp", last_price=27.84, change_pct=-6.32, direction="down", total_volume=71_000_000),
+            Mover(symbol="BA", description="Boeing Co", last_price=178.20, change_pct=-3.14, direction="down", total_volume=12_000_000),
+        ]
+        if sort == "PERCENT_CHANGE_DOWN":
+            return sorted([m for m in canned if m.direction == "down"], key=lambda m: m.change_pct)
+        if sort == "VOLUME":
+            return sorted(canned, key=lambda m: m.total_volume, reverse=True)
+        return sorted([m for m in canned if m.direction == "up"], key=lambda m: m.change_pct, reverse=True)
 
     def get_price_history(self, symbol: str, lookback_days: int) -> list[PriceBar]:
         as_of_date = self._resolve_as_of_date(symbol)

@@ -23,6 +23,47 @@ def test_get_quote_returns_latest_price(mock_fixtures_dir):
     assert quote.bid < quote.last_price < quote.ask
 
 
+def test_get_quote_computes_net_change_from_previous_session(mock_fixtures_dir):
+    """Fixture determinista: precio sube +0.1/día (ver conftest.write_mock_fixtures) — el
+    último día siempre tiene un net_change positivo conocido vs. el día anterior."""
+    client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
+    quote = client.get_quote("TST")
+    history = client.get_price_history("TST", lookback_days=60)
+    previous_close = history[-2].close
+    expected_change = round(quote.last_price - previous_close, 4)
+    assert quote.net_change == expected_change
+    assert quote.net_change_pct == round(expected_change / previous_close * 100, 4)
+    assert quote.net_change > 0
+
+
+def test_get_quote_no_post_market_data_in_mock_mode(mock_fixtures_dir):
+    client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
+    quote = client.get_quote("TST")
+    assert quote.post_market_change_pct is None
+
+
+def test_get_movers_up_returns_only_positive_direction_sorted_desc(mock_fixtures_dir):
+    client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
+    movers = client.get_movers("$SPX", "PERCENT_CHANGE_UP")
+    assert all(m.direction == "up" for m in movers)
+    assert all(m.change_pct > 0 for m in movers)
+    assert movers == sorted(movers, key=lambda m: m.change_pct, reverse=True)
+
+
+def test_get_movers_down_returns_only_negative_direction_sorted_asc(mock_fixtures_dir):
+    client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
+    movers = client.get_movers("$SPX", "PERCENT_CHANGE_DOWN")
+    assert all(m.direction == "down" for m in movers)
+    assert all(m.change_pct < 0 for m in movers)
+    assert movers == sorted(movers, key=lambda m: m.change_pct)
+
+
+def test_get_movers_volume_sorts_desc_by_total_volume(mock_fixtures_dir):
+    client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
+    movers = client.get_movers("$SPX", "VOLUME")
+    assert movers == sorted(movers, key=lambda m: m.total_volume, reverse=True)
+
+
 def test_get_price_history_respects_lookback(mock_fixtures_dir):
     client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
     history = client.get_price_history("TST", lookback_days=10)

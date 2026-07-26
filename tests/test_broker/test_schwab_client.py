@@ -108,6 +108,74 @@ def test_get_quote_no_dividend_data_returns_none(client, monkeypatch):
     assert quote.next_ex_dividend_date is None
 
 
+def test_get_quote_parses_net_change_fields(client, monkeypatch):
+    payload = {
+        "AAPL": {
+            "quote": {
+                "lastPrice": 321.1,
+                "bidPrice": 321.0,
+                "askPrice": 321.2,
+                "netChange": 2.35,
+                "netPercentChange": 0.7371,
+                "postMarketPercentChange": -0.12,
+            }
+        }
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quote = client.get_quote("AAPL")
+    assert quote.net_change == 2.35
+    assert quote.net_change_pct == 0.7371
+    assert quote.post_market_change_pct == -0.12
+
+
+def test_get_quote_no_post_market_change_when_key_absent(client, monkeypatch):
+    """`postMarketPercentChange` no viene en la respuesta fuera de sesión extendida — debe
+    quedar en None, no en 0.0 (0.0 significaría "sin variación", distinto de "no aplica")."""
+    payload = {"AAPL": {"quote": {"lastPrice": 321.1, "bidPrice": 321.0, "askPrice": 321.2}}}
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quote = client.get_quote("AAPL")
+    assert quote.net_change == 0.0
+    assert quote.net_change_pct == 0.0
+    assert quote.post_market_change_pct is None
+
+
+def test_get_quotes_batch_parses_net_change_fields(client, monkeypatch):
+    payload = {"NVDA": {"quote": {"lastPrice": 180.5, "bidPrice": 180.4, "askPrice": 180.6, "netChange": -1.2, "netPercentChange": -0.66}}}
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quotes = client.get_quotes(["NVDA"])
+    assert quotes["NVDA"].net_change == -1.2
+    assert quotes["NVDA"].net_change_pct == -0.66
+
+
+def test_get_movers_parses_screeners_and_forces_sign_from_direction(client, monkeypatch):
+    payload = {
+        "screeners": [
+            {"symbol": "NVDA", "description": "NVIDIA Corp", "last": 185.32, "change": 4.71, "direction": "up", "totalVolume": 62_000_000},
+            {"symbol": "INTC", "description": "Intel Corp", "last": 27.84, "change": 6.32, "direction": "down", "totalVolume": 71_000_000},
+        ]
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    movers = client.get_movers("$SPX", "PERCENT_CHANGE_UP")
+    assert len(movers) == 2
+    nvda = next(m for m in movers if m.symbol == "NVDA")
+    assert nvda.change_pct == 4.71
+    intc = next(m for m in movers if m.symbol == "INTC")
+    assert intc.change_pct == -6.32  # magnitud positiva del payload, forzada a negativo por direction=down
+
+
+def test_get_movers_returns_empty_list_on_failure(client, monkeypatch):
+    def _boom(self, path, params=None, headers=None):
+        raise httpx.ConnectError("no network", request=httpx.Request("GET", "https://api.schwabapi.com/marketdata/v1/x"))
+
+    monkeypatch.setattr(httpx.Client, "get", _boom)
+    assert client.get_movers("$SPX", "PERCENT_CHANGE_UP") == []
+
+
+def test_get_movers_empty_screeners_returns_empty_list(client, monkeypatch):
+    monkeypatch.setattr(httpx.Client, "get", _mock_get({"screeners": []}))
+    assert client.get_movers("$SPX", "PERCENT_CHANGE_UP") == []
+
+
 def test_get_quote_missing_fundamental_section_returns_none(client, monkeypatch):
     payload = {"$SPX": {"quote": {"lastPrice": 7449.47}}}
     monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
