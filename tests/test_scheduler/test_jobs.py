@@ -124,9 +124,11 @@ def test_run_full_analysis_passes_real_share_position_as_has_open_assigned_posit
     ]
 
 
-def test_run_full_analysis_calls_detect_and_alert_real_trades_once_per_run(conn, monkeypatch):
-    """Pestaña Operaciones: una sola detección por corrida (no por símbolo, no por perfil de
-    riesgo) — mismo patrón que share_positions."""
+def test_run_full_analysis_does_not_call_detect_and_alert_real_trades(conn, monkeypatch):
+    """La detección de operaciones reales se movió a su propio job separado
+    (job_detect_real_trades, cadencia propia más seguida — pedido 2026-07-27) — ya no corre
+    dentro de _run_full_analysis, para no duplicar la consulta de posiciones ni acoplar su
+    frecuencia al análisis pesado de oportunidades."""
     captured = []
 
     monkeypatch.setattr(jobs, "analyze_symbol", lambda broker, conn, symbol, settings, **k: _FakeAnalysis(symbol))
@@ -137,35 +139,39 @@ def test_run_full_analysis_calls_detect_and_alert_real_trades_once_per_run(conn,
     monkeypatch.setattr(jobs, "detect_and_alert_real_trades", lambda *a, **k: captured.append(a) or [])
 
     broker = _FakeBroker(share_positions={"NVDA": 300})
-    settings = load_settings()
+    jobs._run_full_analysis(broker, conn, ["NVDA", "AAPL"], load_settings(), TODAY, None, None, None)
 
-    jobs._run_full_analysis(broker, conn, ["NVDA", "AAPL"], settings, TODAY, None, None, None)
-
-    assert len(captured) == 1  # una sola vez, no una por símbolo
+    assert captured == []
 
 
-def test_run_full_analysis_survives_real_trade_detection_failure(conn, monkeypatch):
-    """Un fallo en la detección de operaciones reales nunca debe tumbar el análisis por
-    símbolo — mismo criterio de aislamiento de fallas que el resto de _run_full_analysis."""
+def test_job_detect_real_trades_calls_detection_once(conn, monkeypatch):
     captured = []
+    monkeypatch.setattr(jobs, "is_market_day", lambda d: True)
+    monkeypatch.setattr(jobs, "detect_and_alert_real_trades", lambda *a, **k: captured.append(a) or [])
 
-    monkeypatch.setattr(jobs, "analyze_symbol", lambda broker, conn, symbol, settings, **k: _FakeAnalysis(symbol))
-    monkeypatch.setattr(jobs.finnhub_client, "get_recent_news", lambda *a, **k: [])
-    monkeypatch.setattr(jobs, "_refresh_news_for_symbol", lambda *a, **k: None)
-    monkeypatch.setattr(jobs, "_refresh_macro_snapshot", lambda *a, **k: None)
+    broker = _FakeBroker(share_positions={"NVDA": 300})
+    jobs.job_detect_real_trades(broker, conn, load_settings(), anthropic_api_key=None, finnhub_api_key=None)
 
-    def _fake_process_symbol_alerts(conn, analysis, settings, has_open_assigned_position, risk_level, **k):
-        captured.append(analysis.symbol)
-        return []
+    assert len(captured) == 1
 
-    monkeypatch.setattr(jobs, "process_symbol_alerts", _fake_process_symbol_alerts)
 
-    def _boom(*a, **k):
-        raise RuntimeError("fallo simulado en la detección de operaciones reales")
-
-    monkeypatch.setattr(jobs, "detect_and_alert_real_trades", _boom)
+def test_job_detect_real_trades_skips_on_non_market_day(conn, monkeypatch):
+    captured = []
+    monkeypatch.setattr(jobs, "is_market_day", lambda d: False)
+    monkeypatch.setattr(jobs, "detect_and_alert_real_trades", lambda *a, **k: captured.append(a) or [])
 
     broker = _FakeBroker(share_positions={})
-    jobs._run_full_analysis(broker, conn, ["AAPL"], load_settings(), TODAY, None, None, None)  # no debe lanzar
+    jobs.job_detect_real_trades(broker, conn, load_settings(), anthropic_api_key=None, finnhub_api_key=None)
 
-    assert captured == ["AAPL", "AAPL", "AAPL"]  # el análisis por símbolo siguió, 3 perfiles
+    assert captured == []
+
+
+def test_job_detect_real_trades_never_raises_on_failure(conn, monkeypatch):
+    monkeypatch.setattr(jobs, "is_market_day", lambda d: True)
+
+    def _boom(*a, **k):
+        raise RuntimeError("fallo simulado")
+
+    monkeypatch.setattr(jobs, "detect_and_alert_real_trades", _boom)
+    broker = _FakeBroker(share_positions={})
+    jobs.job_detect_real_trades(broker, conn, load_settings(), anthropic_api_key=None, finnhub_api_key=None)  # no debe lanzar

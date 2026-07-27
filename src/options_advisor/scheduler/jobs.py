@@ -112,15 +112,6 @@ def _run_full_analysis(
     # llene). {} en modo mock o si falla la consulta (ver broker/base.py::get_all_share_positions).
     share_positions = broker.get_all_share_positions()
 
-    # Pestaña Operaciones (réplica automática de operaciones reales, pedido 2026-07-25): una
-    # sola detección por corrida, no por símbolo — diffea TODAS las posiciones de opciones
-    # cortas de la cuenta real contra el snapshot de la corrida anterior, sin importar si el
-    # símbolo operado está en `symbols` (la watchlist) o no. Nunca rompe el resto del job.
-    try:
-        detect_and_alert_real_trades(broker, conn, settings, today, share_positions, anthropic_api_key, finnhub_api_key)
-    except Exception:
-        logger.exception("Fallo al detectar operaciones reales; se continúa con el análisis por símbolo")
-
     new_alerts: list[dict] = []
     for symbol in symbols:
         try:
@@ -170,6 +161,29 @@ def job_poll_and_analyze(
         return
 
     _run_full_analysis(broker, conn, symbols, settings, today, anthropic_api_key, finnhub_api_key, fred_api_key)
+
+
+def job_detect_real_trades(
+    broker: BrokerClient,
+    conn: sqlite3.Connection,
+    settings: Settings,
+    anthropic_api_key: str | None,
+    finnhub_api_key: str | None = None,
+) -> None:
+    """Job liviano y SEPARADO de `job_poll_and_analyze` (pedido 2026-07-27: la detección de
+    operaciones reales debe verse reflejada casi en tiempo real, no esperar los 30 minutos del
+    análisis pesado de oportunidades) — solo diffea posiciones cortas de opciones contra el
+    snapshot de la corrida anterior, sin indicadores/scoring/narración de candidatos por
+    símbolo ni refresh de contexto macro. Pensado para correr cada pocos minutos
+    (`settings.scheduler.real_trade_poll_interval_minutes`, ver `scheduler/runner.py`)."""
+    today = date.today()
+    if not is_market_day(today):
+        return
+    try:
+        share_positions = broker.get_all_share_positions()
+        detect_and_alert_real_trades(broker, conn, settings, today, share_positions, anthropic_api_key, finnhub_api_key)
+    except Exception:
+        logger.exception("Fallo al detectar operaciones reales")
 
 
 def job_premarket_digest(

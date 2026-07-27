@@ -19,6 +19,11 @@ llm:
 scheduler:
   timezone: America/New_York
   poll_interval_minutes: 30
+  # Detección de operaciones reales (Pestaña Operaciones) separada del análisis pesado de
+  # oportunidades — mucho más liviana (solo diffea posiciones, sin indicadores/scoring/narración
+  # de candidatos por símbolo), así que corre más seguido para que una venta real se vea
+  # reflejada casi en tiempo real (pedido 2026-07-27) en vez de esperar hasta 30 minutos.
+  real_trade_poll_interval_minutes: 3
   market_open_snapshot_time: "09:35"
   market_close_snapshot_time: "15:55"
   market_hours_start: "09:30"

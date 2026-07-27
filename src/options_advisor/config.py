@@ -42,6 +42,7 @@ class LlmSettings(BaseModel):
 class SchedulerSettings(BaseModel):
     timezone: str
     poll_interval_minutes: int
+    real_trade_poll_interval_minutes: int
     market_open_snapshot_time: str
     market_close_snapshot_time: str
     market_hours_start: str

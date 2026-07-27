@@ -7,7 +7,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from options_advisor.broker.base import BrokerClient
 from options_advisor.config import Settings
-from options_advisor.scheduler.jobs import job_poll_and_analyze, job_premarket_digest
+from options_advisor.scheduler.jobs import job_detect_real_trades, job_poll_and_analyze, job_premarket_digest
 
 
 def _hh_mm(value: str) -> tuple[int, int]:
@@ -33,6 +33,9 @@ def build_scheduler(
 
     def run_premarket_digest() -> None:
         job_premarket_digest(broker, conn, symbols, settings, anthropic_api_key, finnhub_api_key=finnhub_api_key, fred_api_key=fred_api_key)
+
+    def run_real_trade_detection() -> None:
+        job_detect_real_trades(broker, conn, settings, anthropic_api_key, finnhub_api_key=finnhub_api_key)
 
     digest_h, digest_m = _hh_mm(settings.scheduler.premarket_digest_time)
     open_h, open_m = _hh_mm(settings.scheduler.market_open_snapshot_time)
@@ -64,5 +67,17 @@ def build_scheduler(
         run_job,
         CronTrigger(day_of_week="mon-fri", hour=close_h, minute=close_m, timezone=settings.scheduler.timezone),
         id="market_close_snapshot",
+    )
+    # Pestaña Operaciones (pedido 2026-07-27): cadencia propia, mucho más seguida que
+    # periodic_poll — solo diffea posiciones, no corre el análisis pesado de oportunidades.
+    scheduler.add_job(
+        run_real_trade_detection,
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour=f"{start_h}-{end_h}",
+            minute=f"*/{settings.scheduler.real_trade_poll_interval_minutes}",
+            timezone=settings.scheduler.timezone,
+        ),
+        id="real_trade_detection",
     )
     return scheduler
