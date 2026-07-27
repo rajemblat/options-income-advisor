@@ -29,6 +29,9 @@ _NEW_COLUMNS_BY_TABLE = {
         "net_gex": "REAL",
         "next_ex_dividend_date": "TEXT",
     },
+    "macro_snapshot": {
+        "cpi_yoy_date": "TEXT",
+    },
 }
 
 

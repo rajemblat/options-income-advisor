@@ -4,7 +4,7 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-26.
+Última actualización: 2026-07-26 (simulador de inflación).
 
 ## En progreso ahora
 
@@ -124,6 +124,21 @@ fue lo último que se cerró, sigue el punto 1 de "Pendiente" abajo.
     vacío con el mensaje esperado) y con 21 tests nuevos (`Mover`/`get_movers` en mock y
     Schwab, campos `net_change`/`net_change_pct`/`post_market_change_pct` de `Quote`,
     `market_session()`) — 323/323 tests del repo en verde.
+18. **Simulador de inflación / depreciación del dinero**, sumado a la página "Configuración"
+    (renombrada a "Perfil y Simulación" para reflejar que ya no es solo ajustes) —
+    `dashboard/inflation_simulator.py::project_inflation_scenarios()` proyecta 3 escenarios
+    (sin invertir / banco / inversión alternativa) a 5 años, deflactando con la fórmula exacta
+    `real = nominal / (1+inflación)^años` (no la aproximación nominal-inflación). La tasa de
+    inflación se prellena SIEMPRE con el CPI interanual real de FRED, sin edición manual del
+    dato de origen — para eso `market_context/fred_client.py::_latest_observation()` ahora
+    devuelve también la fecha que FRED asocia al dato (el mes que mide, no la fecha del job),
+    guardada en la nueva columna `macro_snapshot.cpi_yoy_date` (migración vía
+    `storage/db.py::_NEW_COLUMNS_BY_TABLE`) y mostrada en la UI ("CPI interanual de FRED: X%
+    (dato de mes año)"). Verificado en vivo contra la API real de FRED: el dato de CPI
+    (`CPALTT01USM659N`) resultó ser de abril 2025 pese a correr en julio 2026 — confirma que
+    mostrar la fecha del dato (y no solo el valor) es necesario, esa serie de FRED se publica
+    con varios meses de rezago. 8 tests nuevos (`test_inflation_simulator.py` + cobertura de
+    `cpi_yoy_date` en `test_fred_client.py`/`test_repository.py`) — 331/331 tests en verde.
 
 ## Cómo se usa este archivo
 

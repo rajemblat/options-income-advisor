@@ -7,10 +7,10 @@ import httpx
 from options_advisor.market_context import fred_client
 
 
-def _mock_response(value: str):
+def _mock_response(value: str, obs_date: str = "2026-06-01"):
     def _get(*args, **kwargs):
         request = httpx.Request("GET", "https://api.stlouisfed.org/x")
-        return httpx.Response(200, json={"observations": [{"value": value}]}, request=request)
+        return httpx.Response(200, json={"observations": [{"value": value, "date": obs_date}]}, request=request)
 
     return _get
 
@@ -32,13 +32,19 @@ def test_get_fed_funds_target_range_missing_value_returns_none(monkeypatch):
 
 def test_get_macro_snapshot_without_api_key_has_all_none_values():
     snapshot = fred_client.get_macro_snapshot(api_key=None)
-    assert snapshot == {"cpi_yoy_pct": None, "unemployment_rate_pct": None, "gdp_growth_annualized_pct": None}
+    assert snapshot == {
+        "cpi_yoy_pct": None,
+        "cpi_yoy_date": None,
+        "unemployment_rate_pct": None,
+        "gdp_growth_annualized_pct": None,
+    }
 
 
 def test_get_macro_snapshot_parses_values(monkeypatch):
-    monkeypatch.setattr(httpx, "get", _mock_response("3.1"))
+    monkeypatch.setattr(httpx, "get", _mock_response("3.1", obs_date="2026-06-01"))
     snapshot = fred_client.get_macro_snapshot(api_key="fake-key")
     assert snapshot["cpi_yoy_pct"] == 3.1
+    assert snapshot["cpi_yoy_date"] == date(2026, 6, 1)  # fecha que FRED asocia al dato, no la de hoy
     assert snapshot["unemployment_rate_pct"] == 3.1
     assert snapshot["gdp_growth_annualized_pct"] == 3.1
 
@@ -49,7 +55,12 @@ def test_get_macro_snapshot_returns_none_on_failure(monkeypatch):
 
     monkeypatch.setattr(httpx, "get", _boom)
     snapshot = fred_client.get_macro_snapshot(api_key="fake-key")
-    assert snapshot == {"cpi_yoy_pct": None, "unemployment_rate_pct": None, "gdp_growth_annualized_pct": None}
+    assert snapshot == {
+        "cpi_yoy_pct": None,
+        "cpi_yoy_date": None,
+        "unemployment_rate_pct": None,
+        "gdp_growth_annualized_pct": None,
+    }
 
 
 def test_get_upcoming_release_dates_without_api_key_returns_empty_list():

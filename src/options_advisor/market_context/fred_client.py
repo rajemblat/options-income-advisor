@@ -31,7 +31,12 @@ SERIES_UNEMPLOYMENT = "UNRATE"  # tasa de desempleo
 SERIES_GDP_GROWTH = "A191RL1Q225SBEA"  # crecimiento del PBI real, trimestral anualizado
 
 
-def _latest_value(series_id: str, api_key: str | None) -> float | None:
+def _latest_observation(series_id: str, api_key: str | None) -> tuple[float, date] | None:
+    """(valor, fecha_del_dato) de la observación más reciente — la fecha es la que FRED asocia
+    a esa observación (ej. el mes que mide el CPI publicado), no la fecha en que corrimos el
+    job. Usada para el simulador de inflación (Sección 'Perfil y Simulación' 2026-07-26): la
+    tasa de inflación se toma siempre de acá, sin edición manual, así que hay que poder mostrar
+    de qué fecha es el dato."""
     if not api_key:
         return None
     try:
@@ -50,10 +55,15 @@ def _latest_value(series_id: str, api_key: str | None) -> float | None:
         observations = response.json().get("observations", [])
         if not observations or observations[0]["value"] == ".":  # FRED usa "." para dato faltante
             return None
-        return float(observations[0]["value"])
+        return float(observations[0]["value"]), date.fromisoformat(observations[0]["date"])
     except Exception:
         logger.warning("FRED serie %s no disponible; se omite este dato", series_id, exc_info=True)
         return None
+
+
+def _latest_value(series_id: str, api_key: str | None) -> float | None:
+    observation = _latest_observation(series_id, api_key)
+    return observation[0] if observation else None
 
 
 def get_fed_funds_target_range(api_key: str | None) -> tuple[float, float] | None:
@@ -69,9 +79,15 @@ def get_fed_funds_target_range(api_key: str | None) -> tuple[float, float] | Non
 def get_macro_snapshot(api_key: str | None) -> dict:
     """CPI interanual, desempleo y crecimiento del PBI más recientes. Cualquier serie no
     disponible queda en None — nunca rompe el llamador; es un dict plano listo para el
-    contexto del narrador (Sección 6.2, nunca cifras inventadas)."""
+    contexto del narrador (Sección 6.2, nunca cifras inventadas).
+
+    `cpi_yoy_date` es la fecha que FRED asocia al dato de CPI (el mes que mide), no la fecha
+    de hoy — la usa el simulador de inflación para mostrar de qué dato sale la tasa prellenada,
+    sin que el usuario tenga que editarla a mano."""
+    cpi = _latest_observation(SERIES_CPI_YOY, api_key)
     return {
-        "cpi_yoy_pct": _latest_value(SERIES_CPI_YOY, api_key),
+        "cpi_yoy_pct": cpi[0] if cpi else None,
+        "cpi_yoy_date": cpi[1] if cpi else None,
         "unemployment_rate_pct": _latest_value(SERIES_UNEMPLOYMENT, api_key),
         "gdp_growth_annualized_pct": _latest_value(SERIES_GDP_GROWTH, api_key),
     }

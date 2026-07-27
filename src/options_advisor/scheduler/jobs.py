@@ -43,6 +43,7 @@ def _refresh_macro_snapshot(conn: sqlite3.Connection, today: date, finnhub_api_k
                 fed_funds_lower=target_range[0] if target_range else None,
                 fed_funds_upper=target_range[1] if target_range else None,
                 cpi_yoy_pct=macro["cpi_yoy_pct"],
+                cpi_yoy_date=macro["cpi_yoy_date"],
                 unemployment_rate_pct=macro["unemployment_rate_pct"],
                 gdp_growth_annualized_pct=macro["gdp_growth_annualized_pct"],
                 fed_meeting_date=fed_probs.meeting_date if fed_probs else None,

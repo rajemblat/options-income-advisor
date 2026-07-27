@@ -81,6 +81,7 @@ class MacroSnapshot(BaseModel):
     fed_funds_lower: float | None = None
     fed_funds_upper: float | None = None
     cpi_yoy_pct: float | None = None
+    cpi_yoy_date: date | None = None  # fecha del dato de FRED (ej. el mes que mide el CPI), no snapshot_date
     unemployment_rate_pct: float | None = None
     gdp_growth_annualized_pct: float | None = None
     fed_meeting_date: date | None = None

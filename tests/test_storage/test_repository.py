@@ -6,7 +6,7 @@ import pytest
 
 from options_advisor.storage import db
 from options_advisor.storage import repository as repo
-from options_advisor.storage.models import Alert, CandidateContract, NewsItem
+from options_advisor.storage.models import Alert, CandidateContract, MacroSnapshot, NewsItem
 
 
 @pytest.fixture
@@ -145,3 +145,19 @@ def test_get_average_annualized_return_pct_averages_recent_candidates(conn):
 
 def test_get_average_annualized_return_pct_none_without_data(conn):
     assert repo.get_average_annualized_return_pct(conn) is None
+
+
+def test_upsert_macro_snapshot_persists_cpi_yoy_date(conn):
+    repo.upsert_macro_snapshot(
+        conn,
+        MacroSnapshot(snapshot_date=date(2026, 7, 26), cpi_yoy_pct=3.1, cpi_yoy_date=date(2026, 6, 1)),
+    )
+    snapshot = repo.get_latest_macro_snapshot(conn)
+    assert snapshot["cpi_yoy_pct"] == 3.1
+    assert snapshot["cpi_yoy_date"] == "2026-06-01"  # fecha del dato de FRED, distinta de snapshot_date (fecha del job)
+
+
+def test_upsert_macro_snapshot_without_cpi_yoy_date_leaves_it_null(conn):
+    repo.upsert_macro_snapshot(conn, MacroSnapshot(snapshot_date=date(2026, 7, 26)))
+    snapshot = repo.get_latest_macro_snapshot(conn)
+    assert snapshot["cpi_yoy_date"] is None

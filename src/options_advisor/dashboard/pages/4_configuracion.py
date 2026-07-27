@@ -1,18 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
 
-from options_advisor.dashboard.components import ACCENT, get_connection, get_settings, get_symbols, icon, inject_theme, render_header, render_notification_bell
+from options_advisor.dashboard.components import ACCENT, CRITICAL, GOOD, get_connection, get_settings, get_symbols, icon, inject_theme, render_header, render_notification_bell
 from options_advisor.dashboard.compound_interest import project_compound_growth
+from options_advisor.dashboard.inflation_simulator import project_inflation_scenarios
 from options_advisor.storage import repository as repo
 from options_advisor.storage.models import InvestorProfile
 
-st.set_page_config(page_title="Configuración", page_icon="⚙️", layout="wide")
+st.set_page_config(page_title="Perfil y Simulación", page_icon="⚙️", layout="wide")
 inject_theme()
-render_header(icon("settings", size=24, color=ACCENT), "Configuración")
+render_header(icon("settings", size=24, color=ACCENT), "Perfil y Simulación")
 
 conn = get_connection()
 render_notification_bell(conn)
@@ -170,5 +171,102 @@ st.warning(
     "Esto es una **proyección** bajo supuestos constantes (misma tasa de rendimiento todos los "
     "años, aporte fijo) — no una garantía. El rendimiento real de vender opciones varía año a "
     "año según condiciones de mercado, y puede ser negativo en años puntuales.",
+    icon="⚠️",
+)
+
+st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
+st.subheader("Simulador de inflación / depreciación del dinero")
+st.caption(
+    "Compara qué pasa con tu capital medido en poder adquisitivo REAL (ajustado por inflación) "
+    "si lo dejás sin invertir, en un banco/plazo fijo, o en una inversión alternativa — no solo "
+    "el valor nominal, que no refleja cuánto podés comprar con eso en el futuro."
+)
+
+MESES_ES = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+]
+
+macro_snapshot = repo.get_latest_macro_snapshot(conn)
+has_cpi = macro_snapshot is not None and macro_snapshot["cpi_yoy_pct"] is not None
+default_inflation = macro_snapshot["cpi_yoy_pct"] if has_cpi else 3.0
+cpi_date_str = macro_snapshot["cpi_yoy_date"] if has_cpi else None
+cpi_date = date.fromisoformat(cpi_date_str) if cpi_date_str else None
+cpi_date_label = f"{MESES_ES[cpi_date.month - 1]} {cpi_date.year}" if cpi_date else None
+
+col_i1, col_i2 = st.columns(2)
+with col_i1:
+    inf_initial = st.number_input("Capital inicial", min_value=0.0, value=50_000.0, step=1000.0, key="inf_initial")
+    inf_inflation = st.number_input(
+        "Tasa de inflación anual (%)",
+        value=float(default_inflation),
+        step=0.1,
+        key="inf_inflation",
+        help=(
+            f"Prellenado con el {default_inflation:.1f}% — CPI interanual real de FRED"
+            + (f", dato de {cpi_date_label}" if cpi_date_label else "")
+            + " (se actualiza solo cuando la Fed publica un dato nuevo, ver Contexto macro en la página General)."
+            " Editable, sin edición manual del dato de origen."
+            if has_cpi
+            else "Todavía no hay dato de CPI de FRED para prellenar esto (corré el análisis para traerlo) — valor de referencia, editalo."
+        ),
+    )
+    if cpi_date_label:
+        st.caption(f"CPI interanual de FRED: {default_inflation:.1f}% (dato de {cpi_date_label})")
+with col_i2:
+    inf_bank_rate = st.number_input("Tasa banco / plazo fijo (%)", value=4.0, step=0.5, key="inf_bank_rate")
+    inf_alt_rate = st.number_input("Tasa inversión alternativa (%)", value=10.0, step=0.5, key="inf_alt_rate")
+
+INF_YEARS = 5
+inf_scenario_rates = {
+    "Sin invertir": 0.0,
+    "Banco/plazo fijo": inf_bank_rate,
+    "Inversión alternativa": inf_alt_rate,
+}
+inf_scenarios = project_inflation_scenarios(
+    initial_capital=inf_initial, inflation_rate_pct=inf_inflation, scenario_rates=inf_scenario_rates, years=INF_YEARS
+)
+
+inf_cols = st.columns(3)
+for inf_col, (scenario_name, scenario_rate) in zip(inf_cols, inf_scenario_rates.items()):
+    rows = inf_scenarios[scenario_name]
+    final_row = rows[-1]
+    color = CRITICAL if scenario_rate < inf_inflation else GOOD
+    with inf_col:
+        st.markdown(
+            f"<div style='font-weight:700; color:{color};'>{icon('trending-down' if color == CRITICAL else 'trending-up', size=15, color=color)} "
+            f"{scenario_name} ({scenario_rate:.1f}%)</div>",
+            unsafe_allow_html=True,
+        )
+        st.metric(
+            f"Valor real a {INF_YEARS} años (hoy)",
+            f"${final_row['real_value']:,.2f}",
+            delta=f"{final_row['real_change_pct']:+.1f}% poder adquisitivo real",
+        )
+        year_rows = [r for r in rows if r["year"] > 0]  # comparación pedida: año 1 a 5, sin repetir el año 0
+        scenario_df = pd.DataFrame(year_rows).rename(
+            columns={"year": "Año", "nominal_value": "Nominal", "real_value": "Real", "real_change_pct": "% real"}
+        )
+        st.dataframe(
+            scenario_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Nominal": st.column_config.NumberColumn(format="$%.2f"),
+                "Real": st.column_config.NumberColumn(format="$%.2f"),
+                "% real": st.column_config.NumberColumn(format="%.1f%%"),
+            },
+        )
+
+inf_chart_df = pd.DataFrame(
+    {scenario_name: [r["real_value"] for r in inf_scenarios[scenario_name]] for scenario_name in inf_scenario_rates}
+)
+inf_chart_df.insert(0, "Año", range(0, INF_YEARS + 1))
+st.line_chart(inf_chart_df.set_index("Año"))
+
+st.warning(
+    "Esto es una **proyección** con inflación y tasas constantes durante los 5 años — no una "
+    "predicción real. La inflación real varía mes a mes, y ningún banco o inversión garantiza "
+    "la misma tasa todos los años.",
     icon="⚠️",
 )

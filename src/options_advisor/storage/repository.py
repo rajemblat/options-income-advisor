@@ -86,13 +86,14 @@ def upsert_macro_snapshot(conn: sqlite3.Connection, snap: MacroSnapshot) -> None
     conn.execute(
         """
         INSERT INTO macro_snapshot
-            (snapshot_date, fed_funds_lower, fed_funds_upper, cpi_yoy_pct, unemployment_rate_pct,
+            (snapshot_date, fed_funds_lower, fed_funds_upper, cpi_yoy_pct, cpi_yoy_date, unemployment_rate_pct,
              gdp_growth_annualized_pct, fed_meeting_date, fed_hike_probability, fed_hold_probability,
              fed_cut_probability, upcoming_events_json)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(snapshot_date) DO UPDATE SET
             fed_funds_lower=excluded.fed_funds_lower, fed_funds_upper=excluded.fed_funds_upper,
-            cpi_yoy_pct=excluded.cpi_yoy_pct, unemployment_rate_pct=excluded.unemployment_rate_pct,
+            cpi_yoy_pct=excluded.cpi_yoy_pct, cpi_yoy_date=excluded.cpi_yoy_date,
+            unemployment_rate_pct=excluded.unemployment_rate_pct,
             gdp_growth_annualized_pct=excluded.gdp_growth_annualized_pct, fed_meeting_date=excluded.fed_meeting_date,
             fed_hike_probability=excluded.fed_hike_probability, fed_hold_probability=excluded.fed_hold_probability,
             fed_cut_probability=excluded.fed_cut_probability, upcoming_events_json=excluded.upcoming_events_json
@@ -102,6 +103,7 @@ def upsert_macro_snapshot(conn: sqlite3.Connection, snap: MacroSnapshot) -> None
             snap.fed_funds_lower,
             snap.fed_funds_upper,
             snap.cpi_yoy_pct,
+            snap.cpi_yoy_date.isoformat() if snap.cpi_yoy_date else None,
             snap.unemployment_rate_pct,
             snap.gdp_growth_annualized_pct,
             snap.fed_meeting_date.isoformat() if snap.fed_meeting_date else None,

@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS macro_snapshot (
     fed_funds_lower REAL,
     fed_funds_upper REAL,
     cpi_yoy_pct REAL,
+    cpi_yoy_date TEXT,
     unemployment_rate_pct REAL,
     gdp_growth_annualized_pct REAL,
     fed_meeting_date TEXT,
