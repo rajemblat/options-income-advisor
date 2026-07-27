@@ -4,14 +4,14 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-27 (madrugada, trabajo autónomo overnight).
+Última actualización: 2026-07-27 (madrugada, trabajo autónomo overnight — Pestaña Operaciones
+terminada y verificada con una posición real).
 
 ## En progreso ahora
 
-1. **Pestaña "Operaciones" — réplica automática de operaciones reales** (arrancado 2026-07-26,
-   ver detalle completo en "Pendiente" más abajo — se deja el punto acá hasta terminar). Único
-   foco activo por pedido explícito del usuario 2026-07-27: no arrancar Fed/FRED, Calendario de
-   earnings ni Simulador de escenarios hasta cerrar esto con evidencia real en navegador.
+Ninguno — Pestaña Operaciones (ver "Terminado y verificado" #19) cerrada y verificada con una
+posición real de la cuenta (TSLA, ver evidencia ahí). Sigue el punto 1 de "Pendiente" abajo
+(Fed/FRED) en el orden confirmado por el usuario.
 
 ## Bug reportado y con mejora aplicada (no 100% confirmado) — 2026-07-27
 
@@ -29,35 +29,15 @@ es el estado ACTUAL de qué falta.
 
 ## Pendiente, no empezado — orden confirmado por el usuario 2026-07-26
 
-1. **Pestaña "Operaciones" — réplica automática de operaciones reales** (pedido 2026-07-25):
-   detectar en tiempo real cuando se abre una posición nueva en la cuenta real de Schwab (ej.
-   vender 1 Put de TSLA strike 320 vence 21/8) y generar automáticamente una "alerta" con el
-   mismo formato completo de las alertas de oportunidades (P&L, breakeven, POP, % cobertura,
-   noticias recientes, comentario del narrador) pero aplicada a la operación YA ejecutada, no
-   a una sugerencia. Complejidad: **alta** (volumen de código, no decisiones pendientes — las
-   3 preguntas de diseño ya están resueltas). Respuestas a las 3 preguntas de diseño:
-   1. Detección: comparar el snapshot de `get_all_positions()` de la corrida actual contra el
-      snapshot guardado de la corrida anterior (nueva tabla, ej. `position_snapshots`, con
-      symbol OCC + quantity por cuenta) — una posición de tipo OPTION que aparece nueva o con
-      cantidad corta mayor que antes = operación nueva. Usa el parseo OCC que ya existe en
-      `AccountPosition` (broker/models.py), no depende de `description`.
-   2. Frecuencia: la misma corrida del scheduler existente (`job_poll_and_analyze`, cron
-      `*/{poll_interval_minutes}` en horario de mercado — ver `scheduler/runner.py`), no un
-      scheduler aparte — evita pegarle dos veces a la API de Schwab y mantiene todo el pipeline
-      sincronizado a un solo "tick".
-   3. Sí, tabla separada (ej. `real_trade_alerts`) y página propia "Operaciones" — no mezclar
-      con `candidate_contracts`/`alerts`, que representan sugerencias no ejecutadas. Mezclarlas
-      rompería la semántica actual de esas tablas (candidato vs. hecho real) y complicaría
-      cualquier reporte futuro que separe "lo que sugerimos" de "lo que hiciste".
-2. **3 funcionalidades de Fed/FRED**: bloqueo de días de riesgo CPI/NFP, semáforo de
+1. **3 funcionalidades de Fed/FRED**: bloqueo de días de riesgo CPI/NFP, semáforo de
    volatilidad, alertas proactivas. Complejidad: **media** — `market_context/fred_client.py` y
    `economic_calendar.py` ya resuelven fechas de FOMC/CPI/empleo, es integración sobre una base
    ya construida, no invención desde cero.
-3. **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
+2. **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
    selector de semana o rango desde/hasta, earnings de la watchlist (y opcionalmente universo
    amplio) dentro de ese rango, ordenados por fecha. Complejidad: **baja** — página de
    filtro/tabla sobre datos de earnings que ya se usan para el aviso de clusters simultáneos.
-4. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
+3. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
    movimiento, aplicado por igual a todos los subyacentes de posiciones abiertas, recalculado
    con el motor de `payoff.py` existente. Muestra total proyectado vs. hoy (diferencia $ y %).
    Disclaimer de que es una simplificación (todo se mueve igual), no una predicción real.
@@ -155,6 +135,35 @@ es el estado ACTUAL de qué falta.
     mostrar la fecha del dato (y no solo el valor) es necesario, esa serie de FRED se publica
     con varios meses de rezago. 8 tests nuevos (`test_inflation_simulator.py` + cobertura de
     `cpi_yoy_date` en `test_fred_client.py`/`test_repository.py`) — 331/331 tests en verde.
+19. **Pestaña "Operaciones" — réplica automática de operaciones reales** (pedido 2026-07-25,
+    trabajo autónomo overnight 2026-07-26/27, terminado y verificado). Detecta ventas nuevas de
+    opciones en la cuenta Schwab real (diff de `get_all_positions()` contra el snapshot de la
+    corrida anterior, tabla `position_snapshots` reemplazada por completo cada corrida — no
+    upsert, para que una posición cerrada y reabierta se detecte como operación nueva) y genera
+    una alerta con el mismo formato completo que las de candidatos (P&L, breakeven, POP,
+    cobertura, noticias, comentario del narrador) aplicada a la posición YA ejecutada. Piezas
+    nuevas: `strategy/candidates.py::find_contract/build_from_contract` (reconstruye el
+    contrato exacto desde strike/vencimiento ya conocidos, no elegidos por delta),
+    `alerts/narrator.py::build_real_trade_context/narrate_real_trade` (prompt y fallback
+    propios, sin conviction_score — nada se puntuó), `formatting.format_alert_message` con
+    header parametrizable, `alerts/real_trades.py` (el módulo de detección/orquestación,
+    equivalente a `alerts/engine.py` para operaciones ya ejecutadas), tabla `real_trade_alerts`,
+    página `pages/9_operaciones.py`. Cash-Secured Put siempre para puts vendidos (el motor no
+    trackea efectivo/margen); Covered Call vs. Call desnuda para calls vendidas según
+    `share_positions` real. **Verificado con una posición REAL de la cuenta** (no fixture): put
+    de TSLA strike $340 vence 21/8, detectada sembrando el resto de las ~63 posiciones cortas
+    existentes como baseline (para no generar 63 alertas de golpe en el primer run — comportamiento
+    correcto también para USO en producción real) — corrió contra Schwab en vivo (cotización +
+    cadena de opciones reales), Finnhub (noticias reales) y Claude (narración real, no fallback),
+    P&L calculado en $3,622.50 de beneficio máximo / $30,377.50 de pérdida máxima, badge de
+    riesgo real "60% de tu capital configurado", correctamente avisó que la reunión FOMC del
+    29/7 cae dentro del vencimiento de la posición. Filtro de símbolo de la página corregido en
+    el mismo verificado (bug encontrado ahí mismo: usaba la watchlist de 15 símbolos del motor
+    de sugerencias en vez de los símbolos que realmente aparecen en `real_trade_alerts` — la
+    cuenta real opera SLV/SOFI/EWY/AA/DKNG/etc., ninguno en esa watchlist). 42 tests nuevos
+    (storage, candidates, formatting, narrator, notifier, real_trades, jobs) — 365/365 en verde.
+    De paso, mejora aplicada (no confirmada 100%, ver sección de arriba) al botón ☰ del sidebar
+    por bug reportado por el usuario esa misma noche.
 
 ## Cómo se usa este archivo
 

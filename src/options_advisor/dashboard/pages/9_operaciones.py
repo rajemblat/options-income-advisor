@@ -7,7 +7,6 @@ import streamlit as st
 from options_advisor.dashboard.components import (
     ACCENT,
     get_connection,
-    get_symbols,
     icon,
     inject_theme,
     render_header,
@@ -28,10 +27,14 @@ render_header(
 conn = get_connection()
 render_notification_bell(conn)
 
-symbols = ["Todos"] + get_symbols()
+# El filtro sale de los símbolos que REALMENTE tienen una operación detectada, no de la
+# watchlist analizada (config/symbols.yaml) — una operación real puede caer sobre cualquier
+# símbolo que el usuario opere, no solo los ~15 monitoreados por el motor de sugerencias.
+all_trades = repo.get_real_trade_alerts(conn, limit=200)
+symbols = ["Todos"] + sorted({t["symbol"] for t in all_trades})
 selected_symbol = st.selectbox("Símbolo", symbols)
 
-trades = repo.get_real_trade_alerts(conn, symbol=None if selected_symbol == "Todos" else selected_symbol, limit=200)
+trades = all_trades if selected_symbol == "Todos" else [t for t in all_trades if t["symbol"] == selected_symbol]
 
 macro = repo.get_latest_macro_snapshot(conn)
 fed_meeting_date = macro["fed_meeting_date"] if macro else None
