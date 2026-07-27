@@ -83,6 +83,130 @@ def narrate_alert(context: dict, llm_settings: LlmSettings, api_key: str | None)
     return formatting.format_alert_message(context, comment), source
 
 
+# Sección 'Pestaña Operaciones' (réplica automática de operaciones reales, pedido 2026-07-25):
+# variante del prompt de arriba para una posición YA ABIERTA en la cuenta real, no una
+# sugerencia a evaluar — no hay conviction_score/scoring_breakdown (nada se puntuó, ya se
+# operó), así que el LLM no debe justificar "por qué conviene" sino describir la posición ya
+# tomada.
+SYSTEM_PROMPT_REAL_TRADE = """Sos un asistente que redacta el comentario final de una alerta sobre
+una OPERACIÓN DE OPCIONES YA EJECUTADA en la cuenta real del usuario — no una sugerencia a
+evaluar, sino una posición que el usuario ya abrió.
+
+Se te da un JSON con los datos de esa posición: símbolo, estrategia, patas (strike/prima/
+vencimiento de cada leg), cantidad de contratos de esta operación, precio de entrada promedio de
+la cuenta, precio actual del subyacente, las métricas de riesgo/retorno ya calculadas (prima
+neta, beneficio máximo, pérdida máxima, breakevens, probabilidad de beneficio, DTE), la próxima
+fecha de earnings conocida (`next_earnings_date`, puede ser null) y titulares de noticias
+recientes (`recent_news`, puede estar vacío). Todos esos datos YA se le muestran al usuario en un
+bloque separado antes de tu texto — no los repitas ni los vuelvas a listar.
+
+Tu única tarea es escribir el "Comentario" final: 2-4 frases en español describiendo la posición
+YA ABIERTA — contexto de riesgo/retorno tal como quedó armada y, si hay noticias recientes
+relevantes, cómo se relacionan. No agregues saludo, título ni la palabra "Comentario" — solo el
+texto.
+
+Reglas estrictas:
+- Nunca inventes cifras que no estén en el JSON.
+- Nunca sugerís cerrar, ajustar o modificar la posición, ni tomar ninguna acción nueva — ya está
+  ejecutada, tu rol es describirla, no aconsejar sobre ella.
+- Si `payoff_is_estimate` es true, aclará que el beneficio máximo y los breakevens son una
+  estimación por modelo, no una fórmula cerrada.
+- Nunca especules sobre decisiones de política monetaria (tasas de la Fed) ni ningún otro evento
+  futuro — si `recent_news` trae algo relacionado, describilo, no lo interpretes hacia una
+  predicción propia.
+"""
+
+
+def _fallback_comment_real_trade(context: dict) -> str:
+    return (
+        "No se generó comentario narrativo (fallback por error del narrador) — revisar los "
+        "datos numéricos de arriba antes de tomar cualquier decisión sobre esta posición."
+    )
+
+
+def narrate_real_trade(context: dict, llm_settings: LlmSettings, api_key: str | None) -> tuple[str, str]:
+    """Igual que `narrate_alert` pero para una operación YA ejecutada: prompt/fallback propios
+    (sin conviction_score, que no existe acá) y header distinto en el texto final vía
+    `formatting.format_alert_message(..., header=...)` — mismo bloque numérico determinístico
+    (patas, prima, P&L, breakevens, POP), solo cambia el encabezado y el comentario."""
+    if not api_key:
+        logger.warning(
+            "ANTHROPIC_API_KEY no configurada; usando comentario de fallback para la operación real de %s", context["symbol"]
+        )
+        comment, source = _fallback_comment_real_trade(context), "fallback_template"
+    else:
+        try:
+            client = anthropic.Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model=llm_settings.model,
+                max_tokens=llm_settings.max_tokens,
+                system=SYSTEM_PROMPT_REAL_TRADE,
+                messages=[{"role": "user", "content": json.dumps(context, default=str, ensure_ascii=False)}],
+            )
+            text = "".join(block.text for block in response.content if block.type == "text").strip()
+            if not text:
+                raise ValueError("Respuesta vacía de Claude")
+            comment, source = text, "claude"
+        except Exception:
+            logger.exception("Fallo al narrar la operación real de %s con Claude; usando comentario de fallback", context["symbol"])
+            comment, source = _fallback_comment_real_trade(context), "fallback_template"
+
+    return formatting.format_alert_message(context, comment, header="✦ Operación Real Ejecutada"), source
+
+
+def build_real_trade_context(
+    symbol: str,
+    strategy_type: str,
+    quantity: int,
+    entry_price: float | None,
+    strikes: dict,
+    expiration_date: date,
+    underlying_price: float | None = None,
+    legs: list[dict] | None = None,
+    net_premium: float | None = None,
+    max_profit: float | None = None,
+    max_loss: float | None = None,
+    breakevens: list[float] | None = None,
+    probability_of_profit: float | None = None,
+    dte: int | None = None,
+    payoff_is_estimate: bool = False,
+    next_earnings_date: date | None = None,
+    recent_news: list[dict] | None = None,
+    next_ex_dividend_date: date | None = None,
+    annualized_return_pct: float | None = None,
+    early_close_projection: list[dict] | None = None,
+    capital_available: float | None = None,
+) -> dict:
+    """Mismo shape que `build_narration_context` sin conviction_score/scoring_breakdown (no
+    existen para una operación ya ejecutada, nada se puntuó) y con `quantity`/`entry_price`
+    propios de una posición real — usado por `format_alert_message` (que no lee estos dos
+    campos nuevos, son solo para que el narrador los mencione si hace falta) y por
+    `narrate_real_trade`."""
+    return {
+        "symbol": symbol,
+        "strategy_type": strategy_type,
+        "quantity": quantity,
+        "entry_price": entry_price,
+        "strikes": strikes,
+        "expiration_date": expiration_date.isoformat(),
+        "underlying_price": underlying_price,
+        "legs": legs or [],
+        "net_premium": net_premium,
+        "max_profit": max_profit,
+        "max_loss": max_loss,
+        "next_earnings_date": next_earnings_date.isoformat() if next_earnings_date else None,
+        "next_ex_dividend_date": next_ex_dividend_date.isoformat() if next_ex_dividend_date else None,
+        "recent_news": recent_news or [],
+        "breakevens": breakevens or [],
+        "probability_of_profit": probability_of_profit,
+        "dte": dte,
+        "payoff_is_estimate": payoff_is_estimate,
+        "annualized_return_pct": annualized_return_pct,
+        "early_close_projection": early_close_projection or [],
+        "capital_available": capital_available,
+    }
+
+
 def build_narration_context(
     symbol: str,
     strategy_type: str,

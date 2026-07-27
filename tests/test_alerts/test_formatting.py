@@ -314,3 +314,14 @@ def test_format_alert_message_omits_share_requirement_for_cash_secured_put():
     context = {**_BASE_CONTEXT, "strategy_type": "cash_secured_put", "next_earnings_date": None, "legs": [_DUMMY_LEG]}
     text = format_alert_message(context, "comentario")
     assert "Requiere 100 acciones" not in text
+
+
+def test_format_alert_message_default_header_is_alerta():
+    text = format_alert_message({**_BASE_CONTEXT, "next_earnings_date": None}, "comentario")
+    assert text.startswith("✦ Alerta de Opción")
+
+
+def test_format_alert_message_custom_header_for_real_trades():
+    text = format_alert_message({**_BASE_CONTEXT, "next_earnings_date": None}, "comentario", header="✦ Operación Real Ejecutada")
+    assert text.startswith("✦ Operación Real Ejecutada")
+    assert "✦ Alerta de Opción" not in text

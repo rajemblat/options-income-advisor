@@ -44,3 +44,11 @@ def notify(symbol: str, strategy_type: str, conviction_score: int, narrative_tex
     al chat de Telegram — sin canal configurado, esta función se comporta como antes (solo log)."""
     logger.info("ALERTA %s | %s | score=%d | %s", symbol, strategy_type, conviction_score, narrative_text)
     send_text(narrative_text)
+
+
+def notify_real_trade(symbol: str, strategy_type: str, narrative_text: str) -> None:
+    """Mismo canal que `notify` (tabla `real_trade_alerts` siempre queda como registro; Telegram
+    si está configurado) para una operación YA ejecutada — sin conviction_score, que no existe
+    acá (Pestaña Operaciones, pedido 2026-07-25)."""
+    logger.info("OPERACIÓN REAL %s | %s | %s", symbol, strategy_type, narrative_text)
+    send_text(narrative_text)

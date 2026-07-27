@@ -227,12 +227,16 @@ def _capital_at_risk_lines(max_loss: float | None, capital_available: float | No
     return []
 
 
-def format_alert_message(context: dict, comment: str) -> str:
+def format_alert_message(context: dict, comment: str, header: str = "✦ Alerta de Opción") -> str:
     """Arma el bloque de alerta completo (emojis + patas + métricas de riesgo/retorno +
     comentario). Todo lo numérico viene ya calculado por `strategy/payoff.py` — el único
-    texto libre es `comment`, escrito por el narrador (Claude o plantilla de fallback)."""
+    texto libre es `comment`, escrito por el narrador (Claude o plantilla de fallback).
+
+    `header` es parametrizable (default: candidatos/sugerencias) para reusar este mismo bloque
+    en operaciones REALES ya ejecutadas (Pestaña Operaciones, ver alerts/narrator.py::
+    narrate_real_trade) sin decirle al usuario "Alerta" sobre algo que ya hizo."""
     label = strategy_label(context["strategy_type"])
-    lines = ["✦ Alerta de Opción", _earnings_line(context), f"✧ {context['symbol']} — {label}"]
+    lines = [header, _earnings_line(context), f"✧ {context['symbol']} — {label}"]
 
     if context.get("underlying_price") is not None:
         lines.append(f"• Precio actual del subyacente: ${context['underlying_price']:,.2f}")

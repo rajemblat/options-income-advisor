@@ -86,3 +86,27 @@ def test_notify_only_bot_token_set_does_not_call_httpx(monkeypatch):
     monkeypatch.setattr(httpx, "post", lambda *a, **k: calls.append((a, k)))
     notifier.notify("AAPL", "cash_secured_put", 80, "texto")
     assert calls == []
+
+
+def test_notify_real_trade_sends_message_to_configured_chat(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "fake-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "12345")
+
+    captured = {}
+
+    def _post(url, json, timeout):
+        captured["json"] = json
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    monkeypatch.setattr(httpx, "post", _post)
+    notifier.notify_real_trade("TSLA", "cash_secured_put", "texto de la operación real")
+
+    assert captured["json"] == {"chat_id": "12345", "text": "texto de la operación real"}
+
+
+def test_notify_real_trade_without_telegram_env_never_calls_httpx(monkeypatch):
+    calls = []
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: calls.append((a, k)))
+    notifier.notify_real_trade("TSLA", "cash_secured_put", "texto")
+    assert calls == []
