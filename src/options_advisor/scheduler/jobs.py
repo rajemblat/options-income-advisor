@@ -7,6 +7,7 @@ from datetime import date, datetime
 
 from options_advisor.alerts.digest import build_premarket_digest_text
 from options_advisor.alerts.engine import process_symbol_alerts
+from options_advisor.alerts.real_trades import detect_and_alert_real_trades
 from options_advisor.broker.base import BrokerClient
 from options_advisor.config import Settings
 from options_advisor.indicators.pipeline import analyze_symbol
@@ -110,6 +111,15 @@ def _run_full_analysis(
     # `assigned_positions` (pensada para trackear asignación de CSP propia, hoy sin UI que la
     # llene). {} en modo mock o si falla la consulta (ver broker/base.py::get_all_share_positions).
     share_positions = broker.get_all_share_positions()
+
+    # Pestaña Operaciones (réplica automática de operaciones reales, pedido 2026-07-25): una
+    # sola detección por corrida, no por símbolo — diffea TODAS las posiciones de opciones
+    # cortas de la cuenta real contra el snapshot de la corrida anterior, sin importar si el
+    # símbolo operado está en `symbols` (la watchlist) o no. Nunca rompe el resto del job.
+    try:
+        detect_and_alert_real_trades(broker, conn, settings, today, share_positions, anthropic_api_key, finnhub_api_key)
+    except Exception:
+        logger.exception("Fallo al detectar operaciones reales; se continúa con el análisis por símbolo")
 
     new_alerts: list[dict] = []
     for symbol in symbols:

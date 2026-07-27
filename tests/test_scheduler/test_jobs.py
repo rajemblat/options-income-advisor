@@ -122,3 +122,50 @@ def test_run_full_analysis_passes_real_share_position_as_has_open_assigned_posit
         ("AAPL", False, "moderado"),
         ("AAPL", False, "agresivo"),
     ]
+
+
+def test_run_full_analysis_calls_detect_and_alert_real_trades_once_per_run(conn, monkeypatch):
+    """Pestaña Operaciones: una sola detección por corrida (no por símbolo, no por perfil de
+    riesgo) — mismo patrón que share_positions."""
+    captured = []
+
+    monkeypatch.setattr(jobs, "analyze_symbol", lambda broker, conn, symbol, settings, **k: _FakeAnalysis(symbol))
+    monkeypatch.setattr(jobs.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    monkeypatch.setattr(jobs, "_refresh_news_for_symbol", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "_refresh_macro_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "process_symbol_alerts", lambda *a, **k: [])
+    monkeypatch.setattr(jobs, "detect_and_alert_real_trades", lambda *a, **k: captured.append(a) or [])
+
+    broker = _FakeBroker(share_positions={"NVDA": 300})
+    settings = load_settings()
+
+    jobs._run_full_analysis(broker, conn, ["NVDA", "AAPL"], settings, TODAY, None, None, None)
+
+    assert len(captured) == 1  # una sola vez, no una por símbolo
+
+
+def test_run_full_analysis_survives_real_trade_detection_failure(conn, monkeypatch):
+    """Un fallo en la detección de operaciones reales nunca debe tumbar el análisis por
+    símbolo — mismo criterio de aislamiento de fallas que el resto de _run_full_analysis."""
+    captured = []
+
+    monkeypatch.setattr(jobs, "analyze_symbol", lambda broker, conn, symbol, settings, **k: _FakeAnalysis(symbol))
+    monkeypatch.setattr(jobs.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    monkeypatch.setattr(jobs, "_refresh_news_for_symbol", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "_refresh_macro_snapshot", lambda *a, **k: None)
+
+    def _fake_process_symbol_alerts(conn, analysis, settings, has_open_assigned_position, risk_level, **k):
+        captured.append(analysis.symbol)
+        return []
+
+    monkeypatch.setattr(jobs, "process_symbol_alerts", _fake_process_symbol_alerts)
+
+    def _boom(*a, **k):
+        raise RuntimeError("fallo simulado en la detección de operaciones reales")
+
+    monkeypatch.setattr(jobs, "detect_and_alert_real_trades", _boom)
+
+    broker = _FakeBroker(share_positions={})
+    jobs._run_full_analysis(broker, conn, ["AAPL"], load_settings(), TODAY, None, None, None)  # no debe lanzar
+
+    assert captured == ["AAPL", "AAPL", "AAPL"]  # el análisis por símbolo siguió, 3 perfiles
