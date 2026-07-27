@@ -8,7 +8,7 @@ from py_vollib.black_scholes_merton import black_scholes_merton
 from options_advisor.broker.models import OptionChain, OptionContract
 from options_advisor.indicators.greeks import calculate_greeks
 from options_advisor.strategy import constants as c
-from options_advisor.strategy.candidates import _coverage_pct, _has_good_support, build_candidate
+from options_advisor.strategy.candidates import _coverage_pct, _has_good_support, build_candidate, build_from_contract, find_contract
 
 AS_OF = date(2026, 1, 1)
 UNDERLYING_PRICE = 100.0
@@ -271,3 +271,39 @@ def test_build_candidate_non_mvp_strategy_ignores_new_params(chain):
     without = build_candidate(c.BULL_PUT_SPREAD, chain, target_short_delta=0.25)
     with_constraints = build_candidate(c.BULL_PUT_SPREAD, chain, target_short_delta=0.25, min_coverage_pct=0.30, support_sma_values=[999.0])
     assert without.strikes == with_constraints.strikes
+
+
+# --- find_contract / build_from_contract (Pestaña Operaciones, réplica de operaciones reales) ---
+
+_REAL_TRADE_EXPIRATION = AS_OF + timedelta(days=30)  # dte=30 está en DTE_BUCKETS
+_REAL_TRADE_STRIKE = 100.0  # offset 0.0 sobre UNDERLYING_PRICE=100.0, está en STRIKE_OFFSETS
+
+
+def test_find_contract_returns_exact_match(chain):
+    contract = find_contract(chain, "put", _REAL_TRADE_EXPIRATION, _REAL_TRADE_STRIKE)
+    assert contract is not None
+    assert contract.option_type == "put"
+    assert contract.expiration == _REAL_TRADE_EXPIRATION
+    assert contract.strike == _REAL_TRADE_STRIKE
+
+
+def test_find_contract_none_when_strike_not_in_chain(chain):
+    assert find_contract(chain, "put", _REAL_TRADE_EXPIRATION, 12345.0) is None
+
+
+def test_find_contract_none_when_expiration_not_in_chain(chain):
+    assert find_contract(chain, "put", AS_OF + timedelta(days=999), _REAL_TRADE_STRIKE) is None
+
+
+def test_build_from_contract_single_short_leg(chain):
+    contract = find_contract(chain, "put", _REAL_TRADE_EXPIRATION, _REAL_TRADE_STRIKE)
+    build = build_from_contract(c.CASH_SECURED_PUT, contract, quantity=2)
+    assert build.strategy_type == c.CASH_SECURED_PUT
+    assert build.expiration_date == _REAL_TRADE_EXPIRATION
+    assert build.strikes == {"short_strike": _REAL_TRADE_STRIKE}
+    assert len(build.legs) == 1
+    assert build.legs[0].side == "sell"
+    assert build.legs[0].quantity == 2
+    assert build.legs[0].contract is contract
+    # delta neta escalada por quantity (2 contratos), signo negativo por estar vendida
+    assert build.net_greeks["delta"] == pytest.approx(-2 * contract.greeks.delta, abs=1e-6)

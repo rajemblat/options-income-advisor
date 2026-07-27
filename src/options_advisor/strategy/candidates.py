@@ -426,6 +426,35 @@ def _build_calendar_or_diagonal(
     )
 
 
+def find_contract(chain: OptionChain, option_type: OptionType, expiration: date, strike: float) -> OptionContract | None:
+    """Contrato EXACTO de la cadena por tipo/vencimiento/strike — a diferencia del resto de
+    este módulo, que ELIGE strikes por delta objetivo, esto reconstruye el contrato vigente
+    de una posición YA ABIERTA (Pestaña Operaciones, réplica automática de operaciones reales,
+    pedido 2026-07-25) a partir de los datos OCC ya parseados de `AccountPosition`. None si la
+    cadena en vivo ya no tiene ese contrato exacto (vencimiento muy próximo/pasado o strike
+    delisted) — el caller decide cómo degradar (ver alerts/real_trades.py)."""
+    for ct in chain.contracts:
+        if ct.option_type == option_type and ct.expiration == expiration and ct.strike == strike:
+            return ct
+    return None
+
+
+def build_from_contract(strategy_type: str, contract: OptionContract, quantity: int) -> CandidateBuild:
+    """Arma un CandidateBuild de una sola pata VENDIDA a partir de un contrato YA CONOCIDO
+    (strike/vencimiento fijos, no elegidos por delta) — usado para operaciones reales ya
+    ejecutadas, donde el strike lo decidió el usuario al operar, no el motor. `quantity` son
+    los contratos de ESTA operación puntual (puede ser menos que el total de la posición si ya
+    había contratos vendidos antes, ver alerts/real_trades.py::_detect_new_short_trades)."""
+    return CandidateBuild(
+        strategy_type=strategy_type,
+        expiration_date=contract.expiration,
+        strikes={"short_strike": contract.strike},
+        net_greeks=_position_greeks(contract, is_short=True, quantity=quantity),
+        greeks_source=_greeks_source(contract),
+        legs=[Leg("sell", contract, quantity)],
+    )
+
+
 def build_candidate(
     strategy_type: str,
     chain: OptionChain,
