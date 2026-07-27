@@ -5,27 +5,35 @@ vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y
 es el estado ACTUAL de qué falta.
 
 Última actualización: 2026-07-27 (madrugada, trabajo autónomo overnight — Pestaña Operaciones
-terminada y verificada con una posición real).
+terminada, cron propio más seguido desplegado, bug real de Market Movers corregido).
 
 ## En progreso ahora
 
-Ninguno — Pestaña Operaciones (ver "Terminado y verificado" #19) cerrada y verificada con una
-posición real de la cuenta (TSLA, ver evidencia ahí). Sigue el punto 1 de "Pendiente" abajo
-(Fed/FRED) en el orden confirmado por el usuario.
+Ninguno. Sigue el punto 1 de "Pendiente" abajo (Fed/FRED) en el orden confirmado por el usuario.
 
-## Bug reportado y con mejora aplicada (no 100% confirmado) — 2026-07-27
+## Bugs reportados por el usuario esta noche (2026-07-27) — estado
 
-- **Botón ☰ del sidebar, no respondía al primer clic** (reportado por el usuario, sospecha de
-  regresión del simulador de inflación — descartado: ese commit no tocó `components.py`).
-  Encontrado investigando: `stSidebarCollapseButton` es un `<div>` que ENVUELVE el `<button>`
-  real, a diferencia de `stExpandSidebarButton` que es un `<button>` directo — asimetría real
-  del DOM de Streamlit. Fix aplicado (commit `a3e9c6d`): la secuencia completa de eventos de
-  puntero (pointerdown/mousedown/pointerup/mouseup/click) en vez de un solo `.click()`, tests
-  331/331 en verde. **Honesto**: no pude reproducir el fallo de forma 100% consistente con
-  clics automatizados del navegador para confirmar que este es EL root cause exacto — es una
-  mejora real y defendible (la asimetría del DOM existe, se confirmó con JS en vivo), pero
-  falta que el usuario confirme en su uso normal que el síntoma desapareció. Si vuelve a
-  pasar, revisar de nuevo con este contexto ya investigado.
+- **Botón ☰ del sidebar, no respondía al primer clic**: mejora aplicada (commit `a3e9c6d`,
+  detalle abajo) pero **no confirmada 100%** — no pude reproducir el fallo de forma consistente
+  con clics automatizados para verificar que es EL root cause exacto. Falta que el usuario
+  confirme en uso normal. Si vuelve a pasar, revisar de nuevo con este contexto ya investigado.
+- **Market Movers mostraba +0.00%/$0.00 en todos los símbolos**: **corregido y confirmado**,
+  bug real (no falta de datos) — ver "Terminado y verificado" #20.
+- **2 operaciones reales de hoy que no aparecían en Operaciones**: corrida la detección en vivo
+  dos veces (una vez apenas se pidió, otra vez más tarde para descartar timing) — **0 posiciones
+  cortas de opciones nuevas o aumentadas** en ambas corridas; las únicas diferencias encontradas
+  contra el snapshot guardado son 13 posiciones LARGAS de opciones (protección de spreads ya
+  existentes, ej. la escalera de puts de OKLO, los combos de USO) — fuera de scope del detector
+  por diseño (Sección "Operaciones", solo detecta VENTAS de opciones, no compras). **Sin poder
+  confirmar la causa real**: no existe ningún endpoint de órdenes/transacciones en el código
+  (`broker/base.py` no tiene `get_orders`/`get_transactions`, solo posiciones/cotizaciones/
+  cadenas/movers) para poder ver qué se ejecutó exactamente hoy — la hipótesis más probable es
+  que esas 2 operaciones fueron cierres (buy-to-close, que el detector ignora a propósito —
+  cerrar no es una venta nueva), compras de opciones largas, o compraventa de acciones (no
+  opciones), ninguna de las cuales activa este detector tal como está diseñado. Si eran ventas
+  de opciones nuevas y no aparecen, puede ser un problema de timing/settlement de la API de
+  Schwab — el cron rápido nuevo (cada 3 min, ver #21) las va a agarrar automáticamente apenas
+  aparezcan como posición corta. Confirmar con el usuario qué tipo de operación fue exactamente.
 
 ## Pendiente, no empezado — orden confirmado por el usuario 2026-07-26
 
@@ -164,6 +172,28 @@ posición real de la cuenta (TSLA, ver evidencia ahí). Sigue el punto 1 de "Pen
     (storage, candidates, formatting, narrator, notifier, real_trades, jobs) — 365/365 en verde.
     De paso, mejora aplicada (no confirmada 100%, ver sección de arriba) al botón ☰ del sidebar
     por bug reportado por el usuario esa misma noche.
+20. **Bug real encontrado y corregido: Market Movers mostraba +0.00%/$0.00 en todos los
+    símbolos** (reportado por el usuario 2026-07-27). `_parse_mover()` (`broker/schwab_client.py`)
+    leía campos `last`/`change`/`direction` que Schwab NO devuelve en `/movers` — el shape real
+    en vivo es `lastPrice`/`netChange`/`netPercentChange` (sin `direction`), confirmado pidiendo
+    el endpoint real con el mercado abierto. Todo caía en los defaults (0.0/0.0/"up") desde que
+    se construyó la sección (2026-07-25), nunca detectado porque esa verificación cayó con el
+    mercado CERRADO (`screeners: []`, el parseo de una fila real nunca se ejercitó) y el único
+    test usaba un payload fabricado con los nombres viejos. `netPercentChange` viene como
+    fracción en este endpoint (a diferencia de `/quotes`, donde ya viene en %) — confirmado con
+    la matemática real de un ítem (`netChange=-10.6` sobre `lastPrice=196.24` ≈ `-0.0512`).
+    Corregido y verificado en navegador en vivo con datos reales (NVDA -5.08%, AAPL +0.71%,
+    etc.) — 1 test actualizado con el shape real capturado, 369/369 en verde.
+21. **Detección de operaciones reales separada a un cron propio más seguido** (pedido
+    2026-07-27: verla reflejada casi en tiempo real, no esperar 30 min). Nuevo
+    `job_detect_real_trades()` (liviano: solo diffea posiciones, sin indicadores/scoring/
+    narración de candidatos) con cadencia propia
+    (`settings.scheduler.real_trade_poll_interval_minutes`, default 3 min), registrado como job
+    separado (`real_trade_detection`) en `scheduler/runner.py`, independiente de
+    `periodic_poll`. Desplegado en el proceso real del scheduler (`scripts/run_scheduler.py`,
+    reiniciado para tomar el cambio — se encontró corriendo desde el domingo con código viejo).
+    5 tests nuevos (incluye verificación del cron real vía introspección del trigger de
+    APScheduler) — 369/369 en verde.
 
 ## Cómo se usa este archivo
 
