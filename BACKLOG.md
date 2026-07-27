@@ -4,12 +4,28 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-26 (simulador de inflación).
+Última actualización: 2026-07-27 (madrugada, trabajo autónomo overnight).
 
 ## En progreso ahora
 
-Ninguno — el rediseño de página principal estilo CNBC (ver "Terminado y verificado hoy" #17)
-fue lo último que se cerró, sigue el punto 1 de "Pendiente" abajo.
+1. **Pestaña "Operaciones" — réplica automática de operaciones reales** (arrancado 2026-07-26,
+   ver detalle completo en "Pendiente" más abajo — se deja el punto acá hasta terminar). Único
+   foco activo por pedido explícito del usuario 2026-07-27: no arrancar Fed/FRED, Calendario de
+   earnings ni Simulador de escenarios hasta cerrar esto con evidencia real en navegador.
+
+## Bug reportado y con mejora aplicada (no 100% confirmado) — 2026-07-27
+
+- **Botón ☰ del sidebar, no respondía al primer clic** (reportado por el usuario, sospecha de
+  regresión del simulador de inflación — descartado: ese commit no tocó `components.py`).
+  Encontrado investigando: `stSidebarCollapseButton` es un `<div>` que ENVUELVE el `<button>`
+  real, a diferencia de `stExpandSidebarButton` que es un `<button>` directo — asimetría real
+  del DOM de Streamlit. Fix aplicado (commit `a3e9c6d`): la secuencia completa de eventos de
+  puntero (pointerdown/mousedown/pointerup/mouseup/click) en vez de un solo `.click()`, tests
+  331/331 en verde. **Honesto**: no pude reproducir el fallo de forma 100% consistente con
+  clics automatizados del navegador para confirmar que este es EL root cause exacto — es una
+  mejora real y defendible (la asimetría del DOM existe, se confirmó con JS en vivo), pero
+  falta que el usuario confirme en su uso normal que el síntoma desapareció. Si vuelve a
+  pasar, revisar de nuevo con este contexto ya investigado.
 
 ## Pendiente, no empezado — orden confirmado por el usuario 2026-07-26
 
