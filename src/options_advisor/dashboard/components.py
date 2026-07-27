@@ -331,13 +331,32 @@ def _render_sidebar_toggle() -> None:
                 if (!container) { return null; }
                 return container.tagName === 'BUTTON' ? container : (container.querySelector('button') || container);
             }
+            // stExpandSidebarButton es un <button> directo, pero stSidebarCollapseButton es un
+            // <div> que ENVUELVE el <button> real (asimetría del DOM de Streamlit, encontrada
+            // 2026-07-27 investigando el bug reportado "no responde al primer clic, solo
+            // funciona con refresh completo") — target.click() nativo alcanza igual en ambos
+            // casos porque el evento sintético hace bubbling hasta el listener de React en la
+            // raíz, PERO el clic REAL del usuario en el ícono ☰ (mousedown/mouseup en vez de
+            // solo 'click') no siempre viaja completo por el árbol de eventos de React si el
+            // navegador ya movió el foco/hover al mismo tiempo que el rerun de Streamlit
+            // reemplaza ese botón interno — disparar la secuencia completa de eventos de puntero
+            // (pointerdown/mousedown/pointerup/mouseup/click) en vez de un solo .click() imita
+            // un clic real de principio a fin y evita que React lo pierda a mitad de camino.
+            function fireClick(target) {
+                if (!target) { return; }
+                const opts = { bubbles: true, cancelable: true, view: window };
+                ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach(function (type) {
+                    const EventClass = type.startsWith("pointer") ? PointerEvent : MouseEvent;
+                    target.dispatchEvent(new EventClass(type, opts));
+                });
+            }
             btn.addEventListener('click', function() {
                 const sidebar = doc.querySelector('[data-testid="stSidebar"]');
                 const expanded = sidebar && sidebar.getAttribute('aria-expanded') === 'true';
                 const target = expanded
                     ? clickable(doc.querySelector('[data-testid="stSidebarCollapseButton"]'))
                     : clickable(doc.querySelector('[data-testid="stExpandSidebarButton"]'));
-                if (target) { target.click(); }
+                fireClick(target);
             });
             doc.body.appendChild(btn);
         })();
