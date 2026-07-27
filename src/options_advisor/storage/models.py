@@ -108,6 +108,51 @@ class Notification(BaseModel):
     created_at: datetime
 
 
+class PositionSnapshot(BaseModel):
+    """Última cantidad conocida de una posición CORTA de opciones por cuenta (Sección
+    'Operaciones' — réplica automática de operaciones reales, pedido 2026-07-25). Sobreescrita
+    por completo cada corrida del scheduler (ver repository.replace_position_snapshots): solo
+    hace falta el estado de la corrida anterior para diffear contra la actual y detectar ventas
+    nuevas, no un historial completo."""
+
+    account_number: str
+    symbol: str  # OCC de la opción
+    quantity: float  # negativo = corto; se guardan solo posiciones cortas, ver real_trades.py
+    snapshot_ts: datetime
+
+
+class RealTradeAlert(BaseModel):
+    """Una operación real de venta de opciones detectada en la cuenta Schwab (no una sugerencia
+    — `candidate_contracts`/`alerts` son para eso). Mismos campos de P&L/riesgo que
+    CandidateContract, sin conviction_score/scoring_breakdown/risk_profile/threshold: nada se
+    puntuó, la operación ya se ejecutó."""
+
+    account_number: str
+    occ_symbol: str
+    symbol: str  # subyacente
+    trade_date: date
+    trade_ts: datetime
+    strategy_type: str
+    option_type: str  # "put" | "call"
+    strike: float
+    expiration_date: date
+    quantity: int  # contratos nuevos detectados en esta operación (no el total de la posición)
+    entry_price: float | None = None  # precio promedio de la posición completa, tal como lo da Schwab
+    legs: list[dict] = []
+    net_premium: float | None = None
+    max_profit: float | None = None
+    max_loss: float | None = None
+    breakevens: list[float] = []
+    probability_of_profit: float | None = None
+    dte: int | None = None
+    underlying_price: float | None = None
+    payoff_is_estimate: bool = False
+    annualized_return_pct: float | None = None
+    early_close_projection: list[dict] = []
+    narrative_text: str | None = None
+    narrative_source: NarrativeSource | None = None
+
+
 class InvestorProfile(BaseModel):
     capital_available: float
     loss_tolerance_pct: float

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
 from options_advisor.storage import db
 from options_advisor.storage import repository as repo
-from options_advisor.storage.models import Alert, CandidateContract, MacroSnapshot, NewsItem
+from options_advisor.storage.models import Alert, CandidateContract, MacroSnapshot, NewsItem, PositionSnapshot, RealTradeAlert
 
 
 @pytest.fixture
@@ -161,3 +162,84 @@ def test_upsert_macro_snapshot_without_cpi_yoy_date_leaves_it_null(conn):
     repo.upsert_macro_snapshot(conn, MacroSnapshot(snapshot_date=date(2026, 7, 26)))
     snapshot = repo.get_latest_macro_snapshot(conn)
     assert snapshot["cpi_yoy_date"] is None
+
+
+def test_get_position_snapshots_empty_by_default(conn):
+    assert repo.get_position_snapshots(conn) == {}
+
+
+def test_replace_position_snapshots_round_trip(conn):
+    repo.replace_position_snapshots(
+        conn,
+        [
+            PositionSnapshot(account_number="123", symbol="TSLA  260821P00320000", quantity=-1.0, snapshot_ts=datetime(2026, 7, 27, 10, 0)),
+            PositionSnapshot(account_number="123", symbol="AAPL  260821C00200000", quantity=-2.0, snapshot_ts=datetime(2026, 7, 27, 10, 0)),
+        ],
+    )
+    snapshots = repo.get_position_snapshots(conn)
+    assert snapshots == {("123", "TSLA  260821P00320000"): -1.0, ("123", "AAPL  260821C00200000"): -2.0}
+
+
+def test_replace_position_snapshots_forgets_closed_positions(conn):
+    """Un reemplazo completo (no upsert incremental) — una posición que ya no aparece en la
+    corrida actual debe desaparecer de la tabla, así si se reabre el mismo contrato más
+    adelante se detecta como operación nueva en vez de compararse contra un número viejo."""
+    repo.replace_position_snapshots(
+        conn, [PositionSnapshot(account_number="123", symbol="TSLA  260821P00320000", quantity=-1.0, snapshot_ts=datetime(2026, 7, 27, 10, 0))]
+    )
+    repo.replace_position_snapshots(
+        conn, [PositionSnapshot(account_number="123", symbol="AAPL  260821C00200000", quantity=-2.0, snapshot_ts=datetime(2026, 7, 27, 10, 30))]
+    )
+    assert repo.get_position_snapshots(conn) == {("123", "AAPL  260821C00200000"): -2.0}
+
+
+def _real_trade_alert(**overrides) -> RealTradeAlert:
+    defaults = dict(
+        account_number="123",
+        occ_symbol="TSLA  260821P00320000",
+        symbol="TSLA",
+        trade_date=date(2026, 7, 27),
+        trade_ts=datetime(2026, 7, 27, 10, 0),
+        strategy_type="cash_secured_put",
+        option_type="put",
+        strike=320.0,
+        expiration_date=date(2026, 8, 21),
+        quantity=1,
+        entry_price=5.5,
+        legs=[{"side": "sell", "option_type": "put", "strike": 320.0}],
+        net_premium=550.0,
+        max_profit=550.0,
+        max_loss=31450.0,
+        breakevens=[314.5],
+        probability_of_profit=0.72,
+        dte=25,
+        underlying_price=330.0,
+        payoff_is_estimate=False,
+        annualized_return_pct=25.5,
+        early_close_projection=[{"pct": 50, "days": 10}],
+        narrative_text="texto de la operación",
+        narrative_source="claude",
+    )
+    defaults.update(overrides)
+    return RealTradeAlert(**defaults)
+
+
+def test_insert_and_get_real_trade_alerts(conn):
+    repo.insert_real_trade_alert(conn, _real_trade_alert())
+    rows = repo.get_real_trade_alerts(conn)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["symbol"] == "TSLA"
+    assert row["strategy_type"] == "cash_secured_put"
+    assert row["strike"] == 320.0
+    assert row["quantity"] == 1
+    assert json.loads(row["legs_json"]) == [{"side": "sell", "option_type": "put", "strike": 320.0}]
+    assert row["narrative_text"] == "texto de la operación"
+
+
+def test_get_real_trade_alerts_filters_by_symbol(conn):
+    repo.insert_real_trade_alert(conn, _real_trade_alert(symbol="TSLA", occ_symbol="TSLA  260821P00320000"))
+    repo.insert_real_trade_alert(conn, _real_trade_alert(symbol="AAPL", occ_symbol="AAPL  260821C00200000"))
+    rows = repo.get_real_trade_alerts(conn, symbol="AAPL")
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "AAPL"

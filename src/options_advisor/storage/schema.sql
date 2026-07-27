@@ -152,6 +152,51 @@ CREATE TABLE IF NOT EXISTS assigned_positions (
     FOREIGN KEY (origin_alert_id) REFERENCES alerts(id)
 );
 
+-- Último snapshot de posiciones CORTAS de opciones por cuenta (Sección 'Operaciones' —
+-- réplica automática de operaciones reales, pedido 2026-07-25) — reemplazado por completo cada
+-- corrida del scheduler (ver storage/repository.py::replace_position_snapshots), no un
+-- historial: solo hace falta el estado de la corrida anterior para diffear contra la actual.
+CREATE TABLE IF NOT EXISTS position_snapshots (
+    account_number TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    quantity REAL NOT NULL,
+    snapshot_ts TEXT NOT NULL,
+    PRIMARY KEY (account_number, symbol)
+);
+
+-- Operaciones reales de venta de opciones detectadas en la cuenta Schwab (diff contra
+-- position_snapshots, ver alerts/real_trades.py) — tabla separada de candidate_contracts/alerts
+-- a propósito: esas representan sugerencias no ejecutadas (con score/threshold/perfil), esto es
+-- lo que el usuario YA hizo, sin nada que puntuar.
+CREATE TABLE IF NOT EXISTS real_trade_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_number TEXT NOT NULL,
+    occ_symbol TEXT NOT NULL,
+    symbol TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    trade_ts TEXT NOT NULL,
+    strategy_type TEXT NOT NULL,
+    option_type TEXT NOT NULL,
+    strike REAL NOT NULL,
+    expiration_date TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    entry_price REAL,
+    legs_json TEXT,
+    net_premium REAL,
+    max_profit REAL,
+    max_loss REAL,
+    breakevens_json TEXT,
+    probability_of_profit REAL,
+    dte INTEGER,
+    underlying_price REAL,
+    payoff_is_estimate INTEGER,
+    annualized_return_pct REAL,
+    early_close_projection_json TEXT,
+    narrative_text TEXT,
+    narrative_source TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_real_trade_alerts_symbol_date ON real_trade_alerts(symbol, trade_date);
 CREATE INDEX IF NOT EXISTS idx_iv_snapshots_symbol_date ON iv_snapshots(symbol, snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_indicator_snapshots_symbol_date ON indicator_snapshots(symbol, snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_alerts_symbol_date ON alerts(symbol, alert_date);
