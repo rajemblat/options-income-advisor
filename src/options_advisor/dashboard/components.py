@@ -403,6 +403,36 @@ def render_market_session_badge() -> None:
     )
 
 
+# Bandas estándar de mercado para VIX (no una definición propia de este proyecto): <15 =
+# tranquilo/complaciente, 15-25 = rango normal histórico, >25 = estrés/miedo elevado. Sección
+# Fed/FRED ("semáforo de volatilidad", pedido 2026-07-26). Esto es SOLO lectura del spot de VIX
+# para mostrar contexto — distinto de la decisión ya tomada de no integrar VIX como subyacente
+# del motor de estrategias (BACKLOG "Bloqueado", por futuros/contango): acá no se calculan
+# griegos ni se arma ningún candidato, solo se muestra la cotización.
+_VOLATILITY_BANDS = ((15.0, "Volatilidad baja", "GOOD"), (25.0, "Volatilidad normal", "WARNING"))
+
+
+def classify_volatility_level(vix_price: float) -> tuple[str, str]:
+    for threshold, label, color_name in _VOLATILITY_BANDS:
+        if vix_price < threshold:
+            return label, GOOD if color_name == "GOOD" else WARNING
+    return "Volatilidad alta", CRITICAL
+
+
+def render_volatility_semaphore(vix_quote: Quote | None) -> None:
+    """Semáforo de volatilidad basado en VIX, mismo lenguaje visual que
+    `render_market_session_badge` — nada que mostrar si el broker no devolvió la cotización
+    (modo mock sin fixture, o símbolo no disponible)."""
+    if vix_quote is None:
+        return
+    label, color = classify_volatility_level(vix_quote.last_price)
+    st.markdown(
+        f"<div class='oia-pill' style='color:{color}; border-color:{color}44; background:{color}1a; "
+        f"font-size:0.85rem; margin-top:0.4rem;'>{icon('zap', size=14, color=color)} VIX {vix_quote.last_price:.2f} · {label}</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def render_quote_ticker(quotes: dict[str, Quote]) -> None:
     """Cinta de cotizaciones estilo CNBC — scroll horizontal infinito en CSS puro (sin JS),
     verde/rojo según el signo de `net_change_pct`. La fila se duplica una vez para que el loop

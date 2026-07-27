@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from options_advisor.dashboard.components import _capital_at_risk_caveat_html
+from options_advisor.dashboard.components import CRITICAL, GOOD, WARNING, _capital_at_risk_caveat_html, classify_volatility_level
 
 
 def test_capital_at_risk_critical_when_max_loss_exceeds_capital():
@@ -31,3 +31,34 @@ def test_capital_at_risk_empty_without_capital_available():
 
 def test_capital_at_risk_empty_without_max_loss():
     assert _capital_at_risk_caveat_html(None, 50_000.0) == ""
+
+
+# --- classify_volatility_level (semáforo de volatilidad basado en VIX) ---
+
+
+def test_classify_volatility_low_below_15():
+    label, color = classify_volatility_level(12.3)
+    assert label == "Volatilidad baja"
+    assert color == GOOD
+
+
+def test_classify_volatility_normal_between_15_and_25():
+    label, color = classify_volatility_level(18.5)
+    assert label == "Volatilidad normal"
+    assert color == WARNING
+
+
+def test_classify_volatility_high_above_25():
+    label, color = classify_volatility_level(31.0)
+    assert label == "Volatilidad alta"
+    assert color == CRITICAL
+
+
+def test_classify_volatility_boundary_exactly_15_is_normal_not_low():
+    label, _ = classify_volatility_level(15.0)
+    assert label == "Volatilidad normal"
+
+
+def test_classify_volatility_boundary_exactly_25_is_alta_not_normal():
+    label, _ = classify_volatility_level(25.0)
+    assert label == "Volatilidad alta"

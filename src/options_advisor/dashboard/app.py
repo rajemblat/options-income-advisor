@@ -21,6 +21,7 @@ from options_advisor.dashboard.components import (
     render_notification_bell,
     render_portfolio_summary_panel,
     render_quote_ticker,
+    render_volatility_semaphore,
 )
 from options_advisor.scheduler.jobs import job_poll_and_analyze
 
@@ -43,6 +44,7 @@ def render_general_page() -> None:
         )
     with session_col:
         render_market_session_badge()
+        render_volatility_semaphore(cached_quotes(("$VIX",)).get("$VIX"))
 
     render_quote_ticker(cached_quotes(tuple(symbols)))
 
