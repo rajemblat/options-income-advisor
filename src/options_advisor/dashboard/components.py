@@ -759,6 +759,132 @@ def render_alert_card(
         st.code(alert["narrative_text"] or "Sin texto disponible.", language=None)
 
 
+def render_real_trade_card(
+    trade: sqlite3.Row,
+    next_earnings_date: str | None = None,
+    fed_meeting_date: str | None = None,
+    next_ex_dividend_date: str | None = None,
+    capital_available: float | None = None,
+) -> None:
+    """Tarjeta de una operación REAL ya ejecutada (Pestaña Operaciones, réplica automática de
+    operaciones reales, pedido 2026-07-25) — mismos datos y mismos helpers que
+    `render_alert_card` (patas, prima, P&L, breakevens, POP, avisos de earnings/liquidez/
+    dividendo/riesgo de capital), sin conviction_score/risk_profile/threshold_applied (nada se
+    puntuó acá, la operación ya se hizo) y con cantidad/precio de entrada/cuenta en su lugar."""
+    strategy_type = trade["strategy_type"]
+    label = strategy_label(strategy_type)
+    expiration_date = trade["expiration_date"]
+
+    legs = json.loads(trade["legs_json"]) if trade["legs_json"] else []
+    breakevens = json.loads(trade["breakevens_json"]) if trade["breakevens_json"] else []
+    underlying_price = trade["underlying_price"]
+    is_estimate = bool(trade["payoff_is_estimate"])
+    net_premium = trade["net_premium"]
+    probability_of_profit = trade["probability_of_profit"]
+
+    narrative = trade["narrative_text"] or ""
+    if "✎ Comentario:" in narrative:
+        comment = narrative.split("✎ Comentario:", 1)[1].strip()
+    else:
+        comment = narrative or "Sin comentario disponible."
+
+    coverage = compute_coverage(legs, underlying_price)
+
+    html = ["<div class='oia-card'>"]
+    html.append(
+        "<div style='display:flex; justify-content:space-between; align-items:flex-start; gap:1rem;'>"
+        f"<div style='font-size:1.3rem; font-weight:700;'>{icon('check-circle', size=19, color=GOOD)} {trade['symbol']} — {label}</div>"
+        f"<div style='display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; justify-content:flex-end;'>"
+        f"{pop_badge_html(probability_of_profit)}{coverage_badge_html(coverage)}"
+        f"<span class='oia-pill' style='color:{GOOD}; border-color:{GOOD}44; background:{GOOD}1a;'>● Operación real</span></div>"
+        "</div>"
+    )
+    meta_bits = [f"{icon('clock', size=14)} {_fmt_time(trade['trade_ts'])}", f"{icon('clipboard', size=14)} {trade['quantity']} contrato(s)"]
+    if trade["entry_price"] is not None:
+        meta_bits.append(f"{icon('dollar', size=14)} Entrada ${trade['entry_price']:,.2f}")
+    if underlying_price is not None:
+        meta_bits.append(f"{icon('dollar', size=14)} ${underlying_price:,.2f}")
+    if breakevens:
+        meta_bits.append(f"{icon('scale', size=14)} BE " + "/".join(f"${b:,.2f}" for b in breakevens))
+    if net_premium is not None:
+        premium_kind = "crédito" if net_premium >= 0 else "débito"
+        meta_bits.append(f"{icon('dollar', size=14)} {_fmt_money(abs(net_premium))} {premium_kind}")
+    html.append(f"<div style='color:{TEXT_SECONDARY}; font-size:0.85rem; margin-top:0.2rem;'>{' · '.join(meta_bits)}</div>")
+    html.append(
+        f"<div style='color:{TEXT_MUTED}; font-size:0.78rem; margin-top:0.1rem;'>"
+        f"cuenta {trade['account_number']} · {trade['occ_symbol']}</div>"
+    )
+
+    html.append(_earnings_caveat_html(next_earnings_date, expiration_date))
+    fed_caveat = _fed_event_caveat_html(fed_meeting_date, expiration_date)
+    if fed_caveat:
+        html.append(fed_caveat)
+    liquidity_caveat = _liquidity_caveat_html(assess_liquidity(legs))
+    if liquidity_caveat:
+        html.append(liquidity_caveat)
+    dividend_caveat = _dividend_caveat_html(assess_dividend_risk(legs, next_ex_dividend_date))
+    if dividend_caveat:
+        html.append(dividend_caveat)
+    capital_caveat = _capital_at_risk_caveat_html(trade["max_loss"], capital_available)
+    if capital_caveat:
+        html.append(capital_caveat)
+
+    if legs:
+        html.append("<div style='margin-top:0.8rem;'>")
+        html.extend(_leg_row_html(leg) for leg in legs)
+        share_line = share_requirement_line(strategy_type, trade["symbol"], underlying_price)
+        if share_line:
+            html.append(
+                f"<div style='color:{TEXT_MUTED}; font-size:0.85rem; margin-top:0.4rem;'>{icon('info', size=14)} {share_line}</div>"
+            )
+        html.append("</div>")
+
+        html.append("<div class='oia-metric-grid'>")
+        html.append(
+            f"<div class='oia-metric-tile'><div class='label'>{icon('trending-up', size=13, color=GOOD)} Beneficio máximo</div>"
+            f"<div class='value'>{_fmt_money(trade['max_profit'])}</div></div>"
+        )
+        html.append(
+            f"<div class='oia-metric-tile'><div class='label'>{icon('trending-down', size=13, color=CRITICAL)} Pérdida máxima</div>"
+            f"<div class='value'>{_fmt_money(trade['max_loss'])}</div></div>"
+        )
+        html.append(
+            f"<div class='oia-metric-tile'><div class='label'>{icon('clock', size=13)} DTE</div>"
+            f"<div class='value'>{trade['dte'] if trade['dte'] is not None else 'N/D'} días</div></div>"
+        )
+        annualized_return_pct = trade["annualized_return_pct"]
+        if annualized_return_pct is not None:
+            html.append(
+                f"<div class='oia-metric-tile'><div class='label'>{icon('bar-chart', size=13, color=ACCENT)} Rend. anualizado</div>"
+                f"<div class='value'>{annualized_return_pct:.1f}%</div></div>"
+            )
+        html.append("</div>")
+
+        early_close_json = trade["early_close_projection_json"]
+        early_close_projection = json.loads(early_close_json) if early_close_json else []
+        if early_close_projection:
+            parts = [f"{p['pct']}% en {p['days']}d" if p["days"] is not None else f"{p['pct']}%: no alcanzado" for p in early_close_projection]
+            html.append(
+                f"<div style='color:{TEXT_SECONDARY}; font-size:0.82rem; margin-top:0.4rem;'>{icon('clock', size=13)} "
+                f"Cierre anticipado (si precio/IV no cambian): {' · '.join(parts)}</div>"
+            )
+
+        if is_estimate:
+            html.append(
+                f"<div style='color:{TEXT_MUTED}; font-size:0.8rem;'>{icon('info', size=14)} Beneficio máximo, pérdida "
+                "máxima y breakeven(s) son una estimación por modelo (vencimientos combinados).</div>"
+            )
+
+    html.append(f"<div class='oia-comment'>{icon('lightbulb', size=16, color=WARNING)} <b>Comentario:</b> {comment}</div>")
+    html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.75rem; margin-top:0.6rem;'>fuente de la narración: {trade['narrative_source']}</div>")
+    html.append("</div>")
+
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+    with st.expander("📋 Copiar operación (para WhatsApp/Telegram)", key=f"copy_real_trade_expander_{trade['id']}"):
+        st.code(trade["narrative_text"] or "Sin texto disponible.", language=None)
+
+
 def render_news_card(item: sqlite3.Row | dict, badge: str | None = None) -> None:
     """Tarjeta compacta de una noticia (Finnhub /company-news): headline enlazado, fuente y
     fecha de publicación, resumen corto — mismo lenguaje visual que las tarjetas de alerta.
