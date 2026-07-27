@@ -147,20 +147,35 @@ def test_get_quotes_batch_parses_net_change_fields(client, monkeypatch):
     assert quotes["NVDA"].net_change_pct == -0.66
 
 
-def test_get_movers_parses_screeners_and_forces_sign_from_direction(client, monkeypatch):
+def test_get_movers_parses_real_schwab_field_names(client, monkeypatch):
+    """Shape real capturado en vivo 2026-07-27 (ver schwab_client.py::_parse_mover) — Schwab
+    usa lastPrice/netChange/netPercentChange, no last/change/direction (bug real encontrado
+    ese día: con esos nombres viejos, todo caía en 0.0/0.0/"up")."""
     payload = {
         "screeners": [
-            {"symbol": "NVDA", "description": "NVIDIA Corp", "last": 185.32, "change": 4.71, "direction": "up", "totalVolume": 62_000_000},
-            {"symbol": "INTC", "description": "Intel Corp", "last": 27.84, "change": 6.32, "direction": "down", "totalVolume": 71_000_000},
+            {
+                "symbol": "NVDA", "description": "NVIDIA CORP", "volume": 96974192, "lastPrice": 196.24,
+                "netChange": -10.6, "marketShare": 6.05, "totalVolume": 1603360831, "trades": 1511279,
+                "netPercentChange": -0.0512,
+            },
+            {
+                "symbol": "ORCL", "description": "ORACLE CORP", "volume": 24055079, "lastPrice": 120.21,
+                "netChange": 5.22, "marketShare": 1.5, "totalVolume": 1603360831, "trades": 252715,
+                "netPercentChange": 0.0454,
+            },
         ]
     }
     monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
     movers = client.get_movers("$SPX", "PERCENT_CHANGE_UP")
     assert len(movers) == 2
     nvda = next(m for m in movers if m.symbol == "NVDA")
-    assert nvda.change_pct == 4.71
-    intc = next(m for m in movers if m.symbol == "INTC")
-    assert intc.change_pct == -6.32  # magnitud positiva del payload, forzada a negativo por direction=down
+    assert nvda.last_price == 196.24
+    assert nvda.change_pct == pytest.approx(-5.12)
+    assert nvda.direction == "down"
+    assert nvda.total_volume == 1603360831
+    orcl = next(m for m in movers if m.symbol == "ORCL")
+    assert orcl.change_pct == pytest.approx(4.54)
+    assert orcl.direction == "up"
 
 
 def test_get_movers_returns_empty_list_on_failure(client, monkeypatch):

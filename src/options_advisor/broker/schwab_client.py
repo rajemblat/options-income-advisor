@@ -48,16 +48,22 @@ def _parse_quote_change_fields(quote: dict) -> dict:
 
 
 def _parse_mover(item: dict) -> Mover:
-    """Normaliza una fila del endpoint `/movers` — `change` viene de Schwab ya wireado al
-    signo de `direction` en la práctica, pero se fuerza acá para no depender de esa convención
-    (ver Mover.change_pct en broker/models.py)."""
-    direction = item.get("direction", "up")
-    magnitude = abs(item.get("change", 0.0))
+    """Normaliza una fila del endpoint `/movers` — bug real encontrado 2026-07-27 corriendo
+    contra la API en vivo CON el mercado abierto (la verificación anterior, 2026-07-25, cayó
+    con el mercado cerrado y `screeners: []`, así que este parseo nunca se había ejercitado
+    contra una fila real): Schwab devuelve `lastPrice`/`netChange`/`netPercentChange`, NO
+    `last`/`change`/`direction` como asumía este código antes — esos tres siempre caían al
+    default (0.0/0.0/"up"), de ahí el +0.00%/$0.00 en todos los símbolos que reportó el
+    usuario. `netPercentChange` viene como fracción acá (ej. -0.0512 = -5.12%), a diferencia
+    del mismo campo en `/quotes` (`_parse_quote`, ya en %) — confirmado con la matemática real
+    de un ítem en vivo (netChange=-10.6 sobre lastPrice=196.24 ≈ -0.0512 de fracción)."""
+    net_percent_change = item.get("netPercentChange", 0.0) * 100
+    direction = "up" if net_percent_change >= 0 else "down"
     return Mover(
         symbol=item["symbol"],
         description=item.get("description", ""),
-        last_price=item.get("last", 0.0),
-        change_pct=magnitude if direction == "up" else -magnitude,
+        last_price=item.get("lastPrice", 0.0),
+        change_pct=net_percent_change,
         direction=direction,
         total_volume=item.get("totalVolume", 0),
     )
