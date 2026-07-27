@@ -100,6 +100,8 @@ class RiskLevelSupportSmaParams(BaseModel):
 
 
 class StrategySettings(BaseModel):
+    # Sección Fed/FRED (pedido 2026-07-26): no generar candidatos nuevos en días de CPI/NFP/FOMC.
+    block_new_candidates_on_high_risk_days: bool = True
     # MVP: enfocado en 4 categorías (cash_secured_put/short_put_naked cuentan como una sola
     # categoría "Naked Put"). Las otras 15 estrategias quedan en el código sin borrar, solo
     # pausadas acá — para reactivarlas alcanza con sumarlas a esta lista en settings.yaml.

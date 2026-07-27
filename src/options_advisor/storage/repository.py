@@ -285,6 +285,15 @@ def get_alerts_for_date(conn: sqlite3.Connection, alert_date: date) -> list[sqli
     ).fetchall()
 
 
+def notification_exists(conn: sqlite3.Connection, kind: str, title: str) -> bool:
+    """Dedup para notificaciones que no deben repetirse (ej. aviso proactivo de un evento de
+    riesgo — Sección Fed/FRED, ver `alerts/digest.py`): el título ya incluye la fecha/distancia
+    exacta del evento, así que kind+title exactos alcanzan como clave, sin agregar una columna
+    nueva a la tabla."""
+    row = conn.execute("SELECT 1 FROM notifications WHERE kind = ? AND title = ? LIMIT 1", (kind, title)).fetchone()
+    return row is not None
+
+
 def insert_notification(conn: sqlite3.Connection, notification: Notification) -> int:
     cur = conn.execute(
         "INSERT INTO notifications (created_at, kind, title, body, is_read) VALUES (?, ?, ?, ?, 0)",

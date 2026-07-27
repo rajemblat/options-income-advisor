@@ -8,6 +8,7 @@ from datetime import date, datetime
 from options_advisor.alerts.digest import build_premarket_digest_text
 from options_advisor.alerts.engine import process_symbol_alerts
 from options_advisor.alerts.real_trades import detect_and_alert_real_trades
+from options_advisor.alerts.risk_calendar import build_proactive_risk_warnings, is_high_risk_event_day
 from options_advisor.broker.base import BrokerClient
 from options_advisor.config import Settings
 from options_advisor.indicators.pipeline import analyze_symbol
@@ -106,6 +107,15 @@ def _run_full_analysis(
     perfil (selección de strikes, scoring, narración de Claude)."""
     _refresh_macro_snapshot(conn, today, finnhub_api_key, fred_api_key)
 
+    # Sección Fed/FRED (pedido 2026-07-26, "bloqueo de días de riesgo CPI/NFP"): se calcula UNA
+    # vez por corrida (no por símbolo) contra los eventos macro recién refrescados arriba —
+    # nunca bloquea alertas/posiciones ya existentes, solo la generación de candidatos nuevos.
+    macro = repo.get_latest_macro_snapshot(conn)
+    upcoming_events = json.loads(macro["upcoming_events_json"]) if macro and macro["upcoming_events_json"] else []
+    block_new_candidates = settings.strategy.block_new_candidates_on_high_risk_days and is_high_risk_event_day(upcoming_events, today)
+    if block_new_candidates:
+        logger.info("%s es día de riesgo alto (CPI/NFP/FOMC) — no se generan candidatos nuevos en esta corrida", today)
+
     # Una sola consulta de posiciones reales por corrida (no por símbolo) — habilita Covered
     # Call/Collar con la tenencia REAL de la cuenta Schwab en vez de la tabla interna
     # `assigned_positions` (pensada para trackear asignación de CSP propia, hoy sin UI que la
@@ -127,6 +137,7 @@ def _run_full_analysis(
                     conn,
                     analysis,
                     settings,
+                    block_new_candidates=block_new_candidates,
                     has_open_assigned_position=len(open_positions) > 0 or has_shares,
                     anthropic_api_key=anthropic_api_key,
                     finnhub_api_key=finnhub_api_key,
@@ -218,3 +229,21 @@ def job_premarket_digest(
         conn,
         Notification(kind="premarket_digest", title=f"Resumen pre-apertura — {today.isoformat()}", body=text, created_at=datetime.now()),
     )
+
+    # Sección Fed/FRED ("alertas proactivas", pedido 2026-07-26): a diferencia del resumen de
+    # arriba (solo eventos de HOY), esto avisa 2 y 1 día ANTES de un evento de riesgo alto, para
+    # planificar vencimientos nuevos con anticipación. Dedup por kind+title exactos (la fecha va
+    # en el título) — este job corre una vez por día de mercado, pero por las dudas si se corre
+    # más de una vez el mismo día no duplica el aviso.
+    for warning in build_proactive_risk_warnings(upcoming_events, today):
+        title = f"⚠️ En {warning['days_until']} día(s): {warning['label']} ({warning['date'].isoformat()})"
+        if repo.notification_exists(conn, kind="risk_event_proactive", title=title):
+            continue
+        body = (
+            f"{warning['label']} el {warning['date'].isoformat()} — evento de riesgo alto (CPI/NFP/FOMC). "
+            "Considerá evitar aperturas nuevas con vencimiento cercano a esa fecha, o revisar la cobertura "
+            "de las que ya tenés."
+        )
+        repo.insert_notification(
+            conn, Notification(kind="risk_event_proactive", title=title, body=body, created_at=datetime.now())
+        )

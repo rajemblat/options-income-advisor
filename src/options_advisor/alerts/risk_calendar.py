@@ -72,3 +72,43 @@ def build_risk_calendar(
 
     events.sort(key=lambda e: (e["date"], e["kind"], e["label"]))
     return events
+
+
+def is_high_risk_event_day(upcoming_events: list[dict], today: date) -> bool:
+    """True si HOY cae un evento macro de riesgo alto (CPI/NFP/FOMC, ver
+    `_HIGH_IMPACT_KEYWORDS`) — usado para bloquear la generación de candidatos NUEVOS ese día
+    (Sección Fed/FRED, pedido 2026-07-26: "bloqueo de días de riesgo CPI/NFP"). Solo bloquea
+    sugerencias nuevas, nunca afecta posiciones ya abiertas."""
+    for raw_event in upcoming_events:
+        try:
+            event_date = date.fromisoformat(raw_event["date"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if event_date == today and _classify_macro_event(raw_event) == RISK_HIGH:
+            return True
+    return False
+
+
+# Días de anticipación para el aviso proactivo (Sección Fed/FRED, "alertas proactivas") — 2 y 1
+# día antes de un evento de riesgo alto, para que el usuario pueda planificar vencimientos
+# nuevos alrededor de esa fecha en vez de enterarse recién el mismo día.
+PROACTIVE_WARNING_DAYS_BEFORE = (2, 1)
+
+
+def build_proactive_risk_warnings(upcoming_events: list[dict], today: date) -> list[dict]:
+    """Eventos de riesgo alto que caen exactamente 1 o 2 días después de hoy — cada uno con
+    `days_until` para el texto del aviso. No repite el evento del día 2 y del día 1 como el
+    mismo aviso: son dos avisos DISTINTOS (uno por cada corrida del digest pre-apertura en la
+    que ese evento está a esa distancia), el dedup real lo hace el caller por `title` exacto
+    (ver `repo.notification_exists`) para no duplicar si el job corre más de una vez el mismo
+    día."""
+    warnings = []
+    for raw_event in upcoming_events:
+        try:
+            event_date = date.fromisoformat(raw_event["date"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        days_until = (event_date - today).days
+        if days_until in PROACTIVE_WARNING_DAYS_BEFORE and _classify_macro_event(raw_event) == RISK_HIGH:
+            warnings.append({"date": event_date, "label": raw_event.get("event") or "Evento macro", "days_until": days_until})
+    return warnings

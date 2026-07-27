@@ -49,6 +49,7 @@ def process_symbol_alerts(
     finnhub_api_key: str | None = None,
     risk_level: str | None = None,
     recent_news: list[dict] | None = None,
+    block_new_candidates: bool = False,
 ) -> list[dict]:
     """Corre selector → candidatos → scoring → filtro de umbral → dedup → narrador → persistencia
     para un símbolo ya analizado (Sección 6 de la hoja de ruta). Devuelve las alertas nuevas
@@ -62,8 +63,16 @@ def process_symbol_alerts(
 
     recent_news: si se pasa (jobs.py lo trae una sola vez por símbolo, no por perfil, ya que
     las noticias no dependen del perfil de riesgo), se reusa en vez de pedirlo de nuevo a
-    Finnhub — evita triplicar esa llamada al evaluar los 3 perfiles."""
+    Finnhub — evita triplicar esa llamada al evaluar los 3 perfiles.
+
+    block_new_candidates: True en días de riesgo alto (CPI/NFP/FOMC, ver
+    `scheduler/jobs.py::_run_full_analysis` y `settings.strategy.block_new_candidates_on_high_risk_days`)
+    — no genera NINGÚN candidato nuevo ese día, sea cual sea el perfil de riesgo. Solo bloquea
+    sugerencias nuevas, nunca alertas ya persistidas ni posiciones ya abiertas."""
     snap = analysis.snapshot
+    if block_new_candidates:
+        logger.info("%s: bloqueado por día de riesgo alto (CPI/NFP/FOMC) — no se generan candidatos nuevos", snap.symbol)
+        return []
     if risk_level is not None:
         threshold = settings.conviction_thresholds.for_risk_level(risk_level)
     else:

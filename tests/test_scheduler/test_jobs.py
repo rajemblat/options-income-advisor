@@ -175,3 +175,105 @@ def test_job_detect_real_trades_never_raises_on_failure(conn, monkeypatch):
     monkeypatch.setattr(jobs, "detect_and_alert_real_trades", _boom)
     broker = _FakeBroker(share_positions={})
     jobs.job_detect_real_trades(broker, conn, load_settings(), anthropic_api_key=None, finnhub_api_key=None)  # no debe lanzar
+
+
+# --- Sección Fed/FRED: bloqueo de candidatos nuevos en días de riesgo alto ---
+
+
+def test_run_full_analysis_blocks_new_candidates_on_cpi_day(conn, monkeypatch):
+    repo.upsert_macro_snapshot(
+        conn,
+        MacroSnapshot(snapshot_date=TODAY, upcoming_events=[{"date": TODAY.isoformat(), "event": "CPI YoY", "impact": "medium"}]),
+    )
+    captured = []
+
+    monkeypatch.setattr(jobs, "analyze_symbol", lambda broker, conn, symbol, settings, **k: _FakeAnalysis(symbol))
+    monkeypatch.setattr(jobs.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    monkeypatch.setattr(jobs, "_refresh_news_for_symbol", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "_refresh_macro_snapshot", lambda *a, **k: None)  # no pisa el macro_snapshot sembrado arriba
+    monkeypatch.setattr(jobs, "process_symbol_alerts", lambda *a, **k: captured.append(k.get("block_new_candidates")) or [])
+
+    broker = _FakeBroker(share_positions={})
+    jobs._run_full_analysis(broker, conn, ["AAPL"], load_settings(), TODAY, None, None, None)
+
+    assert captured == [True, True, True]  # los 3 perfiles, todos bloqueados
+
+
+def test_run_full_analysis_does_not_block_on_normal_day(conn, monkeypatch):
+    repo.upsert_macro_snapshot(
+        conn,
+        MacroSnapshot(snapshot_date=TODAY, upcoming_events=[{"date": TODAY.isoformat(), "event": "Retail Sales", "impact": "low"}]),
+    )
+    captured = []
+
+    monkeypatch.setattr(jobs, "analyze_symbol", lambda broker, conn, symbol, settings, **k: _FakeAnalysis(symbol))
+    monkeypatch.setattr(jobs.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    monkeypatch.setattr(jobs, "_refresh_news_for_symbol", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "_refresh_macro_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "process_symbol_alerts", lambda *a, **k: captured.append(k.get("block_new_candidates")) or [])
+
+    broker = _FakeBroker(share_positions={})
+    jobs._run_full_analysis(broker, conn, ["AAPL"], load_settings(), TODAY, None, None, None)
+
+    assert captured == [False, False, False]
+
+
+def test_run_full_analysis_respects_settings_toggle_off(conn, monkeypatch):
+    """block_new_candidates_on_high_risk_days=False en settings desactiva el bloqueo aunque hoy
+    sea día de CPI/NFP/FOMC — configurable sin tocar código, mismo criterio que el resto de
+    settings.yaml."""
+    repo.upsert_macro_snapshot(
+        conn,
+        MacroSnapshot(snapshot_date=TODAY, upcoming_events=[{"date": TODAY.isoformat(), "event": "FOMC", "impact": "high"}]),
+    )
+    captured = []
+
+    monkeypatch.setattr(jobs, "analyze_symbol", lambda broker, conn, symbol, settings, **k: _FakeAnalysis(symbol))
+    monkeypatch.setattr(jobs.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    monkeypatch.setattr(jobs, "_refresh_news_for_symbol", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "_refresh_macro_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "process_symbol_alerts", lambda *a, **k: captured.append(k.get("block_new_candidates")) or [])
+
+    settings = load_settings()
+    settings.strategy.block_new_candidates_on_high_risk_days = False
+    broker = _FakeBroker(share_positions={})
+    jobs._run_full_analysis(broker, conn, ["AAPL"], settings, TODAY, None, None, None)
+
+    assert captured == [False, False, False]
+
+
+# --- Sección Fed/FRED: alertas proactivas ---
+
+
+def test_job_premarket_digest_inserts_proactive_warning_for_upcoming_high_risk_event(conn, monkeypatch):
+    monkeypatch.setattr(jobs, "is_market_day", lambda d: True)
+    monkeypatch.setattr(jobs, "_run_full_analysis", lambda *a, **k: [])
+    two_days_out = date.fromordinal(TODAY.toordinal() + 2)
+    repo.upsert_macro_snapshot(
+        conn,
+        MacroSnapshot(snapshot_date=TODAY, upcoming_events=[{"date": two_days_out.isoformat(), "event": "Nonfarm Payrolls", "impact": "high"}]),
+    )
+
+    jobs.job_premarket_digest(broker=None, conn=conn, symbols=[], settings=load_settings(), anthropic_api_key=None)
+
+    notifications = repo.get_recent_notifications(conn, limit=20)
+    proactive = [n for n in notifications if n["kind"] == "risk_event_proactive"]
+    assert len(proactive) == 1
+    assert "Nonfarm Payrolls" in proactive[0]["title"]
+    assert "2 día" in proactive[0]["title"]
+
+
+def test_job_premarket_digest_does_not_duplicate_proactive_warning_on_second_run(conn, monkeypatch):
+    monkeypatch.setattr(jobs, "is_market_day", lambda d: True)
+    monkeypatch.setattr(jobs, "_run_full_analysis", lambda *a, **k: [])
+    one_day_out = date.fromordinal(TODAY.toordinal() + 1)
+    repo.upsert_macro_snapshot(
+        conn,
+        MacroSnapshot(snapshot_date=TODAY, upcoming_events=[{"date": one_day_out.isoformat(), "event": "FOMC", "impact": "high"}]),
+    )
+
+    jobs.job_premarket_digest(broker=None, conn=conn, symbols=[], settings=load_settings(), anthropic_api_key=None)
+    jobs.job_premarket_digest(broker=None, conn=conn, symbols=[], settings=load_settings(), anthropic_api_key=None)
+
+    proactive = [n for n in repo.get_recent_notifications(conn, limit=20) if n["kind"] == "risk_event_proactive"]
+    assert len(proactive) == 1

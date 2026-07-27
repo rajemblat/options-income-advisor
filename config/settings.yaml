@@ -54,6 +54,11 @@ iv_rank:
 # short_put_naked), Covered Call, Collar, Iron Condor. Las otras 15 siguen en el código sin
 # borrar, solo pausadas — para reactivar alguna alcanza con agregarla acá.
 strategy:
+  # Sección Fed/FRED (pedido 2026-07-26, "bloqueo de días de riesgo CPI/NFP"): no genera
+  # candidatos NUEVOS en días donde sale CPI, NFP (empleo) o hay reunión FOMC — la volatilidad
+  # implícita puede saltar/desplomarse justo al momento de la publicación, así que vender prima
+  # nueva ese mismo día es más riesgoso de lo habitual. Nunca afecta posiciones ya abiertas.
+  block_new_candidates_on_high_risk_days: true
   enabled:
     - cash_secured_put
     - short_put_naked
