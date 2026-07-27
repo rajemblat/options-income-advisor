@@ -4,12 +4,13 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-27 (madrugada, trabajo autónomo overnight — Pestaña Operaciones
-terminada, cron propio más seguido desplegado, bug real de Market Movers corregido).
+Última actualización: 2026-07-27 (madrugada, trabajo autónomo overnight — Pestaña Operaciones y
+Fed/FRED terminadas, cron propio más seguido desplegado, bug real de Market Movers corregido).
 
 ## En progreso ahora
 
-Ninguno. Sigue el punto 1 de "Pendiente" abajo (Fed/FRED) en el orden confirmado por el usuario.
+Ninguno. Sigue el punto 1 de "Pendiente" abajo (Calendario de earnings) en el orden confirmado
+por el usuario.
 
 ## Bugs reportados por el usuario esta noche (2026-07-27) — estado
 
@@ -37,15 +38,11 @@ Ninguno. Sigue el punto 1 de "Pendiente" abajo (Fed/FRED) en el orden confirmado
 
 ## Pendiente, no empezado — orden confirmado por el usuario 2026-07-26
 
-1. **3 funcionalidades de Fed/FRED**: bloqueo de días de riesgo CPI/NFP, semáforo de
-   volatilidad, alertas proactivas. Complejidad: **media** — `market_context/fred_client.py` y
-   `economic_calendar.py` ya resuelven fechas de FOMC/CPI/empleo, es integración sobre una base
-   ya construida, no invención desde cero.
-2. **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
+1. **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
    selector de semana o rango desde/hasta, earnings de la watchlist (y opcionalmente universo
    amplio) dentro de ese rango, ordenados por fecha. Complejidad: **baja** — página de
    filtro/tabla sobre datos de earnings que ya se usan para el aviso de clusters simultáneos.
-3. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
+2. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
    movimiento, aplicado por igual a todos los subyacentes de posiciones abiertas, recalculado
    con el motor de `payoff.py` existente. Muestra total proyectado vs. hoy (diferencia $ y %).
    Disclaimer de que es una simplificación (todo se mueve igual), no una predicción real.
@@ -194,6 +191,24 @@ Ninguno. Sigue el punto 1 de "Pendiente" abajo (Fed/FRED) en el orden confirmado
     reiniciado para tomar el cambio — se encontró corriendo desde el domingo con código viejo).
     5 tests nuevos (incluye verificación del cron real vía introspección del trigger de
     APScheduler) — 369/369 en verde.
+22. **3 funcionalidades de Fed/FRED** (pedido 2026-07-26, sin las 3 preguntas de diseño
+    resueltas de antemano — interpretación propia documentada acá porque nadie estaba
+    disponible para confirmarla, revisar si no calza con lo esperado):
+    1. **Bloqueo de días de riesgo CPI/NFP**: `settings.strategy.block_new_candidates_on_high_risk_days`
+       (default `true`, configurable) — no genera candidatos NUEVOS en días donde sale CPI, NFP
+       o hay reunión FOMC (reusa la clasificación de riesgo que ya usaba la página Eventos de
+       riesgo, `alerts/risk_calendar.py`). Nunca afecta alertas ni posiciones ya existentes.
+    2. **Semáforo de volatilidad**: badge basado en el spot de VIX (bandas estándar de mercado:
+       <15 baja, 15-25 normal, >25 alta), junto al indicador de sesión de mercado en la página
+       General. Solo lectura para mostrar contexto — distinto de la decisión ya tomada de NO
+       integrar VIX como subyacente del motor de estrategias (ver "Bloqueado" más abajo, esa
+       restricción es sobre griegos/futuros, no aplica a mostrar una cotización). Verificado en
+       vivo (VIX 19.23 · Volatilidad normal).
+    3. **Alertas proactivas**: `build_proactive_risk_warnings()` avisa 2 y 1 día ANTES de un
+       evento de riesgo alto (no solo el día de), insertado como notificación de la campanita
+       🔔 en el digest pre-apertura, con dedup para no repetir el mismo aviso si el job corre
+       más de una vez el mismo día.
+    28 tests nuevos — 390/390 en verde.
 
 ## Cómo se usa este archivo
 
