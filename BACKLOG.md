@@ -45,7 +45,46 @@ ahora el proceso está corriendo y al día.
    trivial, no hace falta tocar el schema porque `legs_json` ya es JSON libre). Complejidad:
    **baja** — 1 campo nuevo en `_leg_dict`, un JOIN a `indicator_snapshots`, y una tabla
    `st.dataframe` (ya ordenable por columna nativamente en Streamlit) en vez de tarjetas.
-2. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
+2. **Pestaña "Screener" — buscador de opciones con filtros ajustables** (pedido 2026-07-27,
+   estilo OptionSamurai/Barchart, sobre el mismo universo amplio de Escaneo, 411+ símbolos):
+   filtros combinables (DTE, volumen, open interest, tipo de instrumento, strike, moneyness,
+   delta, probabilidad OTM) sobre una tabla ordenable. **Auditoría de qué ya existe** (pedida
+   antes de implementar):
+   - DTE, Strike, Delta: ya están en `CandidateContract`/`legs_json` — filtro de rango
+     trivial, sin cálculo nuevo.
+   - Volumen y Open Interest: recién sumados a `legs_json` (ver punto 1 de arriba, mismo
+     commit) — el DATO ya está, pero los baldes pedidos ("muy bajo/bajo/medio/alto/muy alto")
+     son umbrales que no existen en ningún lado del código — hay que definirlos (propuesta:
+     percentiles sobre la distribución real observada, no números fijos a ciegas, para que
+     "alto" signifique algo real y no un umbral inventado).
+   - Moneyness (Deep OTM/OTM/ATM/ITM/Deep ITM): la métrica base (distancia strike vs. precio)
+     ya se calcula (`compute_coverage` en `alerts/formatting.py`), pero HOY solo dice "cuánto
+     tiene que moverse" en valor absoluto — clasificarla en 5 baldes con nombres es lógica
+     nueva (definir los cortes, ej. ±5%/±15% como límites Deep/normal/ATM).
+   - Probabilidad OTM: **corrección a la auditoría pedida por el usuario** — "reusar el POP
+     que ya calculamos" no es exactamente correcto. `probability_of_profit` (payoff.py) es la
+     probabilidad de que la ESTRATEGIA completa termine en ganancia (ya descuenta la prima
+     cobrada como colchón adicional, mide contra el BREAKEVEN) — "Probabilidad OTM" en un
+     screener de opciones normalmente mide algo más estricto: la probabilidad de que el precio
+     quede del lado OTM del STRIKE específicamente (sin el colchón de la prima). Para un put
+     vendido son números DISTINTOS (probabilidad OTM del strike < POP, porque el breakeven
+     está más lejos que el strike). La maquinaria matemática para calcularla ya existe
+     (`_prob_above`/`_prob_below` en `payoff.py`, mismas funciones Black-Scholes que arman
+     POP) — es un cálculo chico agregar una probabilidad extra contra el strike en vez de
+     contra el breakeven, no una fórmula nueva, pero SÍ es lógica nueva (hoy no se guarda esa
+     cifra en ningún lado). Aclarar con el usuario si quiere esta métrica estricta o si el POP
+     actual (ya calculado, ya mostrado) le alcanza — evita construir algo que no pidió.
+   - Tipo de instrumento (Acción/ETF/Índice): **el usuario dijo "ya lo clasificamos" — no
+     encontrado en el código**, solo hay un mapeo chico de 4 raíces de índice para traducir
+     símbolos de cotización (`_INDEX_OCC_ROOT_TO_QUOTE_SYMBOL` en `broker/models.py`, RUT/NDX/
+     SPX/VIX), no una clasificación general Acción vs. ETF vs. Índice de los 411+ símbolos del
+     universo. Esto es lógica/dato nuevo — hace falta una fuente (Schwab expone `assetType` en
+     `/instruments`, no usado hoy en este código) o una lista estática mantenida a mano.
+   Complejidad total: **media** — varios filtros son triviales (DTE/strike/delta), pero los
+   baldes categóricos (volumen/OI/moneyness) y la clasificación de instrumento son trabajo
+   real, y probabilidad OTM necesita una decisión de producto antes de programarse (ver
+   arriba). Recomendado: aclarar probabilidad OTM vs. POP con el usuario antes de arrancar.
+3. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
    movimiento, aplicado por igual a todos los subyacentes de posiciones abiertas, recalculado
    con el motor de `payoff.py` existente. Muestra total proyectado vs. hoy (diferencia $ y %).
    Disclaimer de que es una simplificación (todo se mueve igual), no una predicción real.
