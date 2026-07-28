@@ -4,13 +4,17 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-28 (madrugada — Pestaña Operaciones, Fed/FRED, Calendario de
-earnings por rango, los 4 bugs urgentes, la vista tabla en Escaneo, la Pestaña Screener, y los
-ajustes estéticos de la página General, todos terminados y verificados).
+Última actualización: 2026-07-28 (madrugada — todo lo pedido en la sesión de esta noche
+terminado y verificado: Pestaña Operaciones, Fed/FRED, Calendario de earnings por rango, los 4
+bugs urgentes, la vista tabla en Escaneo, la Pestaña Screener, ajustes estéticos de General, el
+Simulador de escenarios en Portafolio, el bug de datos del Screener, y el bug de rolls en
+Operaciones — este último con una aclaración de alcance importante, ver sección dedicada abajo).
 
 ## En progreso ahora
 
-Ninguno. Sigue el punto 1 de "Pendiente" abajo (Simulador de escenarios en Portafolio real).
+Ninguno. "Pendiente, no empezado" está vacío — todo lo pedido explícitamente esta noche está
+cerrado. Queda la "Investigación pendiente" (Options Time & Sales, sin prioridad inmediata) y
+lo "Bloqueado/diferido" de sesiones anteriores.
 
 ## Hallazgo sin resolver — scheduler dejó de correr ~2h46m el 2026-07-27
 
@@ -26,14 +30,23 @@ en horario de mercado (`hour='9-16'`), así que correctamente esperan hasta las 
 mañana en vez de disparar de noche. Si el scheduler se cae de nuevo POR HORAS DURANTE horario
 de mercado, sí podría hacer perder operaciones reales — investigar de nuevo si vuelve a pasar.
 
-## Pendiente, no empezado — orden confirmado por el usuario 2026-07-26/27
+## Pendiente, no empezado
 
-1. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
-   movimiento, aplicado por igual a todos los subyacentes de posiciones abiertas, recalculado
-   con el motor de `payoff.py` existente. Muestra total proyectado vs. hoy (diferencia $ y %).
-   Disclaimer de que es una simplificación (todo se mueve igual), no una predicción real.
-   Complejidad: **baja/media** — reusa el motor de payoff existente, con precedente directo
-   (rendimiento anualizado + cierre anticipado ya hicieron algo similar).
+Ninguno.
+
+## Alcance confirmado — Pestaña Operaciones, Fase 1 (aclarado por el usuario 2026-07-28)
+
+**Solo APERTURAS genuinas generan alerta.** Explícitamente FUERA de alcance en esta Fase 1
+(posible Fase 2 futura):
+- **Cierres** — nunca generaron alerta (diseño original, sin cambios).
+- **Rolls** (cerrar una opción y abrir otra distinta del mismo subyacente, típicamente una
+  sola orden combinada de Schwab) — **SÍ generaban alerta indebida hasta este fix** (ver
+  detalle completo en "Terminado y verificado" abajo), corregido con una heurística de
+  cierre+apertura del mismo subyacente en la misma corrida. Límite conocido y aceptado: un
+  cierre y una apertura NO relacionados del mismo subyacente dentro de la misma ventana de 3
+  minutos también se suprimirían (falso negativo infrecuente). Fase 2 (no implementada):
+  confirmar rolls vía el endpoint `/orders` de Schwab (misma orden combinada) en vez de
+  inferir por coincidencia de subyacente/ventana temporal.
 
 ## Investigación pendiente — sin prioridad inmediata
 
@@ -321,6 +334,34 @@ de mercado, sí podría hacer perder operaciones reales — investigar de nuevo 
     paneles de datos (Market Movers, Portafolio, Contexto macro) con separadores consistentes.
     Verificado en navegador en vivo — termina limpio después del panel macro, sin texto
     colgando. 445/445 tests en verde (cambio puramente de presentación, sin tests nuevos).
+31. **Simulador de escenarios en Portafolio real** (pedido 2026-07-26): nueva
+    `portfolio_analysis.py::scenario_price()` (alcista/bajista/neutral + % uniforme) reusa el
+    motor ya existente (`effective_projected_pnl_at_date` con `target_date=hoy`, sin
+    decaimiento de tiempo) — mismo patrón que "Proyección a una fecha específica", pidiendo
+    cadenas de opciones en vivo para repricear con Black-Scholes. Total proyectado vs. hoy +
+    tabla por posición + disclaimer de simplificación. Verificado en navegador en vivo contra
+    la cuenta real: escenario alcista 10% dio -$29,251.25 (-$1,535.62 vs. hoy) — matemáticamente
+    correcto para esta cartera con calls Y puts vendidos mezclados (los puts vendidos ganan
+    valor al subir el precio, el único put comprado pierde, confirmado línea por línea). 5 tests
+    nuevos — 450/450 en verde.
+32. **Bug real corregido: Screener con Volumen/Open Interest sin aviso de datos faltantes**
+    (reportado 2026-07-28: "muestra 0 resultados incluso quitando todos los filtros
+    restrictivos"). Investigado y confirmado que NO era un bug de `apply_filters` (sin filtros
+    da 412/412) — Volume/Open Interest recién empezaron a persistirse esa misma noche, así que
+    HOY 0 de 412 candidatos existentes tienen ese dato; cualquier selección en esos 2 filtros
+    garantizaba 0 resultados sin explicación. Fix: caption de aviso junto a cada filtro
+    ("Solo X/N candidatos tienen este dato") + el mensaje de 0 resultados ahora señala
+    específicamente cuál filtro sin datos es la causa probable. Verificado en navegador en
+    vivo. 450/450 tests en verde (cambio de UI/mensajería).
+33. **Bug real corregido: rolls generaban alerta indebida en Pestaña Operaciones** — ver detalle
+    completo en "Alcance confirmado" arriba. `PositionSnapshot` ahora guarda `underlying_symbol`;
+    antes de alertar una apertura nueva, se verifica si algún símbolo del MISMO subyacente
+    (misma cuenta) se cerró del todo en la MISMA corrida — si es así, se trata como roll y se
+    suprime. Confirmado con un caso real: el roll de SOFI (Aug21→Sep18 $21P) de la noche
+    anterior había generado una alerta indebida — eliminada retroactivamente de la DB
+    (TSLA/EWY, aperturas genuinas, quedan). `position_snapshots` re-poblado con
+    `underlying_symbol` para las 62 posiciones cortas reales actuales. 9 tests nuevos
+    (real_trades, repository) — 456/456 en verde.
 
 ## Cómo se usa este archivo
 
