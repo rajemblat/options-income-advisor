@@ -4,13 +4,14 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-27/28 (madrugada — Pestaña Operaciones, Fed/FRED, Calendario de
-earnings por rango, los 4 bugs urgentes, y la vista tabla en Escaneo, todos terminados y
-verificados; Pestaña Screener en curso).
+Última actualización: 2026-07-28 (madrugada — Pestaña Operaciones, Fed/FRED, Calendario de
+earnings por rango, los 4 bugs urgentes, la vista tabla en Escaneo, y la Pestaña Screener,
+todos terminados y verificados; ajustes estéticos de la página General en curso).
 
 ## En progreso ahora
 
-Ninguno. Sigue el punto 1 de "Pendiente" abajo (Pestaña Screener).
+Ajustes estéticos de la página General (pedido 2026-07-28): nuevo título, quitar subtítulo/
+métricas/texto de navegación, reorganizar el layout restante.
 
 ## Hallazgo sin resolver — scheduler dejó de correr ~2h46m
 
@@ -25,46 +26,7 @@ ahora el proceso está corriendo y al día.
 
 ## Pendiente, no empezado — orden confirmado por el usuario 2026-07-26/27
 
-1. **Pestaña "Screener" — buscador de opciones con filtros ajustables** (pedido 2026-07-27,
-   estilo OptionSamurai/Barchart, sobre el mismo universo amplio de Escaneo, 411+ símbolos):
-   filtros combinables (DTE, volumen, open interest, tipo de instrumento, strike, moneyness,
-   delta, probabilidad OTM) sobre una tabla ordenable. **Auditoría de qué ya existe** (pedida
-   antes de implementar):
-   - DTE, Strike, Delta: ya están en `CandidateContract`/`legs_json` — filtro de rango
-     trivial, sin cálculo nuevo.
-   - Volumen y Open Interest: recién sumados a `legs_json` (ver punto 1 de arriba, mismo
-     commit) — el DATO ya está, pero los baldes pedidos ("muy bajo/bajo/medio/alto/muy alto")
-     son umbrales que no existen en ningún lado del código — hay que definirlos (propuesta:
-     percentiles sobre la distribución real observada, no números fijos a ciegas, para que
-     "alto" signifique algo real y no un umbral inventado).
-   - Moneyness (Deep OTM/OTM/ATM/ITM/Deep ITM): la métrica base (distancia strike vs. precio)
-     ya se calcula (`compute_coverage` en `alerts/formatting.py`), pero HOY solo dice "cuánto
-     tiene que moverse" en valor absoluto — clasificarla en 5 baldes con nombres es lógica
-     nueva (definir los cortes, ej. ±5%/±15% como límites Deep/normal/ATM).
-   - Probabilidad OTM: **corrección a la auditoría pedida por el usuario** — "reusar el POP
-     que ya calculamos" no es exactamente correcto. `probability_of_profit` (payoff.py) es la
-     probabilidad de que la ESTRATEGIA completa termine en ganancia (ya descuenta la prima
-     cobrada como colchón adicional, mide contra el BREAKEVEN) — "Probabilidad OTM" en un
-     screener de opciones normalmente mide algo más estricto: la probabilidad de que el precio
-     quede del lado OTM del STRIKE específicamente (sin el colchón de la prima). Para un put
-     vendido son números DISTINTOS (probabilidad OTM del strike < POP, porque el breakeven
-     está más lejos que el strike). La maquinaria matemática para calcularla ya existe
-     (`_prob_above`/`_prob_below` en `payoff.py`, mismas funciones Black-Scholes que arman
-     POP) — es un cálculo chico agregar una probabilidad extra contra el strike en vez de
-     contra el breakeven, no una fórmula nueva, pero SÍ es lógica nueva (hoy no se guarda esa
-     cifra en ningún lado). Aclarar con el usuario si quiere esta métrica estricta o si el POP
-     actual (ya calculado, ya mostrado) le alcanza — evita construir algo que no pidió.
-   - Tipo de instrumento (Acción/ETF/Índice): **el usuario dijo "ya lo clasificamos" — no
-     encontrado en el código**, solo hay un mapeo chico de 4 raíces de índice para traducir
-     símbolos de cotización (`_INDEX_OCC_ROOT_TO_QUOTE_SYMBOL` en `broker/models.py`, RUT/NDX/
-     SPX/VIX), no una clasificación general Acción vs. ETF vs. Índice de los 411+ símbolos del
-     universo. Esto es lógica/dato nuevo — hace falta una fuente (Schwab expone `assetType` en
-     `/instruments`, no usado hoy en este código) o una lista estática mantenida a mano.
-   Complejidad total: **media** — varios filtros son triviales (DTE/strike/delta), pero los
-   baldes categóricos (volumen/OI/moneyness) y la clasificación de instrumento son trabajo
-   real, y probabilidad OTM necesita una decisión de producto antes de programarse (ver
-   arriba). Recomendado: aclarar probabilidad OTM vs. POP con el usuario antes de arrancar.
-2. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
+1. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
    movimiento, aplicado por igual a todos los subyacentes de posiciones abiertas, recalculado
    con el motor de `payoff.py` existente. Muestra total proyectado vs. hoy (diferencia $ y %).
    Disclaimer de que es una simplificación (todo se mueve igual), no una predicción real.
@@ -329,6 +291,26 @@ ahora el proceso está corriendo y al día.
     ordena ascendente (flecha ↑), segundo clic en el MISMO encabezado alterna a descendente
     (flecha ↓), igual que cualquier spreadsheet. Verificado en navegador con capturas antes/
     clic 1/clic 2 sobre la columna Moneyness (%) con datos reales.
+29. **Pestaña "Screener" — buscador de opciones con filtros ajustables** (pedido 2026-07-27,
+    completado 2026-07-28). Nueva `payoff.py::probability_otm()` — distinta del POP ya
+    calculado (mide contra el STRIKE, no el breakeven — corrección a la auditoría del pedido
+    original, que asumía que el POP alcanzaba). `Quote.instrument_type` ("stock"/"etf"/
+    "index") vía `assetMainType`/`assetSubType`, que Schwab YA devuelve en la MISMA respuesta
+    de `/quotes` que ya se pedía — no hizo falta `/instruments` ni ninguna llamada nueva
+    (corrección a la auditoría: el usuario creía que ya estaba clasificado, no lo estaba, pero
+    resultó más simple de lo estimado). Nuevo `dashboard/screener_filters.py` (lógica pura):
+    clasificadores de balde para Volumen/Open Interest/Moneyness/Delta (umbrales documentados
+    como primer paso, no percentiles calibrados — ajustables) + `apply_filters()` (AND de
+    todos los criterios activos). Página nueva `pages/10_screener.py`: sliders (DTE/Strike/
+    Probabilidad OTM mínima) + multiselects (Delta/Moneyness/Instrumento/Volumen/Open
+    Interest) sobre los mismos candidatos de la Vista tabla de Escaneo. Verificado en
+    navegador en vivo: 412 candidatos reales, filtro Delta "Muy alto" da 0 resultados
+    (correcto, el motor apunta a deltas bajos) con el mensaje de vacío bien renderizado,
+    filtro "Bajo (0-0.25)" narrowea correctamente a 269 candidatos con deltas 0.11-0.13
+    visibles, Instrumento mostrando "stock" real. 32 tests nuevos (payoff, schwab_client,
+    scanner_table, screener_filters) — 445/445 en verde. **Pedido aparte cumplido**: barrida
+    completa de referencias a "Barchart" (código/comentarios/UI) — era solo inspiración de
+    diseño del usuario, no debía aparecer en el producto; 0 ocurrencias confirmadas con grep.
 
 ## Cómo se usa este archivo
 
