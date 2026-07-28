@@ -63,9 +63,8 @@ def test_cash_secured_put():
     assert projection[100] == 30
     assert projection[30] is not None and projection[50] is not None
 
-    # Volume/open_interest copiados del contrato (pedido 2026-07-27, vista tabla estilo
-    # Barchart en Escaneo) — antes _leg_dict no los copiaba, se perdían al persistir en
-    # candidate_contracts.legs_json.
+    # Volume/open_interest copiados del contrato (pedido 2026-07-27, vista tabla en Escaneo) —
+    # antes _leg_dict no los copiaba, se perdían al persistir en candidate_contracts.legs_json.
     assert result.legs[0]["open_interest"] == 100
     assert result.legs[0]["volume"] == 10
 

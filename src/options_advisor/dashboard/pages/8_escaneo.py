@@ -86,9 +86,9 @@ else:
 st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
 st.subheader("📊 Vista tabla (ordenable)")
 st.caption(
-    "Estilo Barchart — todos los candidatos recientes de Naked Put / Covered Call en una sola tabla plana, "
-    "hacé clic en cualquier columna para ordenar (Return, IV Rank, POP, etc.). Solo estrategias de una sola "
-    "pata vendida (Cash-Secured Put, Short Put, Covered Call, Short Call) — los spreads/Iron Condor tienen "
+    "Todos los candidatos recientes de Naked Put / Covered Call en una sola tabla plana, hacé clic en "
+    "cualquier columna para ordenar (Return, IV Rank, POP, etc.). Solo estrategias de una sola pata "
+    "vendida (Cash-Secured Put, Short Put, Covered Call, Short Call) — los spreads/Iron Condor tienen "
     "más de un strike y no entran en una fila plana como esta."
 )
 

@@ -253,7 +253,7 @@ def test_get_real_trade_alerts_filters_by_symbol(conn):
     assert rows[0]["symbol"] == "AAPL"
 
 
-# --- get_recent_single_leg_candidates (vista tabla estilo Barchart en Escaneo) ---
+# --- get_recent_single_leg_candidates (vista tabla en Escaneo) ---
 
 
 def _candidate(symbol: str, strategy_type: str = "cash_secured_put", snapshot_date=date(2026, 7, 27)) -> CandidateContract:

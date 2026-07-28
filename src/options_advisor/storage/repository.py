@@ -219,9 +219,9 @@ def alert_exists(conn: sqlite3.Connection, dedup_key: str) -> bool:
 
 
 # Estrategias de una sola pata vendida (strategy/candidates.py::_build_single_short_leg) — las
-# únicas con un solo strike/breakeven, que mapean limpio a UNA fila de una tabla plana estilo
-# Barchart (Sección 'Vista tabla estilo Barchart en Escaneo', pedido 2026-07-27). Los spreads/
-# Iron Condor tienen 2+ strikes y quedan fuera de esta vista a propósito.
+# únicas con un solo strike/breakeven, que mapean limpio a UNA fila de una tabla plana (Sección
+# 'Vista tabla en Escaneo', pedido 2026-07-27). Los spreads/Iron Condor tienen 2+ strikes y
+# quedan fuera de esta vista a propósito.
 SINGLE_LEG_STRATEGIES = ("cash_secured_put", "short_put_naked", "covered_call", "short_call_naked")
 
 

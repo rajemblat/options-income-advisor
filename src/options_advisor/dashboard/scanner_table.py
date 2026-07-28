@@ -5,7 +5,7 @@ import json
 from options_advisor.alerts.formatting import strategy_label
 from options_advisor.strategy.payoff import probability_otm
 
-# Sección "Vista tabla estilo Barchart en Escaneo" (pedido 2026-07-27): transforma filas de
+# Sección "Vista tabla en Escaneo" (pedido 2026-07-27): transforma filas de
 # `repo.get_recent_single_leg_candidates` (candidatos de una sola pata + IV Rank ya unido) en
 # filas planas listas para una tabla ordenable — lógica pura, sin Streamlit, para poder
 # testearla sin un runtime de UI (mismo patrón que dashboard/portfolio_analysis.py).

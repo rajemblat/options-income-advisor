@@ -5,8 +5,8 @@ vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y
 es el estado ACTUAL de qué falta.
 
 Última actualización: 2026-07-27/28 (madrugada — Pestaña Operaciones, Fed/FRED, Calendario de
-earnings por rango, los 4 bugs urgentes, y la vista tabla estilo Barchart en Escaneo, todos
-terminados y verificados).
+earnings por rango, los 4 bugs urgentes, y la vista tabla en Escaneo, todos terminados y
+verificados; Pestaña Screener en curso).
 
 ## En progreso ahora
 
@@ -307,7 +307,7 @@ ahora el proceso está corriendo y al día.
     (24-27: 0 tests nuevos combinados — todos son cableado de datos ya testeados o cambios de
     página sin lógica nueva; verificados en navegador con datos reales de producción en cada
     caso. 394/394 tests del repo en verde en todo momento.)
-28. **Vista tabla estilo Barchart en Escaneo**: `_leg_dict()` (`payoff.py`) ahora copia
+28. **Vista tabla en Escaneo**: `_leg_dict()` (`payoff.py`) ahora copia
     `open_interest`/`volume` de cada `OptionContract` (antes se perdían al persistir en
     `legs_json`, aunque el broker ya los devolvía). Nuevo
     `repo.get_recent_single_leg_candidates()` (candidatos de las 4 estrategias de una sola pata
