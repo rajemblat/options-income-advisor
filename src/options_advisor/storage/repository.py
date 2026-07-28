@@ -218,6 +218,31 @@ def alert_exists(conn: sqlite3.Connection, dedup_key: str) -> bool:
     return row is not None
 
 
+# Estrategias de una sola pata vendida (strategy/candidates.py::_build_single_short_leg) — las
+# únicas con un solo strike/breakeven, que mapean limpio a UNA fila de una tabla plana estilo
+# Barchart (Sección 'Vista tabla estilo Barchart en Escaneo', pedido 2026-07-27). Los spreads/
+# Iron Condor tienen 2+ strikes y quedan fuera de esta vista a propósito.
+SINGLE_LEG_STRATEGIES = ("cash_secured_put", "short_put_naked", "covered_call", "short_call_naked")
+
+
+def get_recent_single_leg_candidates(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.Row]:
+    """Candidatos recientes de estrategias de una sola pata, con el IV Rank del snapshot del
+    mismo símbolo/fecha ya unido (LEFT JOIN — None si ese snapshot no tiene IV Rank todavía)."""
+    placeholders = ",".join("?" for _ in SINGLE_LEG_STRATEGIES)
+    return conn.execute(
+        f"""
+        SELECT cc.*, isnap.iv_rank AS iv_rank
+        FROM candidate_contracts cc
+        LEFT JOIN indicator_snapshots isnap
+            ON isnap.symbol = cc.symbol AND isnap.snapshot_date = cc.snapshot_date
+        WHERE cc.strategy_type IN ({placeholders})
+        ORDER BY cc.id DESC
+        LIMIT ?
+        """,
+        (*SINGLE_LEG_STRATEGIES, limit),
+    ).fetchall()
+
+
 def insert_alert(conn: sqlite3.Connection, alert: Alert) -> int | None:
     """Devuelve el id insertado, o None si ya existía una alerta con el mismo dedup_key (Sección 6 dedup)."""
     cur = conn.execute(

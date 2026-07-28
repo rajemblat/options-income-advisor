@@ -7,7 +7,15 @@ import pytest
 
 from options_advisor.storage import db
 from options_advisor.storage import repository as repo
-from options_advisor.storage.models import Alert, CandidateContract, MacroSnapshot, NewsItem, PositionSnapshot, RealTradeAlert
+from options_advisor.storage.models import (
+    Alert,
+    CandidateContract,
+    IndicatorSnapshot,
+    MacroSnapshot,
+    NewsItem,
+    PositionSnapshot,
+    RealTradeAlert,
+)
 
 
 @pytest.fixture
@@ -243,3 +251,62 @@ def test_get_real_trade_alerts_filters_by_symbol(conn):
     rows = repo.get_real_trade_alerts(conn, symbol="AAPL")
     assert len(rows) == 1
     assert rows[0]["symbol"] == "AAPL"
+
+
+# --- get_recent_single_leg_candidates (vista tabla estilo Barchart en Escaneo) ---
+
+
+def _candidate(symbol: str, strategy_type: str = "cash_secured_put", snapshot_date=date(2026, 7, 27)) -> CandidateContract:
+    return CandidateContract(
+        symbol=symbol,
+        snapshot_date=snapshot_date,
+        strategy_type=strategy_type,
+        expiration_date=date(2026, 8, 21),
+        strikes={"short_strike": 320.0},
+        delta=-0.25,
+        greeks_source="broker",
+        conviction_score=80,
+        scoring_breakdown={},
+        legs=[{"side": "sell", "option_type": "put", "strike": 320.0, "bid": 5.4, "open_interest": 500, "volume": 50}],
+        net_premium=550.0,
+        max_profit=550.0,
+        max_loss=31450.0,
+        breakevens=[314.5],
+        probability_of_profit=0.72,
+        dte=25,
+        underlying_price=330.0,
+        annualized_return_pct=25.5,
+    )
+
+
+def test_get_recent_single_leg_candidates_includes_single_leg_strategies(conn):
+    repo.insert_candidate_contract(conn, _candidate("TSLA", strategy_type="cash_secured_put"))
+    repo.insert_candidate_contract(conn, _candidate("AAPL", strategy_type="covered_call"))
+    rows = repo.get_recent_single_leg_candidates(conn)
+    assert {r["symbol"] for r in rows} == {"TSLA", "AAPL"}
+
+
+def test_get_recent_single_leg_candidates_excludes_multi_leg_strategies(conn):
+    repo.insert_candidate_contract(conn, _candidate("TSLA", strategy_type="cash_secured_put"))
+    repo.insert_candidate_contract(conn, _candidate("SPY", strategy_type="iron_condor"))
+    rows = repo.get_recent_single_leg_candidates(conn)
+    assert {r["symbol"] for r in rows} == {"TSLA"}
+
+
+def test_get_recent_single_leg_candidates_joins_iv_rank_from_indicator_snapshot(conn):
+    repo.insert_indicator_snapshot(
+        conn,
+        IndicatorSnapshot(
+            symbol="TSLA", snapshot_date=date(2026, 7, 27), snapshot_ts=datetime(2026, 7, 27, 10, 0),
+            price=330.0, iv_rank=68.0, iv_rank_source="implied_volatility",
+        ),
+    )
+    repo.insert_candidate_contract(conn, _candidate("TSLA", snapshot_date=date(2026, 7, 27)))
+    rows = repo.get_recent_single_leg_candidates(conn)
+    assert rows[0]["iv_rank"] == 68.0
+
+
+def test_get_recent_single_leg_candidates_iv_rank_none_without_matching_snapshot(conn):
+    repo.insert_candidate_contract(conn, _candidate("TSLA"))
+    rows = repo.get_recent_single_leg_candidates(conn)
+    assert rows[0]["iv_rank"] is None

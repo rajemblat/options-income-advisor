@@ -54,6 +54,11 @@ def _leg_dict(leg: Leg) -> dict:
         # advertir sobre spreads anchos, ver alerts/formatting.py::assess_liquidity.
         "bid": ct.bid,
         "ask": ct.ask,
+        # Sumados 2026-07-27 para la vista tabla estilo Barchart de Escaneo (columnas Volume/
+        # Open Interest) — ya venían del broker en OptionContract, solo faltaba copiarlos acá
+        # para que sobrevivan la persistencia en candidate_contracts.legs_json.
+        "open_interest": ct.open_interest,
+        "volume": ct.volume,
     }
 
 
