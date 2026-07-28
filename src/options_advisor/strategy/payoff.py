@@ -77,6 +77,28 @@ def _prob_below(underlying_price: float, target: float, years: float, risk_free_
     return 1 - _prob_above(underlying_price, target, years, risk_free_rate, sigma)
 
 
+def probability_otm(
+    option_type: str, underlying_price: float, strike: float, dte: int, risk_free_rate: float, sigma: float
+) -> float:
+    """Probabilidad de que el precio termine del lado OTM del STRIKE al vencimiento — DISTINTA
+    de `probability_of_profit` (que mide contra el BREAKEVEN, ya con el colchón de la prima
+    cobrada incluido). Para un put vendido, probability_otm < probability_of_profit siempre
+    (el breakeven está más abajo que el strike). Sección 'Pestaña Screener' (pedido 2026-07-27,
+    columna "Probabilidad OTM" — corrección a la auditoría del pedido original, que asumía que
+    esto era lo mismo que el POP ya calculado). Misma maquinaria Black-Scholes que ya usa POP
+    (`_prob_above`/`_prob_below`), expuesta acá como función pública porque, a diferencia de
+    POP (que necesita conocer TODAS las patas de la estrategia para ubicar el breakeven), esto
+    es una probabilidad de un solo punto (el strike), calculable con los datos que ya vienen en
+    cada leg persistido — no depende de compute_payoff."""
+    years = dte / 365
+    # Un put vendido queda OTM (expira sin valor) si el precio final queda POR ENCIMA del
+    # strike; una call vendida queda OTM si queda POR DEBAJO — lo inverso de lo que "protege"
+    # cada una (mismo sentido que _intrinsic: put paga max(K-S,0), call paga max(S-K,0)).
+    if option_type == "put":
+        return _prob_above(underlying_price, strike, years, risk_free_rate, sigma)
+    return _prob_below(underlying_price, strike, years, risk_free_rate, sigma)
+
+
 # ---------------------------------------------------------------------------
 # Motor genérico: cualquier combinación de patas de LA MISMA expiración (spreads, condors,
 # ratios/backspreads, y el short/covered-call/collar con su pata implícita de acciones) tiene

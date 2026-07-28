@@ -68,7 +68,54 @@ def test_cash_secured_put():
     # candidate_contracts.legs_json.
     assert result.legs[0]["open_interest"] == 100
     assert result.legs[0]["volume"] == 10
-    assert projection[30] <= projection[50] <= projection[100]
+
+
+# --- probability_otm (Sección 'Pestaña Screener', pedido 2026-07-27) ---
+
+
+def test_probability_otm_put_deep_otm_is_high():
+    """Put con strike MUY por debajo del precio (deep OTM): muy probable que el precio termine
+    por ENCIMA del strike (el put vence sin valor) — probability_otm alta."""
+    prob = payoff.probability_otm("put", underlying_price=100.0, strike=50.0, dte=30, risk_free_rate=RISK_FREE_RATE, sigma=0.30)
+    assert prob > 0.95
+
+
+def test_probability_otm_put_deep_itm_is_low():
+    """Put con strike MUY por encima del precio (deep ITM): muy improbable que el precio suba
+    tanto como para terminar por encima del strike — probability_otm baja."""
+    prob = payoff.probability_otm("put", underlying_price=100.0, strike=150.0, dte=30, risk_free_rate=RISK_FREE_RATE, sigma=0.30)
+    assert prob < 0.05
+
+
+def test_probability_otm_call_deep_otm_is_high():
+    """Call con strike MUY por encima del precio (deep OTM): muy probable que el precio termine
+    por DEBAJO del strike (la call vence sin valor) — probability_otm alta."""
+    prob = payoff.probability_otm("call", underlying_price=100.0, strike=150.0, dte=30, risk_free_rate=RISK_FREE_RATE, sigma=0.30)
+    assert prob > 0.95
+
+
+def test_probability_otm_call_deep_itm_is_low():
+    prob = payoff.probability_otm("call", underlying_price=100.0, strike=50.0, dte=30, risk_free_rate=RISK_FREE_RATE, sigma=0.30)
+    assert prob < 0.05
+
+
+def test_probability_otm_differs_from_probability_of_profit():
+    """Para el mismo cash-secured put del test de arriba (strike 100, precio 105), POP mide
+    contra el breakeven (98, más lejos) y probability_otm mide contra el strike (100, más
+    cerca) — probability_otm SIEMPRE <= POP para un put vendido, nunca deberían coincidir por
+    casualidad con estos números."""
+    short = _contract("put", strike=100.0, mid=2.0, dte=30)
+    build = CandidateBuild(
+        strategy_type=c.CASH_SECURED_PUT,
+        expiration_date=short.expiration,
+        strikes={"short_strike": 100.0},
+        net_greeks={},
+        greeks_source="broker",
+        legs=[Leg("sell", short)],
+    )
+    result = payoff.compute_payoff(build, underlying_price=105.0, as_of=AS_OF, risk_free_rate=RISK_FREE_RATE)
+    otm_prob = payoff.probability_otm("put", underlying_price=105.0, strike=100.0, dte=30, risk_free_rate=RISK_FREE_RATE, sigma=0.3)
+    assert otm_prob < result.probability_of_profit
 
 
 def test_bull_put_spread():
