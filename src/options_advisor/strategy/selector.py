@@ -59,7 +59,15 @@ def select_candidate_strategies(
 
     if iv_rank >= iv_rank_high_threshold:
         if bias != "bearish":
-            candidates += [c.CASH_SECURED_PUT, c.SHORT_PUT_NAKED, c.BULL_PUT_SPREAD, c.PUT_RATIO_SPREAD]
+            # CASH_SECURED_PUT y SHORT_PUT_NAKED son ALIAS del mismo concepto en este motor —
+            # candidates.py::build_candidate() arma ambas IDÉNTICAS (mismo strike por delta,
+            # mismo payoff; a diferencia de Covered Call vs Short Call Naked, que sí difieren
+            # porque una incluye la posición de acciones en el cálculo). Generar las dos
+            # producía 2 candidatos con números idénticos en la misma corrida (bug real
+            # reportado 2026-07-28, visible como fila duplicada en el Screener) — se genera
+            # solo CASH_SECURED_PUT, la más específica (config.py ya documentaba la intención
+            # de tratarlas como una sola categoría "Naked Put").
+            candidates += [c.CASH_SECURED_PUT, c.BULL_PUT_SPREAD, c.PUT_RATIO_SPREAD]
         if bias != "bullish":
             candidates += [c.SHORT_CALL_NAKED, c.BEAR_CALL_SPREAD, c.CALL_RATIO_SPREAD]
         if bias == "neutral":

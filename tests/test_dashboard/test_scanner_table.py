@@ -108,6 +108,88 @@ def test_build_scanner_rows_multiple_candidates():
     assert [r["Symbol"] for r in rows] == ["TSLA", "AAPL"]
 
 
+# --- Deduplicación Cash-Secured Put / Short Put (Naked) (bug real 2026-07-28: filas
+# duplicadas con números idénticos en el Screener, candidatos VIEJOS de antes del fix de
+# strategy/selector.py que ya no genera las dos juntas) ---
+
+
+def test_build_scanner_rows_collapses_identical_csp_and_short_put_naked():
+    rows = build_scanner_rows(
+        [
+            _candidate_row(symbol="FDS", strategy_type="cash_secured_put"),
+            _candidate_row(symbol="FDS", strategy_type="short_put_naked"),
+        ]
+    )
+    assert len(rows) == 1
+
+
+def test_build_scanner_rows_collapse_prefers_cash_secured_put_label():
+    rows = build_scanner_rows(
+        [
+            _candidate_row(symbol="FDS", strategy_type="short_put_naked"),
+            _candidate_row(symbol="FDS", strategy_type="cash_secured_put"),
+        ]
+    )
+    assert len(rows) == 1
+    assert rows[0]["Estrategia"] == "Cash-Secured Put"
+
+
+def test_build_scanner_rows_collapse_prefers_csp_regardless_of_order():
+    """CSP primero en la lista de candidatos, Short Put (Naked) después — debe seguir
+    prefiriendo CSP (no "lo primero que aparece", sino la etiqueta específica)."""
+    rows = build_scanner_rows(
+        [
+            _candidate_row(symbol="FDS", strategy_type="cash_secured_put"),
+            _candidate_row(symbol="FDS", strategy_type="short_put_naked"),
+        ]
+    )
+    assert rows[0]["Estrategia"] == "Cash-Secured Put"
+
+
+def test_build_scanner_rows_does_not_collapse_different_strikes():
+    rows = build_scanner_rows(
+        [
+            _candidate_row(
+                symbol="FDS", strategy_type="cash_secured_put",
+                legs_json=json.dumps([{"side": "sell", "option_type": "put", "strike": 240.0, "bid": 5.4}]),
+            ),
+            _candidate_row(
+                symbol="FDS", strategy_type="short_put_naked",
+                legs_json=json.dumps([{"side": "sell", "option_type": "put", "strike": 250.0, "bid": 5.4}]),
+            ),
+        ]
+    )
+    assert len(rows) == 2
+
+
+def test_build_scanner_rows_does_not_collapse_different_symbols():
+    rows = build_scanner_rows(
+        [
+            _candidate_row(symbol="FDS", strategy_type="cash_secured_put"),
+            _candidate_row(symbol="MSFT", strategy_type="short_put_naked"),
+        ]
+    )
+    assert len(rows) == 2
+
+
+def test_build_scanner_rows_does_not_collapse_covered_call_and_short_call_naked():
+    """Covered Call y Short Call (Naked) NO son alias — difieren en payoff real (una incluye la
+    posición de acciones) — no deben colapsarse aunque compartan strike/símbolo/vencimiento."""
+    rows = build_scanner_rows(
+        [
+            _candidate_row(
+                symbol="AAPL", strategy_type="covered_call",
+                legs_json=json.dumps([{"side": "sell", "option_type": "call", "strike": 340.0, "bid": 3.0}]),
+            ),
+            _candidate_row(
+                symbol="AAPL", strategy_type="short_call_naked",
+                legs_json=json.dumps([{"side": "sell", "option_type": "call", "strike": 340.0, "bid": 3.0}]),
+            ),
+        ]
+    )
+    assert len(rows) == 2
+
+
 # --- Probabilidad OTM / Instrumento (Sección 'Pestaña Screener', pedido 2026-07-27) ---
 
 

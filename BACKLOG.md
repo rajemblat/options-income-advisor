@@ -4,10 +4,12 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-28 (noche — filtros de earnings/FOMC sumados a la Pestaña
-Screener, más una alarma falsa de GDX investigada y confirmada como detección correcta (el
-scheduler nuevo funcionaba bien, el usuario chequeó justo antes del ciclo). Antes en la sesión:
-selector de estrategia Naked Put/Covered Call/Ambas en el Screener; rediseño completo de
+Última actualización: 2026-07-28 (noche — bug real de filas duplicadas en el Screener
+(Cash-Secured Put vs Short Put (Naked), mismo contrato exacto) corregido de raíz en el motor +
+deduplicado a nivel de visualización para el historial ya persistido. Antes en la sesión:
+filtros de earnings/FOMC sumados al Screener; una alarma falsa de GDX investigada y confirmada
+como detección correcta (el scheduler nuevo funcionaba bien, el usuario chequeó justo antes del
+ciclo); selector de estrategia Naked Put/Covered Call/Ambas en el Screener; rediseño completo de
 detección de Operaciones vía `/orders` de Schwab reemplazando el diff de posiciones y
 resolviendo de raíz el bug de mark price, con un incidente real durante el despliegue (60
 notificaciones de WhatsApp falsas ya enviadas, documentado íntegro); scheduler colgado
@@ -529,6 +531,33 @@ Ninguno.
     matemáticamente correcto (HOY, con ese calendario, todo candidato tiene FOMC antes del
     vencimiento), no un bug. 19 tests nuevos (`test_scanner_table.py`,
     `test_screener_filters.py`) — 502/502 en verde.
+39. **Bug real corregido: filas duplicadas en el Screener (Cash-Secured Put vs Short Put
+    (Naked), mismo contrato exacto)** (reportado 2026-07-28, ejemplo real: 2 filas idénticas
+    para FDS). Root cause en `strategy/candidates.py::build_candidate()`: ambas estrategias
+    rutean a la MISMA `_build_single_short_leg(strategy_type, chain, "put", ...)` — mismo
+    strike por delta, mismo payoff (a diferencia de Covered Call vs Short Call Naked, que sí
+    difieren porque una incluye la posición de acciones en el cálculo, ver
+    `payoff.py::_STOCK_INCLUDED_STRATEGIES`). `strategy/selector.py` generaba las DOS como
+    candidatos separados cada corrida — `config.py` ya documentaba la intención original de
+    tratarlas como una sola categoría "Naked Put", pero solo se aplicaba en la UI (Alertas,
+    Screener), no en la generación.
+    Fix de raíz: `selector.py` ya no agrega `SHORT_PUT_NAKED` a la lista de candidatos —
+    genera solo `CASH_SECURED_PUT` (la más específica, a pedido del usuario). Complementado con
+    `scanner_table.py::_dedupe_naked_put_aliases()` (defensa en profundidad): colapsa filas de
+    Cash-Secured Put / Short Put (Naked) del MISMO contrato exacto (símbolo/vencimiento/strike/
+    bid) a una sola, prefiriendo la etiqueta Cash-Secured Put. Necesario porque el historial
+    real de `candidate_contracts` no se puede limpiar sin más — confirmado que **190 alertas ya
+    generadas** (algunas probablemente ya notificadas por WhatsApp) referencian
+    `candidate_contract_id` de filas `short_put_naked` duplicadas; borrarlas rompería esa
+    trazabilidad, así que el historial se deja intacto y la deduplicación pasa a ser puramente
+    de visualización (afecta tanto Screener como la Vista tabla de Escaneo, mismo
+    `build_scanner_rows` compartido).
+    Verificado en navegador en vivo: el total de "Naked Put" bajó de 464 a 216 candidatos
+    (evidencia de que la deduplicación aplica a todo el dataset, no solo a FDS); FDS pasó de
+    tener una fila "Short Put (Naked)" duplicada a mostrar solo "Cash-Secured Put" en sus 3
+    filas restantes (legítimamente distintas entre sí — strikes o días de escaneo distintos, no
+    duplicados). 12 tests nuevos (`test_scanner_table.py`, `test_selector.py`) — 509/509 en
+    verde.
 
 ## Cómo se usa este archivo
 

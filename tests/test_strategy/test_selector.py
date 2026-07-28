@@ -18,7 +18,15 @@ def test_high_iv_rank_conservador_gets_defined_risk_only():
 
 def test_high_iv_rank_agresivo_gets_naked_put():
     candidates = select_candidate_strategies(iv_rank=70, risk_level="agresivo")
-    assert c.SHORT_PUT_NAKED in candidates
+    assert c.CASH_SECURED_PUT in candidates
+
+
+def test_short_put_naked_never_generated_alongside_cash_secured_put():
+    """Bug real 2026-07-28: CASH_SECURED_PUT y SHORT_PUT_NAKED son alias del mismo concepto en
+    este motor (build_candidate() las arma idénticas) — generar ambas producía 2 candidatos con
+    números idénticos en el Screener. Ya no se genera SHORT_PUT_NAKED en absoluto."""
+    candidates = select_candidate_strategies(iv_rank=70, risk_level="agresivo")
+    assert c.SHORT_PUT_NAKED not in candidates
 
 
 def test_low_iv_rank_neutral_bias_returns_calendar_diagonal_and_debit_spreads():

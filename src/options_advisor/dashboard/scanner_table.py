@@ -33,6 +33,36 @@ def _before_expiration(event_date: str | None, expiration_date: str) -> bool | N
     return event_date <= expiration_date
 
 
+# Cash-Secured Put y Short Put (Naked) son ALIAS del mismo concepto en este motor —
+# strategy/candidates.py::build_candidate() las arma IDÉNTICAS (mismo strike por delta, mismo
+# payoff — a diferencia de Covered Call vs Short Call Naked, que sí difieren porque una incluye
+# la posición de acciones). strategy/selector.py ya no genera las dos juntas (fix 2026-07-28),
+# pero candidatos VIEJOS (de antes del fix, algunos con alertas reales ya enviadas que
+# referencian su fila — no se pueden borrar de la base) todavía pueden tener ambas persistidas
+# para el mismo contrato exacto. Se colapsan acá a una sola fila visible, sin tocar la base.
+_NAKED_PUT_ALIAS_LABELS = {"Cash-Secured Put", "Short Put (Naked)"}
+_PREFERRED_NAKED_PUT_LABEL = "Cash-Secured Put"
+
+
+def _dedupe_naked_put_aliases(rows: list[dict]) -> list[dict]:
+    """Colapsa filas de Cash-Secured Put / Short Put (Naked) que representan el MISMO contrato
+    exacto (mismo símbolo/vencimiento/strike/bid) a una sola, prefiriendo la etiqueta
+    "Cash-Secured Put" (más específica) sea cual sea el orden en que aparezcan."""
+    result: list[dict] = []
+    index_by_key: dict[tuple, int] = {}
+    for row in rows:
+        if row["Estrategia"] not in _NAKED_PUT_ALIAS_LABELS:
+            result.append(row)
+            continue
+        key = (row["Symbol"], row["Exp Date"], row["Strike"], row["Bid"])
+        if key not in index_by_key:
+            index_by_key[key] = len(result)
+            result.append(row)
+        elif row["Estrategia"] == _PREFERRED_NAKED_PUT_LABEL:
+            result[index_by_key[key]] = row
+    return result
+
+
 def build_scanner_rows(
     candidates: list[dict],
     risk_free_rate: float | None = None,
@@ -100,4 +130,4 @@ def build_scanner_rows(
                 "FOMC antes del vencimiento": _before_expiration(fed_meeting_date, c["expiration_date"]),
             }
         )
-    return rows
+    return _dedupe_naked_put_aliases(rows)
