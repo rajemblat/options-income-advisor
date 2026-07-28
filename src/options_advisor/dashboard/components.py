@@ -15,6 +15,7 @@ from options_advisor.alerts.formatting import (
     assess_liquidity,
     compute_coverage,
     share_requirement_line,
+    shorten_for_sharing,
     strategy_label,
 )
 from options_advisor.broker import get_broker_client
@@ -803,7 +804,7 @@ def render_alert_card(
     st.markdown("".join(html), unsafe_allow_html=True)
 
     with st.expander("📋 Copiar alerta (para WhatsApp/Telegram)", key=f"copy_alert_expander_{alert['id']}"):
-        st.code(alert["narrative_text"] or "Sin texto disponible.", language=None)
+        st.code(shorten_for_sharing(alert["narrative_text"]) if alert["narrative_text"] else "Sin texto disponible.", language=None)
 
 
 def render_real_trade_card(
@@ -929,7 +930,7 @@ def render_real_trade_card(
     st.markdown("".join(html), unsafe_allow_html=True)
 
     with st.expander("📋 Copiar operación (para WhatsApp/Telegram)", key=f"copy_real_trade_expander_{trade['id']}"):
-        st.code(trade["narrative_text"] or "Sin texto disponible.", language=None)
+        st.code(shorten_for_sharing(trade["narrative_text"]) if trade["narrative_text"] else "Sin texto disponible.", language=None)
 
 
 def render_news_card(item: sqlite3.Row | dict, badge: str | None = None) -> None:

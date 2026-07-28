@@ -302,3 +302,31 @@ def format_alert_message(context: dict, comment: str, header: str = "✦ Alerta 
     lines.append(f"✎ Comentario: {comment}")
 
     return "\n".join(lines)
+
+
+def shorten_for_sharing(text: str) -> str:
+    """Versión más corta del texto completo para copiar a WhatsApp/Telegram (pedido explícito
+    2026-07-28: "muy largo para compartir rápido") — quita la línea de "Cierre anticipado" y la
+    sección completa de "Noticias recientes" (el separador que la abre + el encabezado + los
+    links), dejando el resto igual (avisos, patas, métricas, comentario). Opera sobre el texto
+    YA ARMADO por `format_alert_message` en vez de regenerarlo con flags nuevos — más simple, y
+    la tarjeta del dashboard NO usa esta función (sigue mostrando cierre anticipado desde
+    `early_close_projection_json` por su cuenta, sin depender del texto copiable)."""
+    lines = text.split("\n")
+    result: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith("◔ Cierre anticipado"):
+            i += 1
+            continue
+        if line.startswith("▤ Noticias recientes:"):
+            if result and result[-1] == SEPARATOR:
+                result.pop()
+            i += 1
+            while i < len(lines) and lines[i].startswith("  • "):
+                i += 1
+            continue
+        result.append(line)
+        i += 1
+    return "\n".join(result)

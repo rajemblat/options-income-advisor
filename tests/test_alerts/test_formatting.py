@@ -10,6 +10,7 @@ from options_advisor.alerts.formatting import (
     compute_coverage,
     format_alert_message,
     share_requirement_line,
+    shorten_for_sharing,
 )
 
 _BASE_CONTEXT = {
@@ -325,3 +326,63 @@ def test_format_alert_message_custom_header_for_real_trades():
     text = format_alert_message({**_BASE_CONTEXT, "next_earnings_date": None}, "comentario", header="✦ Operación Real Ejecutada")
     assert text.startswith("✦ Operación Real Ejecutada")
     assert "✦ Alerta de Opción" not in text
+
+
+# --- shorten_for_sharing (texto copiable más corto para WhatsApp/Telegram, pedido 2026-07-28) ---
+
+_FULL_CONTEXT = {
+    **_BASE_CONTEXT,
+    "next_earnings_date": None,
+    "legs": [_DUMMY_LEG],
+    "net_premium": 500.0,
+    "max_profit": 500.0,
+    "max_loss": 19500.0,
+    "breakevens": [195.0],
+    "probability_of_profit": 0.8,
+    "annualized_return_pct": 24.83,
+    "early_close_projection": [{"pct": 30, "days": 5}, {"pct": 50, "days": 12}, {"pct": 100, "days": 30}],
+    "recent_news": [
+        {"headline": "AAPL sube tras resultados", "source": "Reuters"},
+        {"headline": "Apple anuncia nuevo producto", "source": "Bloomberg"},
+    ],
+}
+
+
+def test_shorten_for_sharing_removes_early_close_line():
+    text = format_alert_message(_FULL_CONTEXT, "comentario")
+    short = shorten_for_sharing(text)
+    assert "Cierre anticipado" not in short
+
+
+def test_shorten_for_sharing_removes_news_section_entirely():
+    text = format_alert_message(_FULL_CONTEXT, "comentario")
+    short = shorten_for_sharing(text)
+    assert "Noticias recientes" not in short
+    assert "AAPL sube tras resultados" not in short
+    assert "Apple anuncia nuevo producto" not in short
+    assert "Reuters" not in short
+
+
+def test_shorten_for_sharing_keeps_everything_else():
+    text = format_alert_message(_FULL_CONTEXT, "un comentario final")
+    short = shorten_for_sharing(text)
+    assert "Prima neta" in short
+    assert "Beneficio máximo" in short
+    assert "Pérdida máxima" in short
+    assert "Breakeven" in short
+    assert "Probabilidad de beneficio" in short
+    assert "DTE" in short
+    assert "Rendimiento anualizado" in short
+    assert "un comentario final" in short
+
+
+def test_shorten_for_sharing_no_dangling_double_separator():
+    text = format_alert_message(_FULL_CONTEXT, "comentario")
+    short = shorten_for_sharing(text)
+    assert "──────────\n──────────" not in short
+
+
+def test_shorten_for_sharing_noop_when_no_news_or_early_close():
+    context = {**_BASE_CONTEXT, "next_earnings_date": None, "recent_news": [], "early_close_projection": []}
+    text = format_alert_message(context, "comentario")
+    assert shorten_for_sharing(text) == text
