@@ -11,8 +11,11 @@ from options_advisor.dashboard.screener_filters import (
     OPEN_INTEREST_BUCKETS,
     VOLUME_BUCKETS,
     apply_filters,
+    filter_by_strategy_group,
 )
 from options_advisor.storage import repository as repo
+
+_STRATEGY_CHOICE_TO_GROUP = {"Naked Put": "naked_put", "Covered Call": "covered_call", "Ambas": None}
 
 st.set_page_config(page_title="Screener", page_icon="🔎", layout="wide")
 inject_theme()
@@ -45,14 +48,20 @@ if not all_rows:
         icon="🔎",
     )
 else:
+    st.markdown("#### Estrategia")
+    strategy_choice = st.radio(
+        "Estrategia", list(_STRATEGY_CHOICE_TO_GROUP), horizontal=True, label_visibility="collapsed"
+    )
+    strategy_rows = filter_by_strategy_group(all_rows, _STRATEGY_CHOICE_TO_GROUP[strategy_choice])
+
     st.markdown("#### Filtros")
     col1, col2, col3 = st.columns(3)
     with col1:
-        dte_values = [r["DTE"] for r in all_rows if r["DTE"] is not None]
+        dte_values = [r["DTE"] for r in strategy_rows if r["DTE"] is not None]
         dte_min, dte_max = (min(dte_values), max(dte_values)) if dte_values else (0, 60)
         dte_range = st.slider("Días a expiración (DTE)", min_value=0, max_value=max(dte_max, 60), value=(dte_min, dte_max))
     with col2:
-        strike_values = [r["Strike"] for r in all_rows if r["Strike"] is not None]
+        strike_values = [r["Strike"] for r in strategy_rows if r["Strike"] is not None]
         strike_min, strike_max = (min(strike_values), max(strike_values)) if strike_values else (0.0, 1000.0)
         strike_range = st.slider("Strike Price", min_value=0.0, max_value=float(strike_max), value=(float(strike_min), float(strike_max)))
     with col3:
@@ -85,21 +94,21 @@ else:
     # (0 de 412 candidatos tienen este dato hoy) — no era un bug en la lógica de filtrado (ya
     # verificado: sin filtros da 412/412), sino un dato todavía no poblado. Aviso explícito acá
     # para que no parezca que el screener está roto.
-    rows_with_volume = sum(1 for r in all_rows if r["Volume"] is not None)
-    rows_with_oi = sum(1 for r in all_rows if r["Open Interest"] is not None)
+    rows_with_volume = sum(1 for r in strategy_rows if r["Volume"] is not None)
+    rows_with_oi = sum(1 for r in strategy_rows if r["Open Interest"] is not None)
 
     col7, col8 = st.columns(2)
     with col7:
         volume_buckets = st.multiselect("Volumen", list(VOLUME_BUCKETS), default=[])
-        if rows_with_volume < len(all_rows):
-            st.caption(f"⚠️ Solo {rows_with_volume}/{len(all_rows)} candidatos tienen este dato — se va poblando con cada análisis nuevo.")
+        if rows_with_volume < len(strategy_rows):
+            st.caption(f"⚠️ Solo {rows_with_volume}/{len(strategy_rows)} candidatos tienen este dato — se va poblando con cada análisis nuevo.")
     with col8:
         open_interest_buckets = st.multiselect("Open Interest", list(OPEN_INTEREST_BUCKETS), default=[])
-        if rows_with_oi < len(all_rows):
-            st.caption(f"⚠️ Solo {rows_with_oi}/{len(all_rows)} candidatos tienen este dato — se va poblando con cada análisis nuevo.")
+        if rows_with_oi < len(strategy_rows):
+            st.caption(f"⚠️ Solo {rows_with_oi}/{len(strategy_rows)} candidatos tienen este dato — se va poblando con cada análisis nuevo.")
 
     filtered_rows = apply_filters(
-        all_rows,
+        strategy_rows,
         dte_range=dte_range,
         strike_range=strike_range,
         delta_buckets=delta_buckets or None,
@@ -111,9 +120,11 @@ else:
     )
 
     st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
-    st.markdown(f"**{len(filtered_rows)}** de {len(all_rows)} candidato(s) cumplen todos los filtros activos.")
+    st.markdown(f"**{len(filtered_rows)}** de {len(strategy_rows)} candidato(s) cumplen todos los filtros activos.")
 
-    if not filtered_rows:
+    if not strategy_rows:
+        st.info(f"Ningún candidato de {strategy_choice} generado todavía — probá con otra estrategia o corré el análisis de nuevo.", icon="🔎")
+    elif not filtered_rows:
         hint = ""
         if volume_buckets and rows_with_volume == 0:
             hint = " Ningún candidato actual tiene dato de Volumen todavía — probá sin ese filtro."

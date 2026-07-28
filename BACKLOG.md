@@ -4,12 +4,12 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-28 (mediodía — rediseño completo de detección de Operaciones vía
-`/orders` de Schwab, reemplazando el diff de posiciones y resolviendo de raíz el bug de mark
-price del ítem anterior; incidente real durante el despliegue con 60 notificaciones de WhatsApp
-falsas ya enviadas, documentado íntegro. Antes en la sesión: scheduler colgado diagnosticado y
-arreglado, bug de Market Movers corregido, BTC intentado y pausado a pedido del usuario — ver
-secciones dedicadas abajo).
+Última actualización: 2026-07-28 (tarde — selector de estrategia Naked Put/Covered Call/Ambas
+sumado a la Pestaña Screener. Antes en la sesión: rediseño completo de detección de Operaciones
+vía `/orders` de Schwab reemplazando el diff de posiciones y resolviendo de raíz el bug de mark
+price, con un incidente real durante el despliegue (60 notificaciones de WhatsApp falsas ya
+enviadas, documentado íntegro); scheduler colgado diagnosticado y arreglado; bug de Market
+Movers corregido; BTC intentado y pausado a pedido del usuario — ver secciones dedicadas abajo).
 
 ## En progreso ahora
 
@@ -482,6 +482,31 @@ Ninguno.
     rango de tiempo, `order_id IS NULL`, fuera de las 4 filas legítimas ya conocidas) y
     borradas de la base. **Las 60 notificaciones de WhatsApp ya enviadas no se pueden
     deshacer** — quedó reportado directamente al usuario en el momento.
+37. **Pestaña Screener: selector de estrategia Naked Put / Covered Call / Ambas** (pedido
+    2026-07-28). Confirmado ANTES de programar (a pedido explícito): el Screener ya tenía
+    acceso completo a los candidatos de Covered Call — `repo.get_recent_single_leg_candidates`
+    ya incluía `covered_call` en `SINGLE_LEG_STRATEGIES` (junto a `cash_secured_put`/
+    `short_put_naked`/`short_call_naked`) y `scanner_table.py::build_scanner_rows` ya calculaba
+    Moneyness/%BE/Probabilidad OTM correctamente para el lado call (mismo signo que
+    `compute_coverage`, ya generalizado desde que existe la Vista tabla de Escaneo) — 46
+    candidatos reales de Covered Call ya en la base al momento de confirmar. Lo único que
+    faltaba era el selector en la página (antes las 4 estrategias se mezclaban sin forma de
+    aislar una).
+    Fix: `screener_filters.py::STRATEGY_GROUP_LABELS`/`filter_by_strategy_group()` (filtra por
+    la etiqueta legible "Estrategia" que ya trae cada fila, ANTES del resto de filtros — así
+    los rangos de DTE/Strike se recalculan solo sobre el grupo elegido, no sobre las 4
+    estrategias mezcladas). Radio "Naked Put" (Cash-Secured Put + Short Put Naked) / "Covered
+    Call" / "Ambas" en `pages/10_screener.py`. Short Call (Naked) queda fuera de los dos grupos
+    a propósito (perfil de riesgo distinto — sin acciones, riesgo no acotado) y solo se ve con
+    "Ambas", igual que el comportamiento de antes de este selector.
+    Verificado en navegador en vivo con datos reales: "Covered Call" da 39 candidatos (Strike
+    Price recalculado a $7.50–$235, distinto del rango de Naked Put), strikes correctamente por
+    ENCIMA del precio del subyacente (SOFI $16.77 → strike $18.50), Moneyness positivo (OTM a
+    favor del vendedor). Filtro de Delta "Bajo (0-0.25)" combinado con la estrategia bajó
+    correctamente de 39 a 20 candidatos, todos Covered Call con delta en el rango pedido. 8
+    tests nuevos (`test_screener_filters.py`) — 487/487 en verde.
+
+## Cómo se usa este archivo
 
 - Antes de arrancar algo nuevo: agregarlo a "Pendiente, no empezado" apenas se pide, aunque
   no se vaya a implementar en el momento.

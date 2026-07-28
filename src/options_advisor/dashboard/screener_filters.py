@@ -1,8 +1,32 @@
 from __future__ import annotations
 
+from options_advisor.alerts.formatting import strategy_label
+from options_advisor.strategy import constants as sc
+
 # Sección "Pestaña Screener" (pedido 2026-07-27): buscador de opciones con filtros ajustables
 # sobre las filas ya armadas por dashboard/scanner_table.py::build_scanner_rows(). Lógica pura,
 # sin Streamlit — testeable sin runtime de UI, mismo patrón que scanner_table.py.
+
+# Selector de estrategia (pedido 2026-07-28: sumar Covered Call como segunda estrategia
+# filtrable, además de la ya existente Naked Put). Comparado contra la etiqueta legible
+# ("Estrategia" en build_scanner_rows), que es lo que la fila ya trae — no el strategy_type
+# crudo. "Short Call (Naked)" queda FUERA de los dos grupos a propósito (perfil de riesgo
+# distinto: sin acciones de por medio, riesgo no acotado) — sigue visible solo con "Ambas",
+# igual que en el comportamiento de hoy antes de este selector.
+STRATEGY_GROUP_LABELS: dict[str, list[str]] = {
+    "naked_put": [strategy_label(sc.CASH_SECURED_PUT), strategy_label(sc.SHORT_PUT_NAKED)],
+    "covered_call": [strategy_label(sc.COVERED_CALL)],
+}
+
+
+def filter_by_strategy_group(rows: list[dict], group: str | None) -> list[dict]:
+    """Filtra por grupo de estrategia ("naked_put" / "covered_call") ANTES del resto de
+    filtros — None o un grupo desconocido no filtra nada (grupo "Ambas" en la UI, mismo
+    resultado que antes de que existiera este selector)."""
+    if group is None or group not in STRATEGY_GROUP_LABELS:
+        return rows
+    allowed = STRATEGY_GROUP_LABELS[group]
+    return [r for r in rows if r.get("Estrategia") in allowed]
 
 # Umbrales de Volumen/Open Interest — PRIMER PASO documentado como tal (no percentiles reales
 # sobre la distribución observada, que sería más riguroso pero requiere más tiempo de

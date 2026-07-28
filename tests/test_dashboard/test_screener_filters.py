@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from options_advisor.dashboard.screener_filters import (
+    STRATEGY_GROUP_LABELS,
     apply_filters,
     classify_delta_bucket,
     classify_moneyness_bucket,
     classify_open_interest_bucket,
     classify_volume_bucket,
+    filter_by_strategy_group,
 )
 
 
@@ -154,3 +156,51 @@ def test_apply_filters_combines_multiple_criteria_with_and():
     ]
     result = apply_filters(rows, dte_range=(0, 30), delta_buckets=["Bajo (0-0.25)"], instrument_types=["stock"])
     assert [r["Symbol"] for r in result] == ["MATCH"]
+
+
+# --- filter_by_strategy_group (selector Naked Put / Covered Call / Ambas, pedido 2026-07-28) ---
+
+
+def test_strategy_group_labels_naked_put_covers_both_put_strategies():
+    assert STRATEGY_GROUP_LABELS["naked_put"] == ["Cash-Secured Put", "Short Put (Naked)"]
+
+
+def test_strategy_group_labels_covered_call_is_just_covered_call():
+    assert STRATEGY_GROUP_LABELS["covered_call"] == ["Covered Call"]
+
+
+def test_filter_by_strategy_group_naked_put_includes_both_put_strategies():
+    rows = [
+        _row(Symbol="CSP", Estrategia="Cash-Secured Put"),
+        _row(Symbol="SPN", Estrategia="Short Put (Naked)"),
+        _row(Symbol="CC", Estrategia="Covered Call"),
+    ]
+    result = filter_by_strategy_group(rows, "naked_put")
+    assert {r["Symbol"] for r in result} == {"CSP", "SPN"}
+
+
+def test_filter_by_strategy_group_covered_call_excludes_puts():
+    rows = [
+        _row(Symbol="CSP", Estrategia="Cash-Secured Put"),
+        _row(Symbol="CC", Estrategia="Covered Call"),
+    ]
+    result = filter_by_strategy_group(rows, "covered_call")
+    assert [r["Symbol"] for r in result] == ["CC"]
+
+
+def test_filter_by_strategy_group_excludes_short_call_naked_from_both_groups():
+    """Short Call (Naked) no tiene grupo propio a propósito (perfil de riesgo distinto: sin
+    acciones, riesgo no acotado) — no debe aparecer ni en 'naked_put' ni en 'covered_call'."""
+    rows = [_row(Symbol="SCN", Estrategia="Short Call (Naked)")]
+    assert filter_by_strategy_group(rows, "naked_put") == []
+    assert filter_by_strategy_group(rows, "covered_call") == []
+
+
+def test_filter_by_strategy_group_none_returns_all_rows_unfiltered():
+    rows = [_row(Symbol="CSP", Estrategia="Cash-Secured Put"), _row(Symbol="CC", Estrategia="Covered Call")]
+    assert filter_by_strategy_group(rows, None) == rows
+
+
+def test_filter_by_strategy_group_unknown_group_returns_all_rows_unfiltered():
+    rows = [_row(Symbol="CSP", Estrategia="Cash-Secured Put")]
+    assert filter_by_strategy_group(rows, "not_a_real_group") == rows
