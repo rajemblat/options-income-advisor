@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 from options_advisor.alerts.risk_calendar import build_risk_calendar
+from options_advisor.config import load_priority_watchlist_symbols
 from options_advisor.dashboard.components import ACCENT, get_connection, get_symbols, icon, inject_theme, render_header, render_notification_bell, risk_level_pill_html
 from options_advisor.market_context import finnhub_client
 from options_advisor.storage import repository as repo
@@ -24,7 +25,14 @@ render_header(
 
 conn = get_connection()
 render_notification_bell(conn)
-symbols = get_symbols()
+# "Mi watchlist" acá es la unión de la watchlist fija (config/symbols.yaml, 15 símbolos) y la
+# watchlist REAL de thinkorswim (~96 símbolos, config/watchlist_thinkorswim.yaml) — bug real
+# encontrado 2026-07-27 (reportado por el usuario: "AMD y MSFT no aparecen"): esta página
+# usaba solo get_symbols() (los 15 fijos), así que cualquier símbolo que el usuario realmente
+# opera pero no está en esa lista corta (AMD, por ejemplo) nunca aparecía sin marcar "universo
+# amplio", aunque ya tuviera un next_earnings_date calculado en la DB. Mismo patrón de unión
+# que ya usa pages/8_escaneo.py.
+symbols = sorted(set(get_symbols()) | set(load_priority_watchlist_symbols()))
 today = date.today()
 
 macro = repo.get_latest_macro_snapshot(conn)
