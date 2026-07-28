@@ -27,7 +27,11 @@ from options_advisor.scheduler.jobs import job_poll_and_analyze
 
 
 def render_general_page() -> None:
-    st.set_page_config(page_title="Options Income Advisor — Fase 1", page_icon="📈", layout="wide")
+    """Sección "Ajustes estéticos de la página General" (pedido 2026-07-28): título/subtítulo/
+    métricas/texto de navegación de la versión anterior removidos a pedido explícito del
+    usuario — layout reorganizado alrededor de lo que queda (sesión + ticker + acción + los 3
+    paneles de datos) para que se vea limpio sin esos elementos, no solo "los mismos huecos"."""
+    st.set_page_config(page_title="Stock Market Overview", page_icon="📈", layout="wide")
     inject_theme()
 
     settings = get_settings()
@@ -37,23 +41,12 @@ def render_general_page() -> None:
 
     header_col, session_col = st.columns([4, 1])
     with header_col:
-        render_header(
-            icon("trending-up", size=24, color=ACCENT),
-            "Options Income Advisor — Fase 1",
-            "Escenario: Ingreso a Largo Plazo. Motor de reglas determinístico + narración con Claude.",
-        )
+        render_header(icon("trending-up", size=24, color=ACCENT), "Stock Market Overview")
     with session_col:
         render_market_session_badge()
         render_volatility_semaphore(cached_quotes(("$VIX",)).get("$VIX"))
 
     render_quote_ticker(cached_quotes(tuple(symbols)))
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Modo de broker", settings.broker.mode)
-    col2.metric("Símbolos monitoreados", len(symbols))
-    col3.metric("Umbral (perfil moderado)", settings.conviction_thresholds.moderado)
-
-    st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
 
     if settings.broker.mode == "mock":
         st.info(
@@ -80,20 +73,6 @@ def render_general_page() -> None:
 
     st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
     render_macro_panel(conn)
-
-    st.markdown(
-        """
-        Usá el menú de la izquierda para navegar:
-        - **Alertas**: oportunidades detectadas, con la explicación narrada.
-        - **Watchlist**: último snapshot de indicadores por símbolo.
-        - **Indicadores**: detalle histórico de un símbolo (IV Rank, RSI, precio).
-        - **Configuración**: perfil de inversor y umbrales de convicción.
-        - **Noticias**: últimas noticias por símbolo (Finnhub).
-        - **Eventos de riesgo**: calendario de volatilidad esperada (FOMC, CPI, empleo, earnings).
-        - **Portafolio**: posiciones reales de tus cuentas Schwab (símbolo, cantidad, P&L).
-        - **Escaneo**: busca oportunidades en un universo amplio (cientos de símbolos), no solo tu watchlist fija.
-        """
-    )
 
 
 # st.navigation reemplaza la detección automática de la carpeta pages/ (Sección "Rediseño de
