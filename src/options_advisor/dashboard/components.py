@@ -122,6 +122,8 @@ def cached_movers(index: str, sort: str) -> list[Mover]:
     return get_broker().get_movers(index, sort)
 
 
+
+
 def get_anthropic_api_key() -> str | None:
     return os.environ.get("ANTHROPIC_API_KEY")
 
@@ -455,12 +457,27 @@ def render_quote_ticker(quotes: dict[str, Quote]) -> None:
     st.markdown(f"<div class='oia-ticker'><div class='oia-ticker-track'>{row_html}{row_html}</div></div>", unsafe_allow_html=True)
 
 
+def split_gainers_losers(movers: list[Mover]) -> tuple[list[Mover], list[Mover]]:
+    """Separa ganadoras/perdedoras nosotros mismos a partir de UN solo pedido de movers — bug
+    real reportado 2026-07-28 (mismas empresas en Ganadoras Y Perdedoras a la vez, todas en
+    +0.00%/$0.00): confirmado en vivo que el endpoint `/movers` de Schwab devuelve el MISMO set
+    de símbolos (los de mayor volumen) sin importar si se pide `sort=PERCENT_CHANGE_UP` o
+    `PERCENT_CHANGE_DOWN` — confiar en el `sort` del broker para dividir la lista producía la
+    lista duplicada en ambas columnas. Ganadoras = `change_pct > 0` ordenadas de mayor a menor;
+    Perdedoras = `change_pct < 0` ordenadas de más negativa a menos (0.0 exacto no cae en
+    ninguna, infrecuente en la práctica)."""
+    gainers = sorted((m for m in movers if m.change_pct > 0), key=lambda m: m.change_pct, reverse=True)
+    losers = sorted((m for m in movers if m.change_pct < 0), key=lambda m: m.change_pct)
+    return gainers, losers
+
+
 def render_market_movers_panel(index: str = "$SPX") -> None:
     """Ganadoras/perdedoras del índice de referencia, estilo CNBC — endpoint `/movers`
     confirmado en vivo 2026-07-25 (ver NOTES.md). Vacío fuera de horario de mercado (el
-    endpoint real no tiene datos que devolver) o en modo mock sin fixture cargada."""
-    gainers = cached_movers(index, "PERCENT_CHANGE_UP")
-    losers = cached_movers(index, "PERCENT_CHANGE_DOWN")
+    endpoint real no tiene datos que devolver) o en modo mock sin fixture cargada. Un solo
+    pedido (`sort="VOLUME"`, universo de más actividad) — ver `split_gainers_losers` para por
+    qué no se piden ambas direcciones por separado."""
+    gainers, losers = split_gainers_losers(cached_movers(index, "VOLUME"))
 
     html = ["<div class='oia-card'>", f"<div style='font-size:1.1rem; font-weight:700;'>{icon('bar-chart', size=18, color=ACCENT)} Market Movers · {index}</div>"]
 

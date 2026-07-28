@@ -4,31 +4,52 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-28 (madrugada — todo lo pedido en la sesión de esta noche
-terminado y verificado: Pestaña Operaciones, Fed/FRED, Calendario de earnings por rango, los 4
-bugs urgentes, la vista tabla en Escaneo, la Pestaña Screener, ajustes estéticos de General, el
-Simulador de escenarios en Portafolio, el bug de datos del Screener, y el bug de rolls en
-Operaciones — este último con una aclaración de alcance importante, ver sección dedicada abajo).
+Última actualización: 2026-07-28 (mañana — scheduler colgado durante horario de mercado
+diagnosticado y arreglado, bug real de Market Movers corregido, BTC real intentado y pausado a
+pedido del usuario, ver secciones dedicadas abajo).
 
 ## En progreso ahora
 
-Ninguno. "Pendiente, no empezado" está vacío — todo lo pedido explícitamente esta noche está
-cerrado. Queda la "Investigación pendiente" (Options Time & Sales, sin prioridad inmediata) y
-lo "Bloqueado/diferido" de sesiones anteriores.
+Ninguno.
 
-## Hallazgo sin resolver — scheduler dejó de correr ~2h46m el 2026-07-27
+## Resuelto — scheduler colgado ~15h, incluyendo horario de mercado (2026-07-28)
 
-Durante la investigación del bug #24, se encontró que el proceso del scheduler dejó de
-ejecutar sus jobs entre las 15:48 y 18:34 del 2026-07-27 (se ve en `data/logs/scheduler.err.log`
-como jobs "missed" en vez de ejecutados). Causa no confirmada — posible suspensión de la
-laptop, aunque hay un `caffeinate` corriendo hace 92h que en teoría debería prevenir sleep por
-inactividad, así que no es la explicación obvia. No bloqueó nada esa vez (el detector alcanzó
-a agarrar todo en la corrida manual siguiente). **Estado al cierre de esta sesión (madrugada
-2026-07-28)**: proceso del scheduler vivo y confirmado (`ps aux`); su inactividad actual es
-ESPERADA, no el mismo bug — los crons de `periodic_poll` y `real_trade_detection` solo corren
-en horario de mercado (`hour='9-16'`), así que correctamente esperan hasta las 09:00 ET de
-mañana en vez de disparar de noche. Si el scheduler se cae de nuevo POR HORAS DURANTE horario
-de mercado, sí podría hacer perder operaciones reales — investigar de nuevo si vuelve a pasar.
+**Recurrencia mucho más grave del hallazgo del 2026-07-27** (ver historial en git log de esta
+sección): esta vez el proceso NO se limitó a estar inactivo fuera de horario — se colgó de
+verdad y se quedó colgado hasta DENTRO del horario de mercado de hoy, con riesgo real de perder
+operaciones. Diagnóstico confirmado (no especulación):
+- **Dos procesos `run_scheduler.py` corriendo a la vez** (PID `99687`, gestionado por
+  `launchd`/`com.robertoajemblat.options-income-advisor.scheduler.plist` con `KeepAlive`, y PID
+  `99639`, huérfano, iniciado manualmente por fuera de `launchd` en una sesión anterior — sin
+  gestión de reinicio propia).
+- **Ambos colgados**: ninguno escribió una línea al log desde las 18:34 del 2026-07-27, pese a
+  que el cron de `real_trade_detection` corre cada 3 min en horario de mercado y ya deberían
+  haber corrido ~7 veces desde la apertura de hoy (09:00 ET) al momento de detectarlo (~09:20).
+- Ambos con un socket TCP a Schwab en estado `CLOSE_WAIT` (conexión muerta nunca cerrada) —
+  consistente con el log de `pmset`, que confirma que la laptop entró en sueño profundo hoy a
+  las 09:14 pese al `caffeinate` corriendo. `KeepAlive` de `launchd` solo reinicia un proceso
+  que MUERE, no uno que se cuelga (sigue "vivo" para macOS aunque no procese nada) — por eso no
+  se auto-recuperó.
+- **Confirmado con la base de datos real**: el timestamp más reciente en `position_snapshots`
+  antes del fix era de anoche 21:30 (el re-poblado MANUAL del fix de rolls de la sesión
+  anterior, no una corrida automática) — sin evidencia de que el scheduler haya detectado nada
+  por su cuenta desde entonces.
+
+**Fix aplicado**: matado el proceso huérfano (`99639`), reiniciado el proceso oficial vía
+`launchctl kickstart -k gui/$(id -u)/com.robertoajemblat.options-income-advisor.scheduler`,
+corrida manual de `job_detect_real_trades` inmediatamente después para cubrir el gap sin
+esperar al próximo tick del cron (confirmado: `position_snapshots` pasó de 21:30 de ayer a
+09:30:39 de hoy, 0 operaciones nuevas detectadas — no había aperturas pendientes). Cron
+automático reiniciado a las 09:30:14 ET, confirmado corriendo solo de nuevo poco después.
+
+**Riesgo pendiente sin resolver** (root cause real, no solo el síntoma): nada en el sistema
+detecta un CUELGUE (vs. una muerte) del proceso — si vuelve a pasar durante horario de mercado
+sin que alguien lo note, operaciones reales podrían pasar desapercibidas otra vez. Ideas no
+implementadas: un healthcheck externo (ej. cron separado que verifique que
+`scheduler.err.log` tuvo actividad reciente y mate+reinicie si no) o timeouts más agresivos en
+los clientes `httpx` de `schwab_client.py` (hoy 15s, pero el proceso entero parece quedar
+suspendido por el sistema operativo, no solo la llamada de red, así que un timeout más corto no
+lo hubiera arreglado esta vez). Evaluar si vuelve a pasar.
 
 ## Pendiente, no empezado
 
@@ -85,9 +106,14 @@ Ninguno.
   de Black-Scholes del motor calcularía griegos con el precio spot en vez del futuro relevante,
   lo cual da griegos incorrectos si hay contango/backwardation (frecuente en VIX). Falta decidir
   cómo tratar esto antes de sumarlo.
-- **BTC real (spot)**: confirmado 2026-07-26 — usar Finnhub `BINANCE:BTCUSDT` en vez del ETF
-  apalancado de Schwab. Pendiente de implementar (mostrar precio real, no motor de opciones —
-  BTC spot no tiene cadena de opciones en Schwab).
+- **BTC real (spot)**: **pausado explícitamente por el usuario 2026-07-28** — "no es
+  importante ahora mismo, el ETF apalancado que ya muestra Schwab es suficiente por ahora".
+  Decisión de producto (usar Finnhub `BINANCE:BTCUSDT`) sigue confirmada del 2026-07-26 para si
+  se retoma más adelante, pero el intento de implementación de esta sesión (`get_crypto_quote`
+  en `finnhub_client.py`, `cached_btc_quote` en `components.py`, cableado en el ticker de
+  General) se **revirtió por completo** — llegó a romper la app en vivo (`ImportError` por un
+  problema de reload de Streamlit) antes de terminar de verificarse, y el usuario pausó la
+  tarea en ese momento. 0 rastro de código en el repo; si se retoma, empezar de cero.
 
 ## Terminado y verificado hoy (ver NOTES.md para el detalle técnico completo de cada uno)
 
@@ -362,6 +388,19 @@ Ninguno.
     (TSLA/EWY, aperturas genuinas, quedan). `position_snapshots` re-poblado con
     `underlying_symbol` para las 62 posiciones cortas reales actuales. 9 tests nuevos
     (real_trades, repository) — 456/456 en verde.
+34. **Bug real corregido: Market Movers mostraba las MISMAS empresas en Ganadoras Y Perdedoras
+    a la vez** (reportado 2026-07-28, con ejemplos reales: NVDA/INTC/T/F/MU/AAPL/TSLA/SMCI en
+    ambas columnas). Root cause confirmado pidiendo el endpoint real en vivo con las dos
+    direcciones: Schwab `/movers/$SPX` devuelve el MISMO set de símbolos (los de más volumen)
+    sin importar si se pide `sort=PERCENT_CHANGE_UP` o `PERCENT_CHANGE_DOWN` — confiar en el
+    `sort` del broker para separar ganadoras/perdedoras producía la lista duplicada en ambas
+    columnas. Fix: `dashboard/components.py::split_gainers_losers()` — un solo pedido
+    (`sort="VOLUME"`) y la separación se hace del lado nuestro por el signo real de
+    `change_pct` (positivo/negativo, ordenados por magnitud), eliminando además la llamada
+    duplicada a la API. Verificado en navegador en vivo con datos reales de mercado abierto:
+    Ganadoras (KO +2.88%, MDT +2.65%, AAPL +1.21%) y Perdedoras (GLW -13.79%, MU -6.85%, INTC
+    -5.44%, PLTR, SMCI, TSLA, NVDA) sin overlap y sin ceros. 6 tests nuevos
+    (`test_components.py`) — 466/466 en verde.
 
 ## Cómo se usa este archivo
 
