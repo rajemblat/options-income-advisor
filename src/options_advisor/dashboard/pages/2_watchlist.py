@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from options_advisor.config import load_priority_watchlist_symbols
-from options_advisor.dashboard.components import ACCENT, get_connection, get_symbols, icon, inject_theme, render_header, render_notification_bell
+from options_advisor.dashboard.components import ACCENT, cached_quotes, get_connection, get_symbols, icon, inject_theme, render_header, render_notification_bell
 from options_advisor.storage import repository as repo
 
 WARNING_WINDOW_DAYS = 7  # ventana para marcar earnings/reunión Fed como "próximos" (Sección 4 del pedido)
@@ -45,6 +45,17 @@ for symbol in symbols:
         row_dict["warning"] = _warning_icon(row_dict.get("next_earnings_date"))
         rows.append(row_dict)
 
+# Precio actual y % de cambio del día (pedido 2026-07-27: "dato básico que falta") — vía
+# cotización EN VIVO (cached_quotes, 60s de cache, mismo mecanismo que el ticker de la página
+# General), NO el campo "price" de indicator_snapshots (que es el precio DE CUANDO CORRIÓ el
+# último análisis, útil para interpretar el RSI/SMA de esa fila, pero no necesariamente hoy).
+if rows:
+    quotes = cached_quotes(tuple(r["symbol"] for r in rows))
+    for row_dict in rows:
+        quote = quotes.get(row_dict["symbol"])
+        row_dict["current_price"] = quote.last_price if quote else None
+        row_dict["change_pct_today"] = quote.net_change_pct if quote else None
+
 if not rows:
     st.info("Todavía no hay snapshots. Andá a la página principal y corré el análisis.")
 else:
@@ -58,6 +69,8 @@ else:
         [
             "symbol",
             "warning",
+            "current_price",
+            "change_pct_today",
             "snapshot_date",
             "price",
             "iv_rank",
@@ -73,7 +86,8 @@ else:
         ]
     ]
     df.columns = [
-        "Símbolo", "⚠️ Próximo evento", "Fecha", "Precio", "IV Rank", "Fuente IV Rank", "RSI", "ATR", "Std Dev (20d)",
+        "Símbolo", "⚠️ Próximo evento", "Precio actual", "% hoy", "Fecha snapshot", "Precio (snapshot)",
+        "IV Rank", "Fuente IV Rank", "RSI", "ATR", "Std Dev (20d)",
         "Net GEX", "SMA20", "SMA50", "Cruce MA", "Próx. Earnings",
     ]
     st.dataframe(
@@ -81,7 +95,9 @@ else:
         use_container_width=True,
         hide_index=True,
         column_config={
-            "Precio": st.column_config.NumberColumn(format="$%.2f"),
+            "Precio actual": st.column_config.NumberColumn(format="$%.2f"),
+            "% hoy": st.column_config.NumberColumn(format="%.2f%%"),
+            "Precio (snapshot)": st.column_config.NumberColumn(format="$%.2f"),
             "IV Rank": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
             "RSI": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f"),
             "Std Dev (20d)": st.column_config.NumberColumn(format="$%.2f"),
@@ -91,6 +107,9 @@ else:
         },
     )
     st.caption(
+        "Precio actual / % hoy: cotización EN VIVO (cacheada 60s), la variación de hoy vs. el cierre anterior. "
+        "Precio (snapshot): el precio de cuando corrió el último análisis — el que usan RSI/SMA/IV Rank de esa "
+        "misma fila, puede no coincidir con el precio actual si pasó tiempo desde esa corrida. "
         "iv_rank_source = 'historical_volatility_proxy' significa que todavía no hay 12 meses "
         "de historial de IV real acumulado; se usa volatilidad histórica realizada como aproximación. "
         "Net GEX positivo sugiere que los dealers amortiguan movimiento (compran en bajas/venden en "
