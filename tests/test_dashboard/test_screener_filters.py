@@ -204,3 +204,53 @@ def test_filter_by_strategy_group_none_returns_all_rows_unfiltered():
 def test_filter_by_strategy_group_unknown_group_returns_all_rows_unfiltered():
     rows = [_row(Symbol="CSP", Estrategia="Cash-Secured Put")]
     assert filter_by_strategy_group(rows, "not_a_real_group") == rows
+
+
+# --- exclude_earnings_before_expiration / exclude_fomc_before_expiration (pedido 2026-07-28) ---
+
+
+def test_apply_filters_excludes_confirmed_earnings_before_expiration():
+    rows = [
+        _row(Symbol="RISKY", **{"Earnings antes del vencimiento": True}),
+        _row(Symbol="SAFE", **{"Earnings antes del vencimiento": False}),
+    ]
+    result = apply_filters(rows, exclude_earnings_before_expiration=True)
+    assert [r["Symbol"] for r in result] == ["SAFE"]
+
+
+def test_apply_filters_does_not_exclude_unknown_earnings():
+    """Dato desconocido (None) no es lo mismo que 'confirmado seguro' — no se excluye, para no
+    penalizar candidatos válidos por falta de dato."""
+    rows = [_row(Symbol="UNKNOWN", **{"Earnings antes del vencimiento": None})]
+    result = apply_filters(rows, exclude_earnings_before_expiration=True)
+    assert [r["Symbol"] for r in result] == ["UNKNOWN"]
+
+
+def test_apply_filters_earnings_filter_off_by_default():
+    rows = [_row(Symbol="RISKY", **{"Earnings antes del vencimiento": True})]
+    assert apply_filters(rows) == rows
+
+
+def test_apply_filters_excludes_confirmed_fomc_before_expiration():
+    rows = [
+        _row(Symbol="RISKY", **{"FOMC antes del vencimiento": True}),
+        _row(Symbol="SAFE", **{"FOMC antes del vencimiento": False}),
+    ]
+    result = apply_filters(rows, exclude_fomc_before_expiration=True)
+    assert [r["Symbol"] for r in result] == ["SAFE"]
+
+
+def test_apply_filters_does_not_exclude_unknown_fomc():
+    rows = [_row(Symbol="UNKNOWN", **{"FOMC antes del vencimiento": None})]
+    result = apply_filters(rows, exclude_fomc_before_expiration=True)
+    assert [r["Symbol"] for r in result] == ["UNKNOWN"]
+
+
+def test_apply_filters_combines_earnings_and_fomc_filters_with_and():
+    rows = [
+        _row(Symbol="BOTH_SAFE", **{"Earnings antes del vencimiento": False, "FOMC antes del vencimiento": False}),
+        _row(Symbol="RISKY_EARNINGS", **{"Earnings antes del vencimiento": True, "FOMC antes del vencimiento": False}),
+        _row(Symbol="RISKY_FOMC", **{"Earnings antes del vencimiento": False, "FOMC antes del vencimiento": True}),
+    ]
+    result = apply_filters(rows, exclude_earnings_before_expiration=True, exclude_fomc_before_expiration=True)
+    assert [r["Symbol"] for r in result] == ["BOTH_SAFE"]

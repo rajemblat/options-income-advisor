@@ -4,12 +4,15 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-28 (tarde — selector de estrategia Naked Put/Covered Call/Ambas
-sumado a la Pestaña Screener. Antes en la sesión: rediseño completo de detección de Operaciones
-vía `/orders` de Schwab reemplazando el diff de posiciones y resolviendo de raíz el bug de mark
-price, con un incidente real durante el despliegue (60 notificaciones de WhatsApp falsas ya
-enviadas, documentado íntegro); scheduler colgado diagnosticado y arreglado; bug de Market
-Movers corregido; BTC intentado y pausado a pedido del usuario — ver secciones dedicadas abajo).
+Última actualización: 2026-07-28 (noche — filtros de earnings/FOMC sumados a la Pestaña
+Screener, más una alarma falsa de GDX investigada y confirmada como detección correcta (el
+scheduler nuevo funcionaba bien, el usuario chequeó justo antes del ciclo). Antes en la sesión:
+selector de estrategia Naked Put/Covered Call/Ambas en el Screener; rediseño completo de
+detección de Operaciones vía `/orders` de Schwab reemplazando el diff de posiciones y
+resolviendo de raíz el bug de mark price, con un incidente real durante el despliegue (60
+notificaciones de WhatsApp falsas ya enviadas, documentado íntegro); scheduler colgado
+diagnosticado y arreglado; bug de Market Movers corregido; BTC intentado y pausado a pedido del
+usuario — ver secciones dedicadas abajo).
 
 ## En progreso ahora
 
@@ -505,6 +508,27 @@ Ninguno.
     favor del vendedor). Filtro de Delta "Bajo (0-0.25)" combinado con la estrategia bajó
     correctamente de 39 a 20 candidatos, todos Covered Call con delta en el rango pedido. 8
     tests nuevos (`test_screener_filters.py`) — 487/487 en verde.
+38. **Pestaña Screener: filtros de earnings y reunión FOMC antes del vencimiento** (pedido
+    2026-07-28). Reusa datos que YA existían (los mismos que alimentan los caveats de las
+    tarjetas de alerta y Eventos de riesgo) — sin llamada nueva a ninguna API, solo exponerlos
+    como filtro. `scanner_table.py::build_scanner_rows()` suma 2 columnas derivadas ("Earnings
+    antes del vencimiento" / "FOMC antes del vencimiento", `True`/`False`/`None` — mismo
+    criterio de comparación de fechas ISO que ya usan `_earnings_caveat_html`/
+    `_fed_event_caveat_html`). `screener_filters.py::apply_filters()` suma
+    `exclude_earnings_before_expiration`/`exclude_fomc_before_expiration`: EXCEPCIÓN
+    documentada a la regla general de "dato faltante = se excluye" — acá solo excluye cuando el
+    riesgo está CONFIRMADO (`True`), un dato desconocido (`None`) NO se excluye (no hay forma
+    de saber si es seguro, ocultarlo penalizaría candidatos válidos por falta de dato). 2
+    checkboxes en `pages/10_screener.py`, con caption de cobertura de datos igual al patrón ya
+    usado para Volumen/Open Interest.
+    Verificado en navegador en vivo con datos reales: sin filtros, 464 candidatos (Naked Put);
+    con "Excluir earnings antes del vencimiento" activo, baja a 214 (AAPL/AMZN/BA con earnings
+    el 28-30/7, antes del vencimiento 21/8, correctamente excluidos; ACN con earnings 24/9,
+    después del vencimiento, correctamente incluido). Filtro de FOMC verificado por separado:
+    con la reunión FOMC real del 29/7 y todos los candidatos venciendo semanas después, da 0 —
+    matemáticamente correcto (HOY, con ese calendario, todo candidato tiene FOMC antes del
+    vencimiento), no un bug. 19 tests nuevos (`test_scanner_table.py`,
+    `test_screener_filters.py`) — 502/502 en verde.
 
 ## Cómo se usa este archivo
 

@@ -101,11 +101,20 @@ def apply_filters(
     moneyness_buckets: list[str] | None = None,
     instrument_types: list[str] | None = None,
     min_probability_otm: float | None = None,
+    exclude_earnings_before_expiration: bool = False,
+    exclude_fomc_before_expiration: bool = False,
 ) -> list[dict]:
     """Filtro combinado (AND de todos los criterios activos) sobre las filas de
     `build_scanner_rows`. Cada filtro es opcional (None/lista vacía = sin restricción en ese
     criterio) — una fila con un dato faltante (None) para un filtro ACTIVO se excluye (no hay
-    forma de saber si cumple, se trata igual que "no cumple", nunca se cuela por falta de dato)."""
+    forma de saber si cumple, se trata igual que "no cumple", nunca se cuela por falta de dato).
+
+    `exclude_earnings_before_expiration`/`exclude_fomc_before_expiration` (pedido 2026-07-28)
+    son la EXCEPCIÓN a esa regla a propósito: solo excluyen una fila cuando el riesgo está
+    CONFIRMADO (`True` en la columna derivada) — una fila con el dato desconocido (`None`,
+    earnings/FOMC no verificados todavía) NO se excluye, porque no hay forma de saber si es
+    seguro y ocultarla penalizaría candidatos válidos por falta de dato, no por riesgo real
+    (mismo espíritu que el caveat neutral "no se pudo verificar" en las tarjetas de alerta)."""
     result = []
     for row in rows:
         if dte_range is not None:
@@ -135,5 +144,9 @@ def apply_filters(
             prob_otm = row.get("Probabilidad OTM (%)")
             if prob_otm is None or prob_otm < min_probability_otm:
                 continue
+        if exclude_earnings_before_expiration and row.get("Earnings antes del vencimiento") is True:
+            continue
+        if exclude_fomc_before_expiration and row.get("FOMC antes del vencimiento") is True:
+            continue
         result.append(row)
     return result

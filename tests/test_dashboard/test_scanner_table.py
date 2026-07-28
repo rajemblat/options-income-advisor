@@ -160,3 +160,58 @@ def test_build_scanner_rows_instrumento_from_mapping():
 def test_build_scanner_rows_instrumento_none_for_symbol_missing_from_mapping():
     row = build_scanner_rows([_candidate_row(symbol="TSLA")], instrument_types={"AAPL": "stock"})[0]
     assert row["Instrumento"] is None
+
+
+# --- Earnings/FOMC antes del vencimiento (Pestaña Screener, pedido 2026-07-28) ---
+# _candidate_row() default expiration_date="2026-08-21".
+
+
+def test_build_scanner_rows_earnings_true_when_on_or_before_expiration():
+    row = build_scanner_rows(
+        [_candidate_row(symbol="TSLA")], earnings_by_symbol={"TSLA": "2026-08-10"}
+    )[0]
+    assert row["Earnings antes del vencimiento"] is True
+
+
+def test_build_scanner_rows_earnings_true_when_exactly_on_expiration():
+    row = build_scanner_rows(
+        [_candidate_row(symbol="TSLA")], earnings_by_symbol={"TSLA": "2026-08-21"}
+    )[0]
+    assert row["Earnings antes del vencimiento"] is True
+
+
+def test_build_scanner_rows_earnings_false_when_after_expiration():
+    row = build_scanner_rows(
+        [_candidate_row(symbol="TSLA")], earnings_by_symbol={"TSLA": "2026-09-01"}
+    )[0]
+    assert row["Earnings antes del vencimiento"] is False
+
+
+def test_build_scanner_rows_earnings_none_when_unknown():
+    row = build_scanner_rows([_candidate_row(symbol="TSLA")], earnings_by_symbol={"TSLA": None})[0]
+    assert row["Earnings antes del vencimiento"] is None
+
+
+def test_build_scanner_rows_earnings_none_without_earnings_by_symbol_at_all():
+    row = build_scanner_rows([_candidate_row(symbol="TSLA")])[0]
+    assert row["Earnings antes del vencimiento"] is None
+
+
+def test_build_scanner_rows_earnings_none_for_symbol_missing_from_mapping():
+    row = build_scanner_rows([_candidate_row(symbol="TSLA")], earnings_by_symbol={"AAPL": "2026-08-10"})[0]
+    assert row["Earnings antes del vencimiento"] is None
+
+
+def test_build_scanner_rows_fomc_true_when_before_expiration():
+    row = build_scanner_rows([_candidate_row(symbol="TSLA")], fed_meeting_date="2026-08-15")[0]
+    assert row["FOMC antes del vencimiento"] is True
+
+
+def test_build_scanner_rows_fomc_false_when_after_expiration():
+    row = build_scanner_rows([_candidate_row(symbol="TSLA")], fed_meeting_date="2026-09-15")[0]
+    assert row["FOMC antes del vencimiento"] is False
+
+
+def test_build_scanner_rows_fomc_none_without_fed_meeting_date():
+    row = build_scanner_rows([_candidate_row(symbol="TSLA")])[0]
+    assert row["FOMC antes del vencimiento"] is None

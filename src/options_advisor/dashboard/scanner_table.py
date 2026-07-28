@@ -23,10 +23,22 @@ def _pct_distance(option_type: str, reference: float, underlying_price: float) -
     return (reference - underlying_price) / underlying_price * 100
 
 
+def _before_expiration(event_date: str | None, expiration_date: str) -> bool | None:
+    """True si `event_date` (earnings o reunión FOMC, ISO string) cae en o antes del
+    vencimiento — mismo criterio que `dashboard/components.py::_earnings_caveat_html`/
+    `_fed_event_caveat_html` (comparación lexicográfica de strings ISO, válida para fechas).
+    None si no se conoce el dato (no es lo mismo que "False" = confirmado seguro)."""
+    if event_date is None:
+        return None
+    return event_date <= expiration_date
+
+
 def build_scanner_rows(
     candidates: list[dict],
     risk_free_rate: float | None = None,
     instrument_types: dict[str, str | None] | None = None,
+    earnings_by_symbol: dict[str, str | None] | None = None,
+    fed_meeting_date: str | None = None,
 ) -> list[dict]:
     """Une legs_json/breakevens_json (JSON crudo tal como vienen de sqlite3.Row) en una fila
     plana por candidato. Candidatos sin datos suficientes (sin legs, sin underlying_price) se
@@ -34,7 +46,11 @@ def build_scanner_rows(
 
     `risk_free_rate`/`instrument_types` son opcionales (Sección 'Pestaña Screener', pedido
     2026-07-27) — sin ellos, "Probabilidad OTM (%)"/"Instrumento" quedan en None; la Vista
-    tabla de Escaneo (que no los necesita) sigue llamando esta función sin pasarlos."""
+    tabla de Escaneo (que no los necesita) sigue llamando esta función sin pasarlos.
+    `earnings_by_symbol`/`fed_meeting_date` (pedido 2026-07-28, filtros de earnings/FOMC del
+    Screener): mismos datos que ya alimentan los caveats de las tarjetas de alerta, ninguna
+    fuente nueva — sin ellos, las 2 columnas derivadas quedan en None (dato desconocido, no
+    "sin riesgo")."""
     rows: list[dict] = []
     for c in candidates:
         legs = json.loads(c["legs_json"]) if c["legs_json"] else []
@@ -78,6 +94,10 @@ def build_scanner_rows(
                 "POP (%)": round(c["probability_of_profit"] * 100, 1) if c["probability_of_profit"] is not None else None,
                 "Probabilidad OTM (%)": prob_otm,
                 "DTE": dte,
+                "Earnings antes del vencimiento": _before_expiration(
+                    (earnings_by_symbol or {}).get(c["symbol"]), c["expiration_date"]
+                ),
+                "FOMC antes del vencimiento": _before_expiration(fed_meeting_date, c["expiration_date"]),
             }
         )
     return rows

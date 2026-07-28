@@ -39,7 +39,23 @@ if symbols and settings.broker.mode == "schwab":
     quotes = broker.get_quotes(symbols)
     instrument_types = {symbol: q.instrument_type for symbol, q in quotes.items()}
 
-all_rows = build_scanner_rows(candidates, risk_free_rate=settings.market.risk_free_rate, instrument_types=instrument_types)
+# Earnings/FOMC (pedido 2026-07-28, filtros de earnings/FOMC): mismos datos que ya alimentan
+# los caveats de las tarjetas de alerta y Eventos de riesgo — sin llamada nueva a ninguna API,
+# solo lo que ya está en la base.
+macro = repo.get_latest_macro_snapshot(conn)
+fed_meeting_date = macro["fed_meeting_date"] if macro else None
+earnings_by_symbol: dict[str, str | None] = {}
+for _symbol in symbols:
+    _next_earnings = repo.get_latest_next_earnings_date(conn, _symbol)
+    earnings_by_symbol[_symbol] = _next_earnings.isoformat() if _next_earnings else None
+
+all_rows = build_scanner_rows(
+    candidates,
+    risk_free_rate=settings.market.risk_free_rate,
+    instrument_types=instrument_types,
+    earnings_by_symbol=earnings_by_symbol,
+    fed_meeting_date=fed_meeting_date,
+)
 
 if not all_rows:
     st.info(
@@ -107,6 +123,20 @@ else:
         if rows_with_oi < len(strategy_rows):
             st.caption(f"⚠️ Solo {rows_with_oi}/{len(strategy_rows)} candidatos tienen este dato — se va poblando con cada análisis nuevo.")
 
+    col9, col10 = st.columns(2)
+    with col9:
+        exclude_earnings = st.checkbox("Excluir candidatos con earnings antes del vencimiento")
+        rows_with_earnings_data = sum(1 for r in strategy_rows if r["Earnings antes del vencimiento"] is not None)
+        if rows_with_earnings_data < len(strategy_rows):
+            st.caption(
+                f"⚠️ Solo {rows_with_earnings_data}/{len(strategy_rows)} candidatos tienen este dato — "
+                "los que no lo tienen NO se excluyen (no hay forma de saber si son seguros)."
+            )
+    with col10:
+        exclude_fomc = st.checkbox("Excluir candidatos con reunión FOMC antes del vencimiento")
+        if fed_meeting_date is None:
+            st.caption("⚠️ Dato de próxima reunión FOMC no disponible todavía.")
+
     filtered_rows = apply_filters(
         strategy_rows,
         dte_range=dte_range,
@@ -117,6 +147,8 @@ else:
         moneyness_buckets=moneyness_buckets or None,
         instrument_types=selected_instrument_types or None,
         min_probability_otm=min_prob_otm if min_prob_otm > 0 else None,
+        exclude_earnings_before_expiration=exclude_earnings,
+        exclude_fomc_before_expiration=exclude_fomc,
     )
 
     st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
@@ -133,6 +165,9 @@ else:
         st.info(f"Ningún candidato cumple esta combinación de filtros — probá aflojar alguno.{hint}", icon="🔎")
     else:
         df = pd.DataFrame(filtered_rows)
+        _tristate_labels = {True: "⚠️ Sí", False: "No", None: "N/D"}
+        df["Earnings antes del vencimiento"] = df["Earnings antes del vencimiento"].map(_tristate_labels)
+        df["FOMC antes del vencimiento"] = df["FOMC antes del vencimiento"].map(_tristate_labels)
         st.dataframe(
             df,
             use_container_width=True,
