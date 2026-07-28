@@ -5,24 +5,26 @@ vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y
 es el estado ACTUAL de qué falta.
 
 Última actualización: 2026-07-28 (madrugada — Pestaña Operaciones, Fed/FRED, Calendario de
-earnings por rango, los 4 bugs urgentes, la vista tabla en Escaneo, y la Pestaña Screener,
-todos terminados y verificados; ajustes estéticos de la página General en curso).
+earnings por rango, los 4 bugs urgentes, la vista tabla en Escaneo, la Pestaña Screener, y los
+ajustes estéticos de la página General, todos terminados y verificados).
 
 ## En progreso ahora
 
-Ajustes estéticos de la página General (pedido 2026-07-28): nuevo título, quitar subtítulo/
-métricas/texto de navegación, reorganizar el layout restante.
+Ninguno. Sigue el punto 1 de "Pendiente" abajo (Simulador de escenarios en Portafolio real).
 
-## Hallazgo sin resolver — scheduler dejó de correr ~2h46m
+## Hallazgo sin resolver — scheduler dejó de correr ~2h46m el 2026-07-27
 
 Durante la investigación del bug #24, se encontró que el proceso del scheduler dejó de
 ejecutar sus jobs entre las 15:48 y 18:34 del 2026-07-27 (se ve en `data/logs/scheduler.err.log`
 como jobs "missed" en vez de ejecutados). Causa no confirmada — posible suspensión de la
 laptop, aunque hay un `caffeinate` corriendo hace 92h que en teoría debería prevenir sleep por
-inactividad, así que no es la explicación obvia. No bloqueó nada esta vez (el detector alcanzó
-a agarrar todo en la corrida manual siguiente), pero si el scheduler se cae de nuevo por horas
-podría hacer perder operaciones reales de verdad. Investigar de nuevo si vuelve a pasar — por
-ahora el proceso está corriendo y al día.
+inactividad, así que no es la explicación obvia. No bloqueó nada esa vez (el detector alcanzó
+a agarrar todo en la corrida manual siguiente). **Estado al cierre de esta sesión (madrugada
+2026-07-28)**: proceso del scheduler vivo y confirmado (`ps aux`); su inactividad actual es
+ESPERADA, no el mismo bug — los crons de `periodic_poll` y `real_trade_detection` solo corren
+en horario de mercado (`hour='9-16'`), así que correctamente esperan hasta las 09:00 ET de
+mañana en vez de disparar de noche. Si el scheduler se cae de nuevo POR HORAS DURANTE horario
+de mercado, sí podría hacer perder operaciones reales — investigar de nuevo si vuelve a pasar.
 
 ## Pendiente, no empezado — orden confirmado por el usuario 2026-07-26/27
 
@@ -311,6 +313,14 @@ ahora el proceso está corriendo y al día.
     scanner_table, screener_filters) — 445/445 en verde. **Pedido aparte cumplido**: barrida
     completa de referencias a "Barchart" (código/comentarios/UI) — era solo inspiración de
     diseño del usuario, no debía aparecer en el producto; 0 ocurrencias confirmadas con grep.
+30. **Ajustes estéticos de la página General** (pedido 2026-07-28): título nuevo "Stock Market
+    Overview" (antes "Options Income Advisor — Fase 1"), sin subtítulo. Quitado el bloque de 3
+    métricas (Modo de broker/Símbolos monitoreados/Umbral) y el bloque de texto de navegación
+    final (lista de las 8 páginas) — layout reorganizado sin esos huecos: header + badges de
+    sesión/volatilidad, ticker, aviso de modo mock (si aplica), botón de análisis, y los 3
+    paneles de datos (Market Movers, Portafolio, Contexto macro) con separadores consistentes.
+    Verificado en navegador en vivo — termina limpio después del panel macro, sin texto
+    colgando. 445/445 tests en verde (cambio puramente de presentación, sin tests nuevos).
 
 ## Cómo se usa este archivo
 
