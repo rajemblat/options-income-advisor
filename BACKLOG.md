@@ -324,6 +324,11 @@ ahora el proceso está corriendo y al día.
     por separado con datos reales de Schwab que un candidato nuevo sí los trae
     (open_interest=16305, volume=1726 en un put real de AAPL) — se van a ir poblando con cada
     análisis nuevo. 17 tests nuevos (payoff, repository, scanner_table) — 408/408 en verde.
+    **Confirmado el 2026-07-28 a pedido del usuario**: el orden por columna de `st.dataframe`
+    es nativo de Streamlit (glide-data-grid), sin JS adicional — primer clic en un encabezado
+    ordena ascendente (flecha ↑), segundo clic en el MISMO encabezado alterna a descendente
+    (flecha ↓), igual que cualquier spreadsheet. Verificado en navegador con capturas antes/
+    clic 1/clic 2 sobre la columna Moneyness (%) con datos reales.
 
 ## Cómo se usa este archivo
 
