@@ -4,48 +4,25 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-27 (noche — Pestaña Operaciones, Fed/FRED y Calendario de earnings
-por rango terminados; resolviendo 4 bugs urgentes reportados en vivo).
+Última actualización: 2026-07-27 (noche — Pestaña Operaciones, Fed/FRED, Calendario de earnings
+por rango, y los 4 bugs urgentes reportados en vivo, todos terminados y verificados).
 
 ## En progreso ahora
 
-Bugs urgentes reportados en vivo 2026-07-27 (noche), en el orden que pidió el usuario — ver
-sección de abajo para el detalle de cada uno. #1 (Operaciones no detectaba) ya resuelto y
-verificado. Siguiendo con #2 (earnings AMD/MSFT faltantes).
+Ninguno. Los 4 bugs urgentes de esta noche (ver "Terminado y verificado" #24-27) están
+resueltos y verificados con evidencia real. Sigue el punto 1 de "Pendiente" abajo (vista tabla
+estilo Barchart en Escaneo).
 
-## Bugs urgentes reportados en vivo — 2026-07-27 (noche), estado
+## Hallazgo sin resolver — scheduler dejó de correr ~2h46m
 
-1. **RESUELTO Y VERIFICADO — Operaciones no detectaba las operaciones reales de hoy**: root
-   cause encontrado con el endpoint real `/orders` de Schwab (no expuesto antes en el código,
-   usado acá puntualmente para diagnosticar): el usuario abrió 3 posiciones nuevas hoy entre
-   las 13:00-13:04 EDT (AMD 260904P00325000, EWY 260904P00130000, y un roll de SOFI de
-   Aug21→Sep18 $21P) — pero mi propio script de siembra del baseline de anoche (para la demo de
-   TSLA, corrido a las ~13:41 EDT) capturó el estado de la cuenta EN ESE MOMENTO como "ya
-   existente", tragándose silenciosamente esas 3 operaciones reales sin alertar. El AMD se
-   cerró horas después (15:12 EDT, buy-to-close) — no se generó alerta retroactiva para esa
-   (ya no es una posición abierta, y el usuario confirmó que por ahora solo quiere APERTURAS,
-   no cierres). EWY y SOFI siguen abiertas: generadas manualmente con los datos reales del fill
-   de Schwab (`_build_and_persist_real_trade_alert` llamado directo, `trade_ts` corregido al
-   horario real de cada fill) y verificadas en navegador — aparecen con P&L real, POP real,
-   narración real de Claude. Confirmado con una corrida de detección posterior: 0 nuevas (ya no
-   queda nada pendiente). Esto fue un efecto secundario puntual de MI script manual de anoche,
-   no un bug de la lógica de detección en sí — de acá en adelante (sin más siembras manuales)
-   no debería repetirse. **Hallazgo aparte, sin resolver todavía**: el proceso del scheduler
-   dejó de ejecutar el cron de detección entre las 15:48 y 18:34 (~2h46m sin correr, se ve en
-   `data/logs/scheduler.err.log` como jobs "missed" en vez de ejecutados) — causa no confirmada
-   (posible suspensión de la laptop; hay un `caffeinate` corriendo hace 92h que debería
-   prevenir sleep por inactividad, así que no es la explicación obvia). Si vuelve a pasar,
-   investigar de nuevo — por ahora el scheduler está corriendo y al día.
-2. **En progreso — Calendario de earnings no muestra AMD/MSFT** (reportado, ambos tienen
-   earnings esta semana): investigando si es límite de resultados, filtro de fecha, o problema
-   puntual del endpoint de Finnhub para esos símbolos.
-3. **Pendiente — Eventos de riesgo mezclado con earnings**: separar para que esa página muestre
-   SOLO eventos de la Fed (FOMC/CPI/empleo) con los niveles alto/medio/bajo ya existentes; los
-   earnings de símbolos individuales quedan solo en el Calendario de earnings nuevo (#1 de
-   "Pendiente" antes de este bug, hoy dentro de esta misma página — hay que separarlas en
-   páginas o secciones distintas).
-4. **Pendiente — Watchlist sin precio ni % de cambio**: agregar precio actual y % de cambio del
-   día a la tabla.
+Durante la investigación del bug #24, se encontró que el proceso del scheduler dejó de
+ejecutar sus jobs entre las 15:48 y 18:34 del 2026-07-27 (se ve en `data/logs/scheduler.err.log`
+como jobs "missed" en vez de ejecutados). Causa no confirmada — posible suspensión de la
+laptop, aunque hay un `caffeinate` corriendo hace 92h que en teoría debería prevenir sleep por
+inactividad, así que no es la explicación obvia. No bloqueó nada esta vez (el detector alcanzó
+a agarrar todo en la corrida manual siguiente), pero si el scheduler se cae de nuevo por horas
+podría hacer perder operaciones reales de verdad. Investigar de nuevo si vuelve a pasar — por
+ahora el proceso está corriendo y al día.
 
 ## Pendiente, no empezado — orden confirmado por el usuario 2026-07-26/27
 
@@ -266,9 +243,51 @@ verificado. Siguiendo con #2 (earnings AMD/MSFT faltantes).
     una sola llamada a Finnhub (`finnhub_client.get_earnings_calendar_range`, sin filtro de
     symbol) en vez de una consulta por símbolo. Columna "En mi watchlist" distingue el origen.
     Verificado en navegador en vivo (6 earnings reales de la watchlist, 1235 con universo
-    amplio). 15 tests nuevos — 394/394 en verde. **Nota 2026-07-27**: el usuario reportó que
-    AMD/MSFT (earnings esta semana) no aparecían — bug real bajo investigación, ver sección de
-    bugs urgentes arriba, todavía sin resolver al momento de este commit.
+    amplio). 15 tests nuevos — 394/394 en verde. **Nota**: el usuario reportó después que
+    AMD/MSFT no aparecían — root cause y fix en el punto #25 de abajo.
+24. **Bug real encontrado y corregido: Operaciones no detectaba operaciones reales de hoy**
+    (reportado 2026-07-27 noche). Root cause encontrado con el endpoint real `/orders` de
+    Schwab (no expuesto antes en el código, usado acá puntualmente para diagnosticar): el
+    usuario abrió 3 posiciones nuevas esa mañana entre las 13:00-13:04 EDT (AMD
+    260904P00325000, EWY 260904P00130000, y un roll de SOFI de Aug21→Sep18 $21P) — pero el
+    script manual de siembra del baseline de la noche anterior (para la demo de TSLA, corrido a
+    las ~13:41 EDT) capturó el estado de la cuenta EN ESE MOMENTO como "ya existente",
+    tragándose silenciosamente esas 3 operaciones reales sin alertar. El AMD ya se había
+    cerrado para cuando se investigó (15:12 EDT, buy-to-close) — sin alerta retroactiva para
+    esa (el usuario confirmó que por ahora solo quiere APERTURAS, no cierres). EWY y SOFI
+    seguían abiertas: generadas manualmente con los datos reales del fill de Schwab
+    (`_build_and_persist_real_trade_alert` llamado directo, `trade_ts` corregido al horario
+    real de cada fill) y verificadas en navegador — P&L real, POP real, narración real de
+    Claude. Confirmado con una corrida de detección posterior: 0 pendientes. Fue un efecto
+    secundario puntual del script manual de la noche anterior, no un bug de la lógica de
+    detección en sí — sin más siembras manuales no debería repetirse (ver hallazgo aparte del
+    scheduler más arriba, sin resolver).
+25. **Bug real encontrado y corregido: AMD/MSFT no aparecían en Eventos de riesgo** (reportado
+    2026-07-27 noche). Root cause: la página usaba solo `get_symbols()` (los 15 símbolos fijos)
+    para armar `earnings_by_symbol`, en vez de la unión con la watchlist REAL de thinkorswim
+    (~96 símbolos) que ya usa Escaneo — AMD no está en la lista corta, nunca aparecía sin
+    marcar "universo amplio" aunque ya tuviera el dato en la DB. MSFT sí estaba en la lista
+    corta y ya funcionaba (confirmado con datos reales antes de tocar nada). Fix: unión de
+    `get_symbols()` + `load_priority_watchlist_symbols()`, mismo patrón que Escaneo. Verificado
+    en navegador en vivo: AMD (2026-08-04, visible con "Próximos 30 días") y MSFT (2026-07-29)
+    ambos correctos, marcados "En mi watchlist".
+26. **Eventos de riesgo separado del Calendario de earnings** (pedido 2026-07-27): la sección de
+    arriba ahora muestra SOLO eventos de la Fed (FOMC/CPI/empleo, niveles alto/medio/bajo ya
+    existentes) — earnings de símbolos individuales quedan exclusivamente en el Calendario de
+    earnings de más abajo. Cambio mínimo: `build_risk_calendar(upcoming_events, {}, ...)` en vez
+    de pasar `earnings_by_symbol` — esa función ya soportaba earnings vacío sin cambios de
+    código. Verificado en navegador en vivo: la lista de arriba quedó 100% FOMC/PBI/Nonfarm
+    Payrolls/CPI, sin earnings mezclados.
+27. **Watchlist: agrega precio actual y % de cambio del día** (pedido 2026-07-27) — vía
+    cotización EN VIVO (`cached_quotes`, 60s cache, mismo mecanismo que el ticker de la página
+    General), distinto del "Precio (snapshot)" ya existente (renombrado para desambiguar, es el
+    precio DE CUANDO CORRIÓ el último análisis, el que hay que mirar para interpretar el RSI/SMA
+    de esa misma fila). Verificado en navegador en vivo con datos reales (AMD -5.84%, coincide
+    con la caída real observada esa misma noche).
+
+    (24-27: 0 tests nuevos combinados — todos son cableado de datos ya testeados o cambios de
+    página sin lógica nueva; verificados en navegador con datos reales de producción en cada
+    caso. 394/394 tests del repo en verde en todo momento.)
 
 ## Cómo se usa este archivo
 
