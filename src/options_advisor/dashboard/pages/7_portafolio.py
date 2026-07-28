@@ -14,6 +14,7 @@ from options_advisor.dashboard.portfolio_analysis import (
     effective_projected_pnl_at_own_expiration,
     find_matching_contract_iv,
     position_pct_return,
+    scenario_price,
 )
 from options_advisor.dashboard.portfolio_narration import narrate_portfolio
 from options_advisor.broker.models import index_quote_symbol
@@ -182,6 +183,76 @@ else:
                     "P&L hoy": st.column_config.NumberColumn(format="$%.2f"),
                     f"P&L proyectado ({target_date})": st.column_config.NumberColumn(format="$%.2f"),
                 },
+            )
+
+        st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
+        st.subheader("Simulador de escenarios")
+        st.caption(
+            "\"¿Qué pasa si el mercado se mueve X% HOY?\": aplica el mismo % a TODOS los subyacentes de tus "
+            "posiciones abiertas por igual — no una predicción real (cada símbolo se mueve distinto en la "
+            "práctica), sino una foto rápida de cuánto te afectaría un movimiento uniforme del mercado."
+        )
+
+        scenario_col1, scenario_col2 = st.columns(2)
+        with scenario_col1:
+            scenario_direction_label = st.radio("Dirección", ["Alcista", "Bajista", "Neutral"], horizontal=True)
+            scenario_direction = {"Alcista": "alcista", "Bajista": "bajista", "Neutral": "neutral"}[scenario_direction_label]
+        with scenario_col2:
+            scenario_pct = st.slider("% de movimiento", min_value=0, max_value=50, value=10, disabled=scenario_direction == "neutral")
+
+        if st.button("Simular escenario", type="primary"):
+            option_positions_needing_chain = [p for p in filtered if p.asset_type == "OPTION" and p.expiration and p.expiration > date.today()]
+            underlyings_needing_chain = sorted({index_quote_symbol(p.underlying_symbol) for p in option_positions_needing_chain if p.underlying_symbol})
+
+            with st.spinner(f"Pidiendo cadenas de opciones en vivo para {len(underlyings_needing_chain)} subyacente(s)..."):
+                chains = {}
+                for u in underlyings_needing_chain:
+                    max_dte = max(
+                        (p.expiration - date.today()).days for p in option_positions_needing_chain if index_quote_symbol(p.underlying_symbol) == u
+                    )
+                    try:
+                        chains[u] = broker.get_option_chain(u, expiration_range_days=(0, max_dte + 5))
+                    except Exception:
+                        chains[u] = None
+
+                scenario_rows = []
+                for p in filtered:
+                    current_price = quotes[_underlying_of(p)].last_price if _underlying_of(p) in quotes else None
+                    scenario_underlying_price = scenario_price(current_price, scenario_direction, scenario_pct) if current_price else None
+                    iv = None
+                    if p.asset_type == "OPTION" and p.expiration and p.expiration > date.today():
+                        chain = chains.get(index_quote_symbol(p.underlying_symbol)) if p.underlying_symbol else None
+                        iv = find_matching_contract_iv(chain, p) if chain else None
+                    scenario_pnl = effective_projected_pnl_at_date(p, scenario_underlying_price, date.today(), iv, settings.market.risk_free_rate)
+                    scenario_rows.append({"Símbolo": _display_symbol(p), "P&L hoy": p.unrealized_pnl, "P&L en el escenario": scenario_pnl})
+
+            scenario_df = pd.DataFrame(scenario_rows)
+            known_scenario = scenario_df["P&L en el escenario"].dropna()
+            total_scenario = known_scenario.sum()
+            unknown_scenario_count = scenario_df["P&L en el escenario"].isna().sum()
+
+            st.metric(
+                f"P&L total si el mercado va {scenario_direction_label.lower()} {scenario_pct}%",
+                f"${total_scenario:,.2f}",
+                delta=f"{total_scenario - total_pnl:,.2f} vs. hoy",
+            )
+            if unknown_scenario_count:
+                st.caption(f"⚠️ {unknown_scenario_count} posición(es) sin proyección (no se encontró el contrato en la cadena en vivo).")
+
+            st.dataframe(
+                scenario_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "P&L hoy": st.column_config.NumberColumn(format="$%.2f"),
+                    "P&L en el escenario": st.column_config.NumberColumn(format="$%.2f"),
+                },
+            )
+            st.warning(
+                "Simplificación: TODOS los subyacentes se mueven el mismo % en la misma dirección — en la "
+                "realidad, cada símbolo reacciona distinto (correlación imperfecta entre activos), así que "
+                "esto no es una predicción de tu P&L real, solo una referencia de sensibilidad del portafolio.",
+                icon="⚠️",
             )
 
         st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)

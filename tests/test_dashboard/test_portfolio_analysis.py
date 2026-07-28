@@ -18,6 +18,7 @@ from options_advisor.dashboard.portfolio_analysis import (
     projected_pnl_at_date,
     projected_pnl_at_own_expiration,
     reprice_option_bsm,
+    scenario_price,
 )
 
 RISK_FREE_RATE = 0.045
@@ -219,3 +220,28 @@ def test_compute_earnings_clusters_ignores_symbols_without_earnings_date():
 def test_compute_earnings_clusters_no_cluster_when_all_far_apart():
     earnings = {"AAPL": date(2026, 7, 28), "MSFT": date(2026, 9, 15)}
     assert compute_earnings_clusters(earnings, window_days=10) == []
+
+
+# --- scenario_price (Sección 'Simulador de escenarios en Portafolio real', pedido 2026-07-26) ---
+
+
+def test_scenario_price_alcista_increases_price():
+    assert scenario_price(100.0, "alcista", 10.0) == pytest.approx(110.0)
+
+
+def test_scenario_price_bajista_decreases_price():
+    assert scenario_price(100.0, "bajista", 10.0) == pytest.approx(90.0)
+
+
+def test_scenario_price_neutral_leaves_price_unchanged():
+    assert scenario_price(100.0, "neutral", 10.0) == 100.0
+
+
+def test_scenario_price_neutral_ignores_pct_move():
+    """Neutral no debe verse afectado por el % elegido, sea cual sea."""
+    assert scenario_price(100.0, "neutral", 50.0) == 100.0
+
+
+def test_scenario_price_zero_pct_move_is_a_no_op_regardless_of_direction():
+    assert scenario_price(100.0, "alcista", 0.0) == 100.0
+    assert scenario_price(100.0, "bajista", 0.0) == 100.0

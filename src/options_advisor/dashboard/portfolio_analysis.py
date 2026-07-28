@@ -113,6 +113,19 @@ def effective_projected_pnl_at_date(
     return projected_pnl_at_date(position, underlying_price, target_date, iv, risk_free_rate)
 
 
+def scenario_price(current_price: float, direction: str, pct_move: float) -> float:
+    """Precio hipotético del subyacente bajo un escenario uniforme (Sección 'Simulador de
+    escenarios en Portafolio real', pedido 2026-07-26) — alcista sube `pct_move`%, bajista
+    baja `pct_move`%, neutral no cambia. Simplificación deliberada: TODOS los subyacentes se
+    mueven el mismo %, no una predicción real de correlación entre ellos (ver disclaimer en la
+    página). `direction` es uno de "alcista"/"bajista"/"neutral"."""
+    if direction == "alcista":
+        return current_price * (1 + pct_move / 100)
+    if direction == "bajista":
+        return current_price * (1 - pct_move / 100)
+    return current_price
+
+
 def compute_concentration(underlying_values: list[tuple[str, float]]) -> list[dict]:
     """% del valor total del portafolio (valor absoluto de mercado, para que cortos y largos
     sumen exposición en vez de cancelarse) por símbolo subyacente — Entrega 3 (análisis de
