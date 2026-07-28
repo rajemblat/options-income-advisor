@@ -69,6 +69,38 @@ def test_cash_secured_put():
     assert result.legs[0]["volume"] == 10
 
 
+def test_cash_secured_put_real_trade_uses_fill_price_not_mark():
+    """Bug real reportado 2026-07-28 (posición real de HOOD, Cash-Secured Put $75, 2 contratos):
+    el mark price ACTUAL de la cadena en vivo era $2.87, pero el fill real del usuario fue
+    $3.15 — el sistema calculaba breakeven/prima/riesgo máximo con el mark, no con lo que el
+    usuario realmente cobró. `Leg.override_premium` (seteado por
+    `candidates.build_from_contract(..., entry_price=...)`, usado por operaciones reales en
+    `alerts/real_trades.py`) debe ganarle a `contract.mid_price` en el cálculo."""
+    short = _contract("put", strike=75.0, mid=2.87, dte=30)  # mid=2.87 = mark actual, NO el fill real
+    build = CandidateBuild(
+        strategy_type=c.CASH_SECURED_PUT,
+        expiration_date=short.expiration,
+        strikes={"short_strike": 75.0},
+        net_greeks={},
+        greeks_source="broker",
+        legs=[Leg("sell", short, 2, override_premium=3.15)],  # fill real del usuario
+    )
+    result = payoff.compute_payoff(build, underlying_price=80.0, as_of=AS_OF, risk_free_rate=RISK_FREE_RATE)
+
+    # Prima total: 3.15 x 100 x 2 = $630 (no 2.87 x 100 x 2 = $574)
+    assert result.net_premium == pytest.approx(630.0, abs=0.01)
+    # Riesgo máximo: (75 x 200) - 630 = $14,370 (no $14,426 con el mark)
+    assert result.max_loss == pytest.approx(14370.0, abs=0.01)
+    # Breakeven: 75 - 3.15 = $71.85 (no $72.13 con el mark)
+    assert result.breakevens == [pytest.approx(71.85, abs=0.01)]
+
+    # El bid/ask real de mercado NO se toca (sigue siendo el spread real, para
+    # assess_liquidity) — solo cambia qué precio se usa para prima/P&L.
+    assert result.legs[0]["bid"] == short.bid
+    assert result.legs[0]["ask"] == short.ask
+    assert result.legs[0]["premium"] == 3.15
+
+
 # --- probability_otm (Sección 'Pestaña Screener', pedido 2026-07-27) ---
 
 

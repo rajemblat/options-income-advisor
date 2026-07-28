@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 
 import pytest
@@ -161,6 +162,31 @@ def test_detect_and_alert_real_trades_generates_alert_for_new_short_put(conn, mo
     assert rows[0]["symbol"] == "TSLA"
     assert rows[0]["strike"] == 320.0
     assert rows[0]["max_loss"] is not None
+
+
+def test_detect_and_alert_real_trades_uses_real_fill_price_not_mark(conn, monkeypatch):
+    """Bug real reportado 2026-07-28 (posición real de HOOD): la prima/breakeven/riesgo máximo
+    se calculaban con el mark price ACTUAL de la cadena en vez del fill real de la operación ya
+    ejecutada (`average_price` que Schwab sí reporta por posición). Acá el fill real (6.0)
+    difiere a propósito del mid del contrato (5.5, de bid=5.4/ask=5.6) para que el test falle
+    si algo vuelve a usar el mark en vez del fill."""
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    position = _short_put_position(quantity=-1.0, average_price=6.0)
+    chain = OptionChain(symbol="TSLA", as_of=TODAY, underlying_price=330.0, contracts=[_tsla_put_contract()])
+    quote = Quote(symbol="TSLA", as_of=TODAY, last_price=330.0, bid=329.9, ask=330.1)
+    broker = _FakeBroker(positions=[position], chain=chain, quote=quote)
+
+    real_trades.detect_and_alert_real_trades(
+        broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
+    )
+
+    rows = repo.get_real_trade_alerts(conn)
+    assert len(rows) == 1
+    # 6.0 x 100 x 1 = $600 (no 5.5 x 100 = $550 con el mid del contrato)
+    assert rows[0]["net_premium"] == pytest.approx(600.0, abs=0.01)
+    # breakeven: 320 - 6.0 = 314.0 (no 314.5 con el mid)
+    breakevens = json.loads(rows[0]["breakevens_json"])
+    assert breakevens == pytest.approx([314.0], abs=0.01)
 
 
 def test_detect_and_alert_real_trades_persists_position_snapshot(conn, monkeypatch):

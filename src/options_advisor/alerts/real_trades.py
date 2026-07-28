@@ -98,7 +98,7 @@ def _build_and_persist_real_trade_alert(
         return None
 
     strategy_type = _resolve_strategy_type(option_type, share_positions, underlying_symbol, contracts_added)
-    build = candidate_builder.build_from_contract(strategy_type, contract, contracts_added)
+    build = candidate_builder.build_from_contract(strategy_type, contract, contracts_added, entry_price=position.average_price)
     payoff = payoff_calc.compute_payoff(build, quote.last_price, today, settings.market.risk_free_rate)
 
     recent_news = finnhub_client.get_recent_news(underlying_symbol, today, finnhub_api_key)

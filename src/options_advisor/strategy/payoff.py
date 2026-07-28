@@ -48,7 +48,7 @@ def _leg_dict(leg: Leg) -> dict:
         "option_type": ct.option_type,
         "strike": ct.strike,
         "expiration": ct.expiration.isoformat(),
-        "premium": ct.mid_price,
+        "premium": _leg_premium(leg),
         "implied_volatility": ct.implied_volatility,
         # bid/ask crudos (no solo el mid_price ya usado para "premium") — hacen falta para
         # advertir sobre spreads anchos, ver alerts/formatting.py::assess_liquidity.
@@ -117,10 +117,17 @@ def _intrinsic(option_type: str, strike: float, price: float) -> float:
     return max(0.0, strike - price)
 
 
+def _leg_premium(leg: Leg) -> float:
+    """Precio por acción de esta pata para prima/P&L — el fill REAL (`override_premium`) si la
+    pata ya está ejecutada, si no el mark price actual de la cadena (`mid_price`, candidatos
+    hipotéticos)."""
+    return leg.contract.mid_price if leg.override_premium is None else leg.override_premium
+
+
 def _net_premium(legs: list[Leg]) -> float:
     total = 0.0
     for leg in legs:
-        amount = leg.quantity * leg.contract.mid_price * _CONTRACT_MULTIPLIER
+        amount = leg.quantity * _leg_premium(leg) * _CONTRACT_MULTIPLIER
         total += amount if leg.side == "sell" else -amount
     return total
 

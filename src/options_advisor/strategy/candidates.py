@@ -21,6 +21,14 @@ class Leg(NamedTuple):
     side: str  # "sell" | "buy"
     contract: OptionContract
     quantity: int = 1
+    # Precio REAL de ejecución de esta pata (por acción, ej. 3.15) — solo para operaciones
+    # reales YA ejecutadas (ver build_from_contract/alerts/real_trades.py). Cuando está seteado,
+    # reemplaza `contract.mid_price` para el cálculo de prima/P&L (bug real encontrado
+    # 2026-07-28: usaba el mark price ACTUAL de la cadena en vivo en vez del fill real del
+    # usuario, dando breakeven/prima/riesgo máximo incorrectos). `contract.bid`/`ask` NO se
+    # tocan — siguen siendo el spread real de mercado, correcto para advertir liquidez
+    # (assess_liquidity), que es una pregunta distinta ("¿es operable ahora?", no "¿qué pagué?").
+    override_premium: float | None = None
 
 
 class CandidateBuild(NamedTuple):
@@ -439,19 +447,22 @@ def find_contract(chain: OptionChain, option_type: OptionType, expiration: date,
     return None
 
 
-def build_from_contract(strategy_type: str, contract: OptionContract, quantity: int) -> CandidateBuild:
+def build_from_contract(strategy_type: str, contract: OptionContract, quantity: int, entry_price: float | None = None) -> CandidateBuild:
     """Arma un CandidateBuild de una sola pata VENDIDA a partir de un contrato YA CONOCIDO
     (strike/vencimiento fijos, no elegidos por delta) — usado para operaciones reales ya
     ejecutadas, donde el strike lo decidió el usuario al operar, no el motor. `quantity` son
     los contratos de ESTA operación puntual (puede ser menos que el total de la posición si ya
-    había contratos vendidos antes, ver alerts/real_trades.py::_detect_new_short_trades)."""
+    había contratos vendidos antes, ver alerts/real_trades.py::_detect_new_short_trades).
+    `entry_price`: precio REAL de ejecución (Schwab `averageShortPrice`) — cuando se pasa, la
+    prima/P&L se calculan con ESE precio en vez del mark price actual de la cadena en vivo (ver
+    `Leg.override_premium`), porque una operación real ya tiene un precio fijo, no uno hipotético."""
     return CandidateBuild(
         strategy_type=strategy_type,
         expiration_date=contract.expiration,
         strikes={"short_strike": contract.strike},
         net_greeks=_position_greeks(contract, is_short=True, quantity=quantity),
         greeks_source=_greeks_source(contract),
-        legs=[Leg("sell", contract, quantity)],
+        legs=[Leg("sell", contract, quantity, override_premium=entry_price)],
     )
 
 

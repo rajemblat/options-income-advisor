@@ -305,5 +305,14 @@ def test_build_from_contract_single_short_leg(chain):
     assert build.legs[0].side == "sell"
     assert build.legs[0].quantity == 2
     assert build.legs[0].contract is contract
+    assert build.legs[0].override_premium is None
     # delta neta escalada por quantity (2 contratos), signo negativo por estar vendida
     assert build.net_greeks["delta"] == pytest.approx(-2 * contract.greeks.delta, abs=1e-6)
+
+
+def test_build_from_contract_with_entry_price_sets_override_premium(chain):
+    """Bug real 2026-07-28: sin `entry_price`, la prima se calculaba con el mark ACTUAL de la
+    cadena en vez del fill real de la operación ya ejecutada."""
+    contract = find_contract(chain, "put", _REAL_TRADE_EXPIRATION, _REAL_TRADE_STRIKE)
+    build = build_from_contract(c.CASH_SECURED_PUT, contract, quantity=2, entry_price=3.15)
+    assert build.legs[0].override_premium == 3.15

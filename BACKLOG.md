@@ -6,7 +6,8 @@ es el estado ACTUAL de qué falta.
 
 Última actualización: 2026-07-28 (mañana — scheduler colgado durante horario de mercado
 diagnosticado y arreglado, bug real de Market Movers corregido, BTC real intentado y pausado a
-pedido del usuario, ver secciones dedicadas abajo).
+pedido del usuario, y bug real de Operaciones usando mark price en vez del fill real corregido
+con las 4 alertas históricas recalculadas — ver secciones dedicadas abajo).
 
 ## En progreso ahora
 
@@ -401,6 +402,37 @@ Ninguno.
     Ganadoras (KO +2.88%, MDT +2.65%, AAPL +1.21%) y Perdedoras (GLW -13.79%, MU -6.85%, INTC
     -5.44%, PLTR, SMCI, TSLA, NVDA) sin overlap y sin ceros. 6 tests nuevos
     (`test_components.py`) — 466/466 en verde.
+35. **Bug real encontrado y corregido: Operaciones calculaba prima/breakeven/riesgo máximo con
+    el MARK price actual de la cadena en vivo, no con el fill REAL de la operación** (reportado
+    2026-07-28 con una posición real de HOOD Cash-Secured Put — verificación matemática exacta
+    del usuario: breakeven correcto $71.85 vs. $72.13 mostrado, prima $630 vs. $574, riesgo
+    máximo $14,370 vs. $14,426). Root cause: `strategy/payoff.py::_net_premium` siempre usaba
+    `leg.contract.mid_price` (bid/ask de la cadena pedida al momento del análisis), aunque
+    `alerts/real_trades.py` YA tenía el fill real disponible en `position.average_price`
+    (Schwab lo reporta por posición) — nunca se lo pasaba al motor de payoff. Presente desde el
+    lanzamiento de la Pestaña Operaciones (2026-07-25/26), afectaba las 4 alertas reales
+    generadas hasta ahora, no solo HOOD.
+    Fix: `strategy/candidates.py::Leg` suma un campo `override_premium` (último, con default
+    `None` — no rompe ninguna otra estrategia del motor de candidatos, que sigue usando
+    `mid_price` porque ahí sí es una operación hipotética); `build_from_contract(...,
+    entry_price=...)` lo setea; `payoff.py::_leg_premium()` prioriza `override_premium` sobre
+    `mid_price` en `_net_premium` y en el campo `"premium"` de `_leg_dict`.
+    `alerts/real_trades.py` pasa `entry_price=position.average_price`. Importante: `bid`/`ask`
+    del contrato NO se tocan — siguen siendo el spread real de mercado, correcto para
+    `assess_liquidity` (advertir sobre spreads anchos es una pregunta de "¿es operable ahora?",
+    distinta de "¿qué pagué?").
+    **Límite conocido**: si Schwab ya reporta un `average_price` BLENDEADO (posición con varios
+    lotes del mismo contrato comprados/vendidos en momentos distintos), el precio usado es el
+    promedio de TODOS los lotes al momento de la detección, no necesariamente el fill exacto
+    del lote incremental — mejor que el mark price, pero no perfecto. Fase 2 (no implementada,
+    mismo espíritu que la Fase 2 de rolls): confirmar vía `/orders` de Schwab.
+    Verificado con la posición real de HOOD: los 3 números del fix coinciden EXACTO con el
+    cálculo manual del usuario. Las 4 alertas reales históricas corregidas retroactivamente en
+    la DB (HOOD, TSLA, EWY x2 — una de ellas con fill real distinto al promedio actual de la
+    cuenta, corregida con recálculo matemático directo en vez de repedir datos en vivo, para no
+    aplicarle el promedio blendeado ACTUAL a un fill que ya no lo representa). Verificado en
+    navegador en vivo: las 4 tarjetas muestran números y comentario consistentes. 3 tests
+    nuevos (`test_payoff.py`, `test_candidates.py`, `test_real_trades.py`) — 465/465 en verde.
 
 ## Cómo se usa este archivo
 
