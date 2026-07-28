@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from py_vollib.black_scholes_merton import black_scholes_merton
@@ -11,6 +11,7 @@ from py_vollib.black_scholes_merton import black_scholes_merton
 from options_advisor.broker.base import BrokerClient
 from options_advisor.broker.models import (
     AccountPosition,
+    FilledOrder,
     Greeks,
     Mover,
     OptionChain,
@@ -58,6 +59,9 @@ class MockBrokerClient(BrokerClient):
         return {}  # sin cuentas reales en modo mock — Covered Call/Collar nunca se habilitan acá
 
     def get_all_positions(self) -> list[AccountPosition]:
+        return []  # sin cuentas reales en modo mock
+
+    def get_recent_filled_orders(self, since: datetime) -> list[FilledOrder]:
         return []  # sin cuentas reales en modo mock
 
     def screen_universe(self, symbols: list[str], max_shortlist: int = 60) -> list[str]:

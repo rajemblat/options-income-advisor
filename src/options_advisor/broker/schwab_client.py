@@ -2,14 +2,25 @@ from __future__ import annotations
 
 import logging
 import os
-import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from options_advisor.broker.base import BrokerClient
-from options_advisor.broker.models import AccountPosition, Greeks, Mover, OptionChain, OptionContract, OptionType, PriceBar, Quote
+from options_advisor.broker.models import (
+    AccountPosition,
+    FilledOrder,
+    FilledOrderLeg,
+    Greeks,
+    Mover,
+    OptionChain,
+    OptionContract,
+    OptionType,
+    PriceBar,
+    Quote,
+    parse_occ_option_symbol,
+)
 from options_advisor.broker.schwab_auth import DEFAULT_TOKEN_STORE_PATH, SchwabAuth
 from options_advisor.indicators.greeks import calculate_greeks
 
@@ -19,11 +30,6 @@ MARKET_DATA_BASE_URL = "https://api.schwabapi.com/marketdata/v1"
 TRADER_API_BASE_URL = "https://api.schwabapi.com/trader/v1"
 DEFAULT_RISK_FREE_RATE = 0.045
 
-# Símbolo OCC de un contrato de opción: 6 chars de raíz (rellenados con espacios) + YYMMDD +
-# C/P + strike*1000 en 8 dígitos. Formato estable de la industria (no de Schwab específicamente)
-# — más confiable que parsear el texto libre de `description`.
-_OCC_OPTION_SYMBOL_RE = re.compile(r"^(?P<root>.{6})(?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})(?P<cp>[CP])(?P<strike>\d{8})$")
-
 
 def _parse_schwab_date(raw: str | None) -> date | None:
     if not raw:
@@ -32,6 +38,73 @@ def _parse_schwab_date(raw: str | None) -> date | None:
         return datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
     except ValueError:
         return None
+
+
+def _parse_schwab_datetime(raw: str | None) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _parse_filled_order(raw: dict) -> FilledOrder | None:
+    """Arma un `FilledOrder` a partir de una orden cruda `status=FILLED` de `/orders` — agrega
+    quantity/precio PONDERADO por `legId` a través de todas las ejecuciones de la orden (fills
+    parciales en más de un evento en `orderActivityCollection`), en vez de asumir un solo
+    evento. None si la orden no tiene ninguna pata de OPCIÓN con ejecución matcheada (ej. orden
+    de acciones, o alguna inconsistencia de datos puntual — no debe romper el resto del poll)."""
+    order_id = raw.get("orderId")
+    if order_id is None:
+        return None
+    leg_meta = {
+        leg["legId"]: leg
+        for leg in raw.get("orderLegCollection", [])
+        if leg.get("orderLegType") == "OPTION" and leg.get("instrument", {}).get("symbol")
+    }
+    if not leg_meta:
+        return None
+
+    fills: dict[int, dict] = {}
+    for activity in raw.get("orderActivityCollection", []):
+        for exec_leg in activity.get("executionLegs", []):
+            leg_id = exec_leg.get("legId")
+            if leg_id not in leg_meta:
+                continue
+            qty = exec_leg.get("quantity", 0.0) or 0.0
+            price = exec_leg.get("price", 0.0) or 0.0
+            entry = fills.setdefault(leg_id, {"qty": 0.0, "notional": 0.0, "time": None})
+            entry["qty"] += qty
+            entry["notional"] += qty * price
+            if exec_leg.get("time"):
+                entry["time"] = exec_leg["time"]
+
+    legs: list[FilledOrderLeg] = []
+    latest_time: str | None = None
+    for leg_id, meta in leg_meta.items():
+        fill = fills.get(leg_id)
+        if not fill or fill["qty"] <= 0:
+            continue
+        legs.append(
+            FilledOrderLeg(
+                occ_symbol=meta["instrument"]["symbol"],
+                instruction=meta.get("instruction", ""),
+                position_effect=meta.get("positionEffect", ""),
+                quantity=fill["qty"],
+                price=round(fill["notional"] / fill["qty"], 4),
+            )
+        )
+        if fill["time"] and (latest_time is None or fill["time"] > latest_time):
+            latest_time = fill["time"]
+    if not legs:
+        return None
+
+    fill_time = _parse_schwab_datetime(latest_time or raw.get("closeTime") or raw.get("enteredTime"))
+    if fill_time is None:
+        return None
+
+    return FilledOrder(order_id=order_id, account_number=str(raw.get("accountNumber", "")), fill_time=fill_time, legs=legs)
 
 
 def _classify_instrument_type(entry: dict) -> str | None:
@@ -97,21 +170,6 @@ def _parse_next_ex_dividend_date(fundamental: dict) -> date | None:
         d for d in (_parse_schwab_date(fundamental.get("divExDate")), _parse_schwab_date(fundamental.get("nextDivExDate"))) if d and d >= today
     ]
     return min(candidates) if candidates else None
-
-
-def _parse_occ_option_symbol(symbol: str) -> tuple[str, date, str, float] | None:
-    """(underlying, expiration, option_type, strike) a partir del símbolo OCC, o None si no
-    matchea el formato (posición no es una opción estándar)."""
-    match = _OCC_OPTION_SYMBOL_RE.match(symbol)
-    if not match:
-        return None
-    try:
-        expiration = date(2000 + int(match["yy"]), int(match["mm"]), int(match["dd"]))
-    except ValueError:
-        return None
-    option_type = "call" if match["cp"] == "C" else "put"
-    strike = int(match["strike"]) / 1000
-    return match["root"].strip(), expiration, option_type, strike
 
 
 class SchwabBrokerClient(BrokerClient):
@@ -362,7 +420,7 @@ class SchwabBrokerClient(BrokerClient):
             average_price = position.get("averageLongPrice") if long_qty else position.get("averageShortPrice")
 
             symbol = instrument.get("symbol", "")
-            option_fields = _parse_occ_option_symbol(symbol) if instrument.get("assetType") == "OPTION" else None
+            option_fields = parse_occ_option_symbol(symbol) if instrument.get("assetType") == "OPTION" else None
             underlying_symbol, expiration, option_type, strike = option_fields if option_fields else (
                 instrument.get("underlyingSymbol"), None, None, None
             )
@@ -384,6 +442,46 @@ class SchwabBrokerClient(BrokerClient):
                 )
             )
         return positions
+
+    def get_recent_filled_orders(self, since: datetime) -> list[FilledOrder]:
+        """Órdenes LLENADAS (`status=FILLED`) desde `since` en todas las cuentas vinculadas —
+        reemplaza el diff de posiciones/promedio blendeado de la Fase 1 anterior (Sección
+        'rediseño de Operaciones vía /orders', 2026-07-28): cada orden trae el fill EXACTO de
+        cada pata (`orderActivityCollection[].executionLegs[].price`), y una orden con una
+        pata OPENING + una CLOSING en la MISMA orden es un roll detectable con certeza, sin
+        heurística de ventana temporal entre corridas. `since` debe ser timezone-aware (UTC) —
+        Schwab lo exige así en `fromEnteredTime`. Ventana angosta recomendada (no días): pedir
+        varios días de una sola vez es lento (timeout real observado pidiendo 3 días, ~260
+        órdenes) — se espera que el caller pida algo como los últimos ~15 min con margen sobre
+        la cadencia del cron, no un historial largo."""
+        headers = {"Authorization": f"Bearer {self.auth.get_valid_access_token()}"}
+        from_str = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        to_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        try:
+            response = self._trader_client.get("/accounts/accountNumbers", headers=headers)
+            response.raise_for_status()
+            accounts = response.json()
+        except Exception:
+            logger.exception("Fallo al listar cuentas de Schwab; sin órdenes esta corrida")
+            return []
+
+        orders: list[FilledOrder] = []
+        for account in accounts:
+            try:
+                response = self._trader_client.get(
+                    f"/accounts/{account['hashValue']}/orders",
+                    params={"fromEnteredTime": from_str, "toEnteredTime": to_str, "status": "FILLED"},
+                    headers=headers,
+                )
+                response.raise_for_status()
+                for raw_order in response.json():
+                    parsed = _parse_filled_order(raw_order)
+                    if parsed:
+                        orders.append(parsed)
+            except Exception:
+                logger.exception("Fallo al leer órdenes de la cuenta %s; se continúa con el resto", account.get("accountNumber"))
+        return orders
 
     # Rango de precio y liquidez razonables para vender prima con capital manejable — evita
     # penny stocks (spreads horribles) y nombres de $1000+ (100 acciones de colateral inviables).

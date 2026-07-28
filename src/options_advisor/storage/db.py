@@ -32,10 +32,16 @@ _NEW_COLUMNS_BY_TABLE = {
     "macro_snapshot": {
         "cpi_yoy_date": "TEXT",
     },
-    "position_snapshots": {
-        "underlying_symbol": "TEXT",
+    "real_trade_alerts": {
+        "order_id": "INTEGER",
     },
 }
+
+# Tablas de un diseño anterior, sin reemplazo — `position_snapshots` quedó obsoleta con el
+# rediseño de detección de operaciones reales vía /orders (2026-07-28, ver
+# alerts/real_trades.py): el diff de posiciones/promedio blendeado se reemplazó por completo
+# por el fill exacto de cada orden, así que ya no hace falta guardar snapshots entre corridas.
+_TABLES_TO_DROP = ["position_snapshots"]
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -44,6 +50,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         for column, col_type in new_columns.items():
             if column not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+    for table in _TABLES_TO_DROP:
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
+    # Después (no en schema.sql): un índice sobre una columna recién agregada por ALTER TABLE
+    # arriba fallaría si corriera ANTES de la migración contra una base ya existente sin esa
+    # columna todavía (bug real encontrado 2026-07-28 armando este mismo índice).
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_real_trade_alerts_order_id ON real_trade_alerts(order_id)")
     conn.commit()
 
 

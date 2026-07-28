@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import itertools
 from datetime import date
 
 import streamlit as st
 
 from options_advisor.dashboard.components import (
     ACCENT,
+    GOOD,
+    TEXT_MUTED,
     get_connection,
     icon,
     inject_theme,
@@ -49,22 +52,39 @@ if not trades:
         icon="✅",
     )
 else:
-    for trade in trades:
-        snapshot = repo.get_indicator_snapshot(conn, trade["symbol"], date.fromisoformat(trade["trade_date"]))
-        if snapshot is not None:
-            next_earnings_date = snapshot["next_earnings_date"]
-            next_ex_dividend_date = snapshot["next_ex_dividend_date"]
+    # Agrupadas por fecha (pedido 2026-07-28: separar visualmente lo de HOY de lo viejo, "para
+    # que sea obvio de un vistazo cuáles son nuevas") — `trades` ya viene ordenado DESC por
+    # trade_ts desde el repo, así que fechas iguales quedan contiguas (agrupable sin resortear).
+    today = date.today()
+    for trade_date_str, group_iter in itertools.groupby(trades, key=lambda t: t["trade_date"]):
+        group = list(group_iter)
+        trade_date = date.fromisoformat(trade_date_str)
+        if trade_date == today:
+            label_html = f"{icon('zap', size=15, color=GOOD)} Hoy"
         else:
-            # El subyacente puede no estar en la watchlist analizada ese día (una operación real
-            # puede caer sobre cualquier símbolo, no solo los monitoreados) — se usa el último
-            # dato de earnings conocido de cualquier corrida anterior en vez de dejarlo vacío.
-            latest_earnings = repo.get_latest_next_earnings_date(conn, trade["symbol"])
-            next_earnings_date = latest_earnings.isoformat() if latest_earnings else None
-            next_ex_dividend_date = None
-        render_real_trade_card(
-            trade,
-            next_earnings_date=next_earnings_date,
-            fed_meeting_date=fed_meeting_date,
-            next_ex_dividend_date=next_ex_dividend_date,
-            capital_available=capital_available,
+            label_html = f"{icon('clock', size=15, color=TEXT_MUTED)} {trade_date.strftime('%d/%m/%Y')}"
+        st.markdown(
+            f"<div style='font-size:1.05rem; font-weight:700; color:{TEXT_MUTED}; margin:1.4rem 0 0.6rem;'>"
+            f"{label_html} · {len(group)} operación{'es' if len(group) != 1 else ''}</div>",
+            unsafe_allow_html=True,
         )
+        for trade in group:
+            snapshot = repo.get_indicator_snapshot(conn, trade["symbol"], trade_date)
+            if snapshot is not None:
+                next_earnings_date = snapshot["next_earnings_date"]
+                next_ex_dividend_date = snapshot["next_ex_dividend_date"]
+            else:
+                # El subyacente puede no estar en la watchlist analizada ese día (una operación
+                # real puede caer sobre cualquier símbolo, no solo los monitoreados) — se usa el
+                # último dato de earnings conocido de cualquier corrida anterior en vez de
+                # dejarlo vacío.
+                latest_earnings = repo.get_latest_next_earnings_date(conn, trade["symbol"])
+                next_earnings_date = latest_earnings.isoformat() if latest_earnings else None
+                next_ex_dividend_date = None
+            render_real_trade_card(
+                trade,
+                next_earnings_date=next_earnings_date,
+                fed_meeting_date=fed_meeting_date,
+                next_ex_dividend_date=next_ex_dividend_date,
+                capital_available=capital_available,
+            )

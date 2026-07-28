@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
 from options_advisor.alerts import notifier
 from options_advisor.alerts.narrator import build_real_trade_context, narrate_real_trade
 from options_advisor.broker.base import BrokerClient
-from options_advisor.broker.models import AccountPosition, index_quote_symbol
+from options_advisor.broker.models import FilledOrder, FilledOrderLeg, index_quote_symbol, parse_occ_option_symbol
 from options_advisor.config import Settings
 from options_advisor.market_context import finnhub_client
 from options_advisor.storage import repository as repo
-from options_advisor.storage.models import PositionSnapshot, RealTradeAlert
+from options_advisor.storage.models import RealTradeAlert
 from options_advisor.strategy import candidates as candidate_builder
 from options_advisor.strategy import constants as c
 from options_advisor.strategy import payoff as payoff_calc
@@ -20,28 +20,13 @@ logger = logging.getLogger(__name__)
 
 MIN_SHARES_FOR_COVERED_CALL = 100  # 1 contrato de call cubre 100 acciones
 
-
-def _detect_new_short_trades(
-    positions: list[AccountPosition], previous: dict[tuple[str, str], float]
-) -> list[tuple[AccountPosition, int]]:
-    """(posición, contratos_nuevos_vendidos_esta_corrida) por cada posición de opción cuya
-    cantidad corta CRECIÓ desde el snapshot anterior — símbolo nuevo (no estaba antes, previous
-    default 0.0) o cantidad más negativa que antes = venta nueva ("sell to open"), diseño
-    confirmado por el usuario en BACKLOG.md punto 1 (Pestaña Operaciones). Solo posiciones
-    CORTAS (quantity < 0): comprar opciones (protección, debit spreads) no es una operación de
-    venta de prima, fuera de este detector — el resto del motor ya es un asesor de INGRESO
-    (venta de prima), no de compra de opciones."""
-    detected = []
-    for position in positions:
-        if position.asset_type != "OPTION" or position.quantity >= 0:
-            continue
-        key = (position.account_number, position.symbol)
-        prev_qty = previous.get(key, 0.0)
-        if position.quantity < prev_qty:
-            contracts_added = int(round(prev_qty - position.quantity))
-            if contracts_added > 0:
-                detected.append((position, contracts_added))
-    return detected
+# Ventana de detección angosta (Sección 'rediseño de Operaciones vía /orders', 2026-07-28):
+# pedirle a Schwab varios días de órdenes de una sola vez es lento (timeout real observado
+# pidiendo 3 días, ~260 órdenes) — se pide bastante más que la cadencia del cron (3 min por
+# defecto, ver scheduler/runner.py) para tener margen de sobra si una corrida se retrasa o se
+# saltea, sin pagar el costo de una ventana ancha. El dedup por (order_id, occ_symbol) hace que
+# pedir de más (solapamiento entre corridas) sea inofensivo — nunca genera una alerta duplicada.
+REAL_TRADE_LOOKBACK_MINUTES = 15
 
 
 def _resolve_strategy_type(option_type: str, share_positions: dict[str, int], underlying_symbol: str, contracts: int) -> str:
@@ -56,25 +41,35 @@ def _resolve_strategy_type(option_type: str, share_positions: dict[str, int], un
     return c.COVERED_CALL if owned >= MIN_SHARES_FOR_COVERED_CALL * contracts else c.SHORT_CALL_NAKED
 
 
+def _is_roll(order: FilledOrder) -> bool:
+    """Un roll es una orden con AL MENOS una pata OPENING y AL MENOS una pata CLOSING — Schwab
+    arma un roll como una única orden combinada (confirmado en vivo con un roll real de SOFI:
+    `complexOrderStrategyType: "CALENDAR"`, una pata SELL_TO_OPEN + una BUY_TO_CLOSE en la MISMA
+    orden). Esto reemplaza la heurística de la Fase 1 anterior (suprimir cualquier apertura del
+    mismo subyacente si algo se cerró en la misma corrida, con falsos negativos documentados) —
+    acá la composición de la orden lo confirma con certeza, sin inferir nada entre corridas."""
+    effects = {leg.position_effect for leg in order.legs}
+    return "OPENING" in effects and "CLOSING" in effects
+
+
 def _build_and_persist_real_trade_alert(
     broker: BrokerClient,
     conn: sqlite3.Connection,
     settings: Settings,
     today: date,
-    position: AccountPosition,
-    contracts_added: int,
+    order: FilledOrder,
+    leg: FilledOrderLeg,
     share_positions: dict[str, int],
     anthropic_api_key: str | None,
     finnhub_api_key: str | None,
 ) -> dict | None:
-    underlying_symbol = position.underlying_symbol
-    option_type = position.option_type
-    strike = position.strike
-    expiration = position.expiration
-    if not underlying_symbol or not option_type or strike is None or expiration is None:
-        logger.warning(
-            "Posición de opción %s sin datos OCC parseados; se omite la alerta de operación real", position.symbol
-        )
+    parsed = parse_occ_option_symbol(leg.occ_symbol)
+    if parsed is None:
+        logger.warning("%s: símbolo OCC no reconocido; se omite la alerta de operación real", leg.occ_symbol)
+        return None
+    underlying_symbol, expiration, option_type, strike = parsed
+    contracts_added = int(round(leg.quantity))
+    if contracts_added <= 0:
         return None
 
     quote_symbol = index_quote_symbol(underlying_symbol)
@@ -85,7 +80,7 @@ def _build_and_persist_real_trade_alert(
     except Exception:
         logger.exception(
             "Fallo al pedir cotización/cadena en vivo de %s; se omite la alerta de operación real de %s",
-            quote_symbol, position.symbol,
+            quote_symbol, leg.occ_symbol,
         )
         return None
 
@@ -98,7 +93,7 @@ def _build_and_persist_real_trade_alert(
         return None
 
     strategy_type = _resolve_strategy_type(option_type, share_positions, underlying_symbol, contracts_added)
-    build = candidate_builder.build_from_contract(strategy_type, contract, contracts_added, entry_price=position.average_price)
+    build = candidate_builder.build_from_contract(strategy_type, contract, contracts_added, entry_price=leg.price)
     payoff = payoff_calc.compute_payoff(build, quote.last_price, today, settings.market.risk_free_rate)
 
     recent_news = finnhub_client.get_recent_news(underlying_symbol, today, finnhub_api_key)
@@ -110,7 +105,7 @@ def _build_and_persist_real_trade_alert(
         symbol=underlying_symbol,
         strategy_type=strategy_type,
         quantity=contracts_added,
-        entry_price=position.average_price,
+        entry_price=leg.price,
         strikes=build.strikes,
         expiration_date=expiration,
         underlying_price=payoff.underlying_price,
@@ -132,8 +127,8 @@ def _build_and_persist_real_trade_alert(
     narrative_text, narrative_source = narrate_real_trade(context, settings.llm, anthropic_api_key)
 
     trade = RealTradeAlert(
-        account_number=position.account_number,
-        occ_symbol=position.symbol,
+        account_number=order.account_number,
+        occ_symbol=leg.occ_symbol,
         symbol=underlying_symbol,
         trade_date=today,
         trade_ts=datetime.now(),
@@ -142,7 +137,8 @@ def _build_and_persist_real_trade_alert(
         strike=strike,
         expiration_date=expiration,
         quantity=contracts_added,
-        entry_price=position.average_price,
+        entry_price=leg.price,
+        order_id=order.order_id,
         legs=payoff.legs,
         net_premium=payoff.net_premium,
         max_profit=payoff.max_profit,
@@ -171,81 +167,43 @@ def detect_and_alert_real_trades(
     anthropic_api_key: str | None,
     finnhub_api_key: str | None,
 ) -> list[dict]:
-    """Detecta operaciones reales nuevas (venta de opciones) en la cuenta Schwab real desde la
-    corrida anterior del scheduler y genera una alerta con el mismo formato completo que las
-    alertas de candidatos (P&L, breakeven, POP, cobertura, noticias, comentario del narrador)
-    pero aplicada a la posición YA ABIERTA — Pestaña Operaciones del backlog, pedido
-    2026-07-25. Se llama una vez por corrida del scheduler (no por símbolo), igual que
-    `broker.get_all_share_positions()` en `scheduler/jobs.py`. Nunca rompe el resto del job:
-    cualquier fallo puntual (símbolo sin chain, sin contrato encontrado) se loguea y se sigue
-    con el resto — mismo criterio del resto de Sección 6."""
+    """Detecta operaciones reales nuevas (venta de opciones) en la cuenta Schwab real y genera
+    una alerta con el mismo formato completo que las alertas de candidatos (P&L, breakeven,
+    POP, cobertura, noticias, comentario del narrador) pero aplicada a la posición YA ABIERTA —
+    Pestaña Operaciones, pedido 2026-07-25, rediseñada 2026-07-28 para detectar vía órdenes
+    LLENADAS (`broker.get_recent_filled_orders`) en vez de diffear posiciones contra un
+    snapshot: cada orden trae el fill EXACTO de cada pata, sin promediar con otras aperturas
+    del mismo contrato en momentos distintos (antes: `position.average_price`, un promedio
+    blendeado de TODA la posición acumulada — impreciso al ir sumando contratos incrementales).
+    Nunca rompe el resto del job: cualquier fallo puntual (símbolo sin chain, sin contrato
+    encontrado) se loguea y se sigue con el resto — mismo criterio del resto de Sección 6."""
+    since = datetime.now(timezone.utc) - timedelta(minutes=REAL_TRADE_LOOKBACK_MINUTES)
     try:
-        positions = broker.get_all_positions()
+        orders = broker.get_recent_filled_orders(since)
     except Exception:
-        logger.exception("Fallo al traer posiciones reales; se omite la detección de operaciones esta corrida")
+        logger.exception("Fallo al traer órdenes llenadas recientes; se omite la detección de operaciones esta corrida")
         return []
 
-    previous = repo.get_position_snapshots(conn)
-    previous_underlyings = repo.get_position_snapshot_underlyings(conn)
-    new_trades = _detect_new_short_trades(positions, previous)
-
-    # Alcance de Fase 1 (aclarado por el usuario 2026-07-28): la Pestaña Operaciones SOLO debe
-    # alertar APERTURAS genuinas — nunca cierres, y tampoco ROLLS (cerrar una opción y abrir
-    # otra distinta del MISMO subyacente, típicamente en una sola orden combinada de Schwab).
-    # Un roll técnicamente SÍ pasa por _detect_new_short_trades (la pata nueva es un símbolo
-    # OCC nunca visto antes, así que "previous.get(key, 0.0)" da 0 y se ve como apertura desde
-    # cero) — confirmado en la práctica: un roll real de SOFI generó una alerta indebida la
-    # noche del 2026-07-27, antes de esta aclaración de alcance.
-    #
-    # Heurística de Fase 1 (documentada como tal, con su límite conocido — ver BACKLOG.md):
-    # si el MISMO subyacente tiene una posición que estaba corta en la corrida anterior y ya
-    # no aparece en absoluto en la corrida actual (cerrada del todo, no solo reducida), CUALQUIER
-    # apertura nueva de ESE MISMO subyacente en esta misma corrida se trata como parte de un
-    # roll y se suprime (no genera alerta). Límite conocido y aceptado: si el usuario cierra una
-    # posición y, sin relación, abre una posición NUEVA e independiente del mismo subyacente
-    # dentro de la misma ventana de 3 minutos del cron, también se suprimiría — un falso
-    # negativo infrecuente, preferible a alertar rolls por error. Fase 2 (no implementada):
-    # usar el endpoint /orders de Schwab para confirmar que el cierre y la apertura vinieron de
-    # la MISMA orden combinada, en vez de inferirlo por coincidencia de subyacente/ventana.
-    current_short_keys = {(p.account_number, p.symbol) for p in positions if p.asset_type == "OPTION" and p.quantity < 0}
-    closed_underlyings_by_account: dict[str, set[str]] = {}
-    for key in previous:
-        if key in current_short_keys:
-            continue  # sigue abierta (entera o parcialmente reducida), no se cerró del todo
-        account_number, _occ_symbol = key
-        underlying = previous_underlyings.get(key)
-        if underlying:
-            closed_underlyings_by_account.setdefault(account_number, set()).add(underlying)
-
-    # Reemplaza el snapshot completo con el estado actual de posiciones CORTAS de opciones —
-    # también "olvida" posiciones cerradas (ya no aparecen en `positions`), así si se reabre el
-    # mismo contrato más adelante se detecta como operación nueva en vez de compararse contra
-    # un número viejo más grande (ver storage/repository.py::replace_position_snapshots).
-    current_shorts = [
-        PositionSnapshot(
-            account_number=p.account_number, symbol=p.symbol, quantity=p.quantity,
-            snapshot_ts=datetime.now(), underlying_symbol=p.underlying_symbol,
-        )
-        for p in positions
-        if p.asset_type == "OPTION" and p.quantity < 0
-    ]
-    repo.replace_position_snapshots(conn, current_shorts)
+    already_alerted = repo.get_alerted_order_leg_keys(conn)
 
     generated: list[dict] = []
-    for position, contracts_added in new_trades:
-        if position.underlying_symbol and position.underlying_symbol in closed_underlyings_by_account.get(position.account_number, set()):
-            logger.info(
-                "%s: subyacente %s tuvo un cierre en esta misma corrida — tratada como probable ROLL, sin alerta (Fase 1)",
-                position.symbol, position.underlying_symbol,
-            )
+    for order in orders:
+        if _is_roll(order):
+            logger.info("Orden %s: pata OPENING + CLOSING en la misma orden — tratada como ROLL, sin alerta", order.order_id)
             continue
-        try:
-            result = _build_and_persist_real_trade_alert(
-                broker, conn, settings, today, position, contracts_added, share_positions, anthropic_api_key, finnhub_api_key
-            )
-            if result:
-                generated.append(result)
-        except Exception:
-            logger.exception("Fallo al generar alerta de operación real para %s; se sigue con el resto", position.symbol)
+        for leg in order.legs:
+            if leg.instruction != "SELL_TO_OPEN":
+                continue  # solo ventas nuevas de prima — comprar opciones queda fuera (motor de INGRESO)
+            key = (order.order_id, leg.occ_symbol)
+            if key in already_alerted:
+                continue
+            try:
+                result = _build_and_persist_real_trade_alert(
+                    broker, conn, settings, today, order, leg, share_positions, anthropic_api_key, finnhub_api_key
+                )
+                if result:
+                    generated.append(result)
+            except Exception:
+                logger.exception("Fallo al generar alerta de operación real para %s; se sigue con el resto", leg.occ_symbol)
 
     return generated

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 import pytest
 
-from options_advisor.broker.schwab_client import SchwabBrokerClient
+from options_advisor.broker.schwab_client import SchwabBrokerClient, _parse_filled_order
 
 TODAY = date.today()
 
@@ -561,3 +561,179 @@ def test_screen_universe_one_batch_failing_does_not_block_others(client, monkeyp
     monkeypatch.setattr(httpx.Client, "get", _get)
     shortlist = client.screen_universe(symbols, max_shortlist=1000)
     assert len(shortlist) == 50  # el primer lote (200) falló, el segundo (50) sobrevive
+
+
+# --- _parse_filled_order / get_recent_filled_orders (rediseño de Operaciones vía /orders,
+# 2026-07-28) — fixtures con la forma REAL capturada probando el endpoint en vivo contra la
+# cuenta real del usuario. ---
+
+
+def _hood_raw_order() -> dict:
+    """Orden real de apertura de HOOD (2 puts $75 vendidos), capturada en vivo el 2026-07-28."""
+    return {
+        "orderId": 1007358084142,
+        "accountNumber": 74257810,
+        "status": "FILLED",
+        "enteredTime": "2026-07-28T14:07:26+0000",
+        "closeTime": "2026-07-28T14:07:26+0000",
+        "orderLegCollection": [
+            {
+                "orderLegType": "OPTION",
+                "legId": 1,
+                "instrument": {"assetType": "OPTION", "symbol": "HOOD  260904P00075000"},
+                "instruction": "SELL_TO_OPEN",
+                "positionEffect": "OPENING",
+                "quantity": 2.0,
+            }
+        ],
+        "orderActivityCollection": [
+            {
+                "activityType": "EXECUTION",
+                "executionLegs": [{"legId": 1, "quantity": 2.0, "price": 3.15, "time": "2026-07-28T14:07:26+0000"}],
+            }
+        ],
+    }
+
+
+def _sofi_roll_raw_order() -> dict:
+    """Roll real de SOFI (Aug21 -> Sep18 $21P) capturado en vivo — una sola orden combinada
+    (`complexOrderStrategyType: CALENDAR`) con una pata SELL_TO_OPEN y una BUY_TO_CLOSE."""
+    return {
+        "orderId": 1007347459242,
+        "accountNumber": 74257810,
+        "status": "FILLED",
+        "complexOrderStrategyType": "CALENDAR",
+        "enteredTime": "2026-07-27T17:03:59+0000",
+        "closeTime": "2026-07-27T17:04:00+0000",
+        "orderLegCollection": [
+            {
+                "orderLegType": "OPTION",
+                "legId": 1,
+                "instrument": {"assetType": "OPTION", "symbol": "SOFI  260918P00021000"},
+                "instruction": "SELL_TO_OPEN",
+                "positionEffect": "OPENING",
+                "quantity": 2.0,
+            },
+            {
+                "orderLegType": "OPTION",
+                "legId": 2,
+                "instrument": {"assetType": "OPTION", "symbol": "SOFI  260821P00021000"},
+                "instruction": "BUY_TO_CLOSE",
+                "positionEffect": "CLOSING",
+                "quantity": 2.0,
+            },
+        ],
+        "orderActivityCollection": [
+            {
+                "activityType": "EXECUTION",
+                "executionLegs": [
+                    {"legId": 1, "quantity": 2.0, "price": 4.38, "time": "2026-07-27T17:04:00+0000"},
+                    {"legId": 2, "quantity": 2.0, "price": 4.15, "time": "2026-07-27T17:04:00+0000"},
+                ],
+            }
+        ],
+    }
+
+
+def test_parse_filled_order_single_opening_leg():
+    order = _parse_filled_order(_hood_raw_order())
+    assert order is not None
+    assert order.order_id == 1007358084142
+    assert order.account_number == "74257810"
+    assert len(order.legs) == 1
+    leg = order.legs[0]
+    assert leg.occ_symbol == "HOOD  260904P00075000"
+    assert leg.instruction == "SELL_TO_OPEN"
+    assert leg.position_effect == "OPENING"
+    assert leg.quantity == 2.0
+    assert leg.price == 3.15  # fill EXACTO de esta orden, no un promedio
+
+
+def test_parse_filled_order_roll_has_opening_and_closing_leg_with_own_price():
+    order = _parse_filled_order(_sofi_roll_raw_order())
+    assert order is not None
+    assert len(order.legs) == 2
+    by_effect = {leg.position_effect: leg for leg in order.legs}
+    assert by_effect["OPENING"].occ_symbol == "SOFI  260918P00021000"
+    assert by_effect["OPENING"].price == 4.38
+    assert by_effect["CLOSING"].occ_symbol == "SOFI  260821P00021000"
+    assert by_effect["CLOSING"].price == 4.15
+
+
+def test_parse_filled_order_aggregates_multiple_partial_executions():
+    """Una orden llenada en 2 tandas (fills parciales) debe promediar el precio ponderado por
+    cantidad, no quedarse solo con la primera ejecución."""
+    raw = _hood_raw_order()
+    raw["orderActivityCollection"] = [
+        {"activityType": "EXECUTION", "executionLegs": [{"legId": 1, "quantity": 1.0, "price": 3.10, "time": "2026-07-28T14:07:20+0000"}]},
+        {"activityType": "EXECUTION", "executionLegs": [{"legId": 1, "quantity": 1.0, "price": 3.20, "time": "2026-07-28T14:07:26+0000"}]},
+    ]
+    order = _parse_filled_order(raw)
+    assert order is not None
+    assert order.legs[0].quantity == 2.0
+    assert order.legs[0].price == pytest.approx(3.15, abs=0.001)  # (1x3.10 + 1x3.20) / 2
+
+
+def test_parse_filled_order_none_without_order_id():
+    raw = _hood_raw_order()
+    del raw["orderId"]
+    assert _parse_filled_order(raw) is None
+
+
+def test_parse_filled_order_none_when_no_option_legs():
+    raw = _hood_raw_order()
+    raw["orderLegCollection"] = [{"orderLegType": "EQUITY", "legId": 1, "instrument": {"assetType": "EQUITY", "symbol": "AAPL"}}]
+    assert _parse_filled_order(raw) is None
+
+
+def test_parse_filled_order_none_when_no_matching_execution():
+    raw = _hood_raw_order()
+    raw["orderActivityCollection"] = []
+    assert _parse_filled_order(raw) is None
+
+
+def _mock_orders_get(accounts: list[dict], orders_by_hash: dict[str, list[dict]]):
+    def _get(self, path, params=None, headers=None):
+        request = httpx.Request("GET", f"https://api.schwabapi.com/trader/v1{path}")
+        if path == "/accounts/accountNumbers":
+            return httpx.Response(200, json=accounts, request=request)
+        account_hash = path.split("/accounts/", 1)[1].removesuffix("/orders")
+        assert params.get("status") == "FILLED"
+        return httpx.Response(200, json=orders_by_hash.get(account_hash, []), request=request)
+
+    return _get
+
+
+def test_get_recent_filled_orders_returns_parsed_orders_across_accounts(client, monkeypatch):
+    accounts = [{"accountNumber": "111", "hashValue": "HASH1"}, {"accountNumber": "222", "hashValue": "HASH2"}]
+    orders_by_hash = {"HASH1": [_hood_raw_order()], "HASH2": [_sofi_roll_raw_order()]}
+    monkeypatch.setattr(httpx.Client, "get", _mock_orders_get(accounts, orders_by_hash))
+
+    orders = client.get_recent_filled_orders(datetime.now(timezone.utc) - timedelta(minutes=15))
+
+    assert len(orders) == 2
+    assert {o.order_id for o in orders} == {1007358084142, 1007347459242}
+
+
+def test_get_recent_filled_orders_empty_when_accounts_call_fails(client, monkeypatch):
+    def _boom(self, path, params=None, headers=None):
+        raise httpx.ConnectError("no network", request=httpx.Request("GET", "https://api.schwabapi.com/trader/v1/x"))
+
+    monkeypatch.setattr(httpx.Client, "get", _boom)
+    assert client.get_recent_filled_orders(datetime.now(timezone.utc)) == []
+
+
+def test_get_recent_filled_orders_one_account_failing_does_not_block_others(client, monkeypatch):
+    accounts = [{"accountNumber": "111", "hashValue": "HASH1"}, {"accountNumber": "222", "hashValue": "HASH2"}]
+
+    def _get(self, path, params=None, headers=None):
+        request = httpx.Request("GET", f"https://api.schwabapi.com/trader/v1{path}")
+        if path == "/accounts/accountNumbers":
+            return httpx.Response(200, json=accounts, request=request)
+        if path == "/accounts/HASH1/orders":
+            raise httpx.ConnectError("no network", request=request)
+        return httpx.Response(200, json=[_hood_raw_order()], request=request)
+
+    monkeypatch.setattr(httpx.Client, "get", _get)
+    orders = client.get_recent_filled_orders(datetime.now(timezone.utc) - timedelta(minutes=15))
+    assert len(orders) == 1

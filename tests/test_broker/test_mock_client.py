@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from options_advisor.broker.mock_client import MockBrokerClient
 
@@ -13,6 +13,11 @@ def test_get_all_share_positions_returns_empty_dict(mock_fixtures_dir):
 def test_get_all_positions_returns_empty_list(mock_fixtures_dir):
     client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
     assert client.get_all_positions() == []
+
+
+def test_get_recent_filled_orders_returns_empty_list(mock_fixtures_dir):
+    client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
+    assert client.get_recent_filled_orders(datetime.now()) == []
 
 
 def test_get_quote_returns_latest_price(mock_fixtures_dir):

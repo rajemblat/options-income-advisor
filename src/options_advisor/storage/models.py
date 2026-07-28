@@ -108,23 +108,6 @@ class Notification(BaseModel):
     created_at: datetime
 
 
-class PositionSnapshot(BaseModel):
-    """Última cantidad conocida de una posición CORTA de opciones por cuenta (Sección
-    'Operaciones' — réplica automática de operaciones reales, pedido 2026-07-25). Sobreescrita
-    por completo cada corrida del scheduler (ver repository.replace_position_snapshots): solo
-    hace falta el estado de la corrida anterior para diffear contra la actual y detectar ventas
-    nuevas, no un historial completo."""
-
-    account_number: str
-    symbol: str  # OCC de la opción
-    quantity: float  # negativo = corto; se guardan solo posiciones cortas, ver real_trades.py
-    snapshot_ts: datetime
-    # Subyacente (ej. "SOFI") — sumado 2026-07-28 para poder distinguir un ROLL (cierre +
-    # apertura del MISMO subyacente en la misma corrida) de una apertura genuina nueva, ver
-    # alerts/real_trades.py::detect_and_alert_real_trades. None en filas de antes de este campo.
-    underlying_symbol: str | None = None
-
-
 class RealTradeAlert(BaseModel):
     """Una operación real de venta de opciones detectada en la cuenta Schwab (no una sugerencia
     — `candidate_contracts`/`alerts` son para eso). Mismos campos de P&L/riesgo que
@@ -140,8 +123,12 @@ class RealTradeAlert(BaseModel):
     option_type: str  # "put" | "call"
     strike: float
     expiration_date: date
-    quantity: int  # contratos nuevos detectados en esta operación (no el total de la posición)
-    entry_price: float | None = None  # precio promedio de la posición completa, tal como lo da Schwab
+    quantity: int  # contratos de ESTA orden puntual (no el total acumulado de la posición)
+    entry_price: float | None = None  # fill EXACTO de esta orden (ver broker/models.py::FilledOrderLeg), no un promedio
+    # orderId de Schwab que originó esta alerta — clave de dedup contra reprocesar la misma
+    # orden en corridas sucesivas del cron (ventanas de detección se solapan a propósito, ver
+    # alerts/real_trades.py). None en filas de antes del rediseño vía /orders (2026-07-28).
+    order_id: int | None = None
     legs: list[dict] = []
     net_premium: float | None = None
     max_profit: float | None = None

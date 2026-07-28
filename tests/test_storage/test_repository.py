@@ -13,7 +13,6 @@ from options_advisor.storage.models import (
     IndicatorSnapshot,
     MacroSnapshot,
     NewsItem,
-    PositionSnapshot,
     RealTradeAlert,
 )
 
@@ -172,56 +171,6 @@ def test_upsert_macro_snapshot_without_cpi_yoy_date_leaves_it_null(conn):
     assert snapshot["cpi_yoy_date"] is None
 
 
-def test_get_position_snapshots_empty_by_default(conn):
-    assert repo.get_position_snapshots(conn) == {}
-
-
-def test_replace_position_snapshots_round_trip(conn):
-    repo.replace_position_snapshots(
-        conn,
-        [
-            PositionSnapshot(account_number="123", symbol="TSLA  260821P00320000", quantity=-1.0, snapshot_ts=datetime(2026, 7, 27, 10, 0)),
-            PositionSnapshot(account_number="123", symbol="AAPL  260821C00200000", quantity=-2.0, snapshot_ts=datetime(2026, 7, 27, 10, 0)),
-        ],
-    )
-    snapshots = repo.get_position_snapshots(conn)
-    assert snapshots == {("123", "TSLA  260821P00320000"): -1.0, ("123", "AAPL  260821C00200000"): -2.0}
-
-
-def test_get_position_snapshot_underlyings_round_trip(conn):
-    repo.replace_position_snapshots(
-        conn,
-        [
-            PositionSnapshot(
-                account_number="123", symbol="TSLA  260821P00320000", quantity=-1.0,
-                snapshot_ts=datetime(2026, 7, 27, 10, 0), underlying_symbol="TSLA",
-            ),
-        ],
-    )
-    assert repo.get_position_snapshot_underlyings(conn) == {("123", "TSLA  260821P00320000"): "TSLA"}
-
-
-def test_get_position_snapshot_underlyings_none_when_not_provided(conn):
-    repo.replace_position_snapshots(
-        conn,
-        [PositionSnapshot(account_number="123", symbol="TSLA  260821P00320000", quantity=-1.0, snapshot_ts=datetime(2026, 7, 27, 10, 0))],
-    )
-    assert repo.get_position_snapshot_underlyings(conn) == {("123", "TSLA  260821P00320000"): None}
-
-
-def test_replace_position_snapshots_forgets_closed_positions(conn):
-    """Un reemplazo completo (no upsert incremental) — una posición que ya no aparece en la
-    corrida actual debe desaparecer de la tabla, así si se reabre el mismo contrato más
-    adelante se detecta como operación nueva en vez de compararse contra un número viejo."""
-    repo.replace_position_snapshots(
-        conn, [PositionSnapshot(account_number="123", symbol="TSLA  260821P00320000", quantity=-1.0, snapshot_ts=datetime(2026, 7, 27, 10, 0))]
-    )
-    repo.replace_position_snapshots(
-        conn, [PositionSnapshot(account_number="123", symbol="AAPL  260821C00200000", quantity=-2.0, snapshot_ts=datetime(2026, 7, 27, 10, 30))]
-    )
-    assert repo.get_position_snapshots(conn) == {("123", "AAPL  260821C00200000"): -2.0}
-
-
 def _real_trade_alert(**overrides) -> RealTradeAlert:
     defaults = dict(
         account_number="123",
@@ -272,6 +221,41 @@ def test_get_real_trade_alerts_filters_by_symbol(conn):
     rows = repo.get_real_trade_alerts(conn, symbol="AAPL")
     assert len(rows) == 1
     assert rows[0]["symbol"] == "AAPL"
+
+
+# --- order_id / get_alerted_order_leg_keys (rediseño de detección vía /orders, 2026-07-28) ---
+
+
+def test_insert_real_trade_alert_persists_order_id(conn):
+    repo.insert_real_trade_alert(conn, _real_trade_alert(order_id=1007358084142))
+    rows = repo.get_real_trade_alerts(conn)
+    assert rows[0]["order_id"] == 1007358084142
+
+
+def test_insert_real_trade_alert_order_id_defaults_to_null(conn):
+    repo.insert_real_trade_alert(conn, _real_trade_alert())
+    rows = repo.get_real_trade_alerts(conn)
+    assert rows[0]["order_id"] is None
+
+
+def test_get_alerted_order_leg_keys_empty_by_default(conn):
+    assert repo.get_alerted_order_leg_keys(conn) == set()
+
+
+def test_get_alerted_order_leg_keys_round_trip(conn):
+    repo.insert_real_trade_alert(conn, _real_trade_alert(order_id=111, occ_symbol="TSLA  260821P00320000"))
+    repo.insert_real_trade_alert(conn, _real_trade_alert(order_id=222, occ_symbol="AAPL  260821C00200000"))
+    assert repo.get_alerted_order_leg_keys(conn) == {
+        (111, "TSLA  260821P00320000"),
+        (222, "AAPL  260821C00200000"),
+    }
+
+
+def test_get_alerted_order_leg_keys_excludes_rows_without_order_id(conn):
+    """Filas de antes del rediseño vía /orders (sin order_id) no deben aparecer acá — no
+    aportan nada al dedup por orden."""
+    repo.insert_real_trade_alert(conn, _real_trade_alert())
+    assert repo.get_alerted_order_leg_keys(conn) == set()
 
 
 # --- get_recent_single_leg_candidates (vista tabla en Escaneo) ---

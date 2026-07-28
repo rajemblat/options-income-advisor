@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import pytest
 
 from options_advisor.alerts import real_trades
-from options_advisor.broker.models import AccountPosition, Greeks, OptionChain, OptionContract, Quote
+from options_advisor.broker.models import FilledOrder, FilledOrderLeg, Greeks, OptionChain, OptionContract, Quote
 from options_advisor.config import load_settings
 from options_advisor.storage import db
 from options_advisor.storage import repository as repo
-from options_advisor.storage.models import PositionSnapshot
 
-TODAY = date(2026, 7, 27)
-EXPIRATION = date(2026, 8, 21)
+TODAY = date(2026, 7, 28)
+EXPIRATION = date(2026, 9, 4)
 
 
 @pytest.fixture
@@ -21,64 +20,78 @@ def conn():
     return db.connect(":memory:")
 
 
-def _short_put_position(quantity: float = -1.0, account_number: str = "123", average_price: float = 5.5) -> AccountPosition:
-    return AccountPosition(
-        account_number=account_number,
-        symbol="TSLA  260821P00320000",
-        asset_type="OPTION",
-        quantity=quantity,
-        average_price=average_price,
-        market_value=quantity * 550.0,
-        unrealized_pnl=0.0,
-        underlying_symbol="TSLA",
-        option_type="put",
-        strike=320.0,
-        expiration=EXPIRATION,
+def _settings():
+    return load_settings()
+
+
+def _greeks() -> Greeks:
+    return Greeks(delta=-0.25, gamma=0.01, theta=-0.05, vega=0.10, rho=0.02, source="broker")
+
+
+def _hood_leg(instruction: str = "SELL_TO_OPEN", position_effect: str = "OPENING", quantity: float = 2.0, price: float = 3.15) -> FilledOrderLeg:
+    return FilledOrderLeg(
+        occ_symbol="HOOD  260904P00075000", instruction=instruction, position_effect=position_effect, quantity=quantity, price=price
     )
 
 
-# --- _detect_new_short_trades ---
-
-
-def test_detect_new_short_trades_finds_brand_new_short_position():
-    position = _short_put_position(quantity=-1.0)
-    detected = real_trades._detect_new_short_trades([position], previous={})
-    assert detected == [(position, 1)]
-
-
-def test_detect_new_short_trades_finds_increase_in_existing_short():
-    position = _short_put_position(quantity=-3.0)
-    previous = {("123", "TSLA  260821P00320000"): -1.0}
-    detected = real_trades._detect_new_short_trades([position], previous)
-    assert detected == [(position, 2)]  # 2 contratos nuevos: pasó de -1 a -3
-
-
-def test_detect_new_short_trades_ignores_unchanged_position():
-    position = _short_put_position(quantity=-1.0)
-    previous = {("123", "TSLA  260821P00320000"): -1.0}
-    assert real_trades._detect_new_short_trades([position], previous) == []
-
-
-def test_detect_new_short_trades_ignores_position_that_shrank():
-    """Recomprar (cerrar parcial) una posición corta no es una operación nueva de venta."""
-    position = _short_put_position(quantity=-1.0)
-    previous = {("123", "TSLA  260821P00320000"): -3.0}
-    assert real_trades._detect_new_short_trades([position], previous) == []
-
-
-def test_detect_new_short_trades_ignores_long_positions():
-    long_put = _short_put_position(quantity=1.0)  # comprado, no vendido
-    assert real_trades._detect_new_short_trades([long_put], previous={}) == []
-
-
-def test_detect_new_short_trades_ignores_non_option_positions():
-    share_position = AccountPosition(
-        account_number="123", symbol="TSLA", asset_type="EQUITY", quantity=100, average_price=300.0, market_value=30000.0, unrealized_pnl=0.0
+def _hood_order(order_id: int = 1007358084142, legs: list[FilledOrderLeg] | None = None) -> FilledOrder:
+    return FilledOrder(
+        order_id=order_id, account_number="74257810", fill_time=datetime(2026, 7, 28, 14, 7, 26, tzinfo=timezone.utc),
+        legs=legs or [_hood_leg()],
     )
-    assert real_trades._detect_new_short_trades([share_position], previous={}) == []
 
 
-# --- _resolve_strategy_type ---
+def _hood_contract(bid: float = 2.24, ask: float = 3.50) -> OptionContract:
+    return OptionContract(
+        symbol="HOOD  260904P00075000", option_type="put", strike=75.0, expiration=EXPIRATION,
+        bid=bid, ask=ask, last_price=(bid + ask) / 2, implied_volatility=0.75, open_interest=27, volume=3, greeks=_greeks(),
+    )
+
+
+def _hood_chain() -> OptionChain:
+    return OptionChain(symbol="HOOD", as_of=TODAY, underlying_price=88.93, contracts=[_hood_contract()])
+
+
+class _FakeBroker:
+    def __init__(self, orders: list[FilledOrder], chain: OptionChain, quote: Quote, get_orders_raises: bool = False):
+        self._orders = orders
+        self._chain = chain
+        self._quote = quote
+        self._get_orders_raises = get_orders_raises
+
+    def get_recent_filled_orders(self, since: datetime) -> list[FilledOrder]:
+        if self._get_orders_raises:
+            raise RuntimeError("fallo simulado de Schwab")
+        return self._orders
+
+    def get_quote(self, symbol: str) -> Quote:
+        return self._quote
+
+    def get_option_chain(self, symbol: str, expiration_range_days=(7, 60)) -> OptionChain:
+        return self._chain
+
+
+# --- _is_roll ---
+
+
+def test_is_roll_true_when_order_has_opening_and_closing_leg():
+    order = _hood_order(legs=[
+        _hood_leg(instruction="SELL_TO_OPEN", position_effect="OPENING"),
+        FilledOrderLeg(occ_symbol="SOFI  260821P00021000", instruction="BUY_TO_CLOSE", position_effect="CLOSING", quantity=2.0, price=4.15),
+    ])
+    assert real_trades._is_roll(order) is True
+
+
+def test_is_roll_false_for_single_opening_leg():
+    assert real_trades._is_roll(_hood_order()) is False
+
+
+def test_is_roll_false_for_closing_only_order():
+    order = _hood_order(legs=[_hood_leg(instruction="BUY_TO_CLOSE", position_effect="CLOSING")])
+    assert real_trades._is_roll(order) is False
+
+
+# --- _resolve_strategy_type (sin cambios de comportamiento) ---
 
 
 def test_resolve_strategy_type_put_is_always_cash_secured_put():
@@ -98,132 +111,71 @@ def test_resolve_strategy_type_call_without_enough_shares_is_naked():
 # --- detect_and_alert_real_trades (integración con broker/chain fake) ---
 
 
-def _greeks() -> Greeks:
-    return Greeks(delta=-0.25, gamma=0.01, theta=-0.05, vega=0.10, rho=0.02, source="broker")
-
-
-def _tsla_put_contract() -> OptionContract:
-    return OptionContract(
-        symbol="TSLA  260821P00320000",
-        option_type="put",
-        strike=320.0,
-        expiration=EXPIRATION,
-        bid=5.4,
-        ask=5.6,
-        last_price=5.5,
-        implied_volatility=0.45,
-        open_interest=1000,
-        volume=100,
-        greeks=_greeks(),
-    )
-
-
-class _FakeBroker:
-    def __init__(self, positions: list[AccountPosition], chain: OptionChain, quote: Quote, get_positions_raises: bool = False):
-        self._positions = positions
-        self._chain = chain
-        self._quote = quote
-        self._get_positions_raises = get_positions_raises
-
-    def get_all_positions(self) -> list[AccountPosition]:
-        if self._get_positions_raises:
-            raise RuntimeError("fallo simulado de Schwab")
-        return self._positions
-
-    def get_quote(self, symbol: str) -> Quote:
-        return self._quote
-
-    def get_option_chain(self, symbol: str, expiration_range_days=(7, 60)) -> OptionChain:
-        return self._chain
-
-
-def _settings():
-    return load_settings()
-
-
-def test_detect_and_alert_real_trades_generates_alert_for_new_short_put(conn, monkeypatch):
+def test_detect_and_alert_real_trades_generates_alert_for_new_opening_order(conn, monkeypatch):
     monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
-    position = _short_put_position(quantity=-1.0)
-    chain = OptionChain(symbol="TSLA", as_of=TODAY, underlying_price=330.0, contracts=[_tsla_put_contract()])
-    quote = Quote(symbol="TSLA", as_of=TODAY, last_price=330.0, bid=329.9, ask=330.1)
-    broker = _FakeBroker(positions=[position], chain=chain, quote=quote)
+    broker = _FakeBroker(orders=[_hood_order()], chain=_hood_chain(), quote=Quote(symbol="HOOD", as_of=TODAY, last_price=88.93, bid=88.9, ask=89.0))
 
     generated = real_trades.detect_and_alert_real_trades(
         broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
     )
 
     assert len(generated) == 1
-    assert generated[0]["symbol"] == "TSLA"
+    assert generated[0]["symbol"] == "HOOD"
     assert generated[0]["strategy_type"] == "cash_secured_put"
-    assert generated[0]["quantity"] == 1
+    assert generated[0]["quantity"] == 2
 
     rows = repo.get_real_trade_alerts(conn)
     assert len(rows) == 1
-    assert rows[0]["symbol"] == "TSLA"
-    assert rows[0]["strike"] == 320.0
-    assert rows[0]["max_loss"] is not None
+    assert rows[0]["symbol"] == "HOOD"
+    assert rows[0]["strike"] == 75.0
+    assert rows[0]["order_id"] == 1007358084142
 
 
-def test_detect_and_alert_real_trades_uses_real_fill_price_not_mark(conn, monkeypatch):
-    """Bug real reportado 2026-07-28 (posición real de HOOD): la prima/breakeven/riesgo máximo
-    se calculaban con el mark price ACTUAL de la cadena en vez del fill real de la operación ya
-    ejecutada (`average_price` que Schwab sí reporta por posición). Acá el fill real (6.0)
-    difiere a propósito del mid del contrato (5.5, de bid=5.4/ask=5.6) para que el test falle
-    si algo vuelve a usar el mark en vez del fill."""
+def test_detect_and_alert_real_trades_uses_exact_order_fill_price_not_mark(conn, monkeypatch):
+    """Bug real reportado 2026-07-28 (posición real de HOOD): breakeven/prima/riesgo máximo se
+    calculaban con el mark price ACTUAL de la cadena en vez del fill real de la orden. Acá el
+    fill real de la orden (3.15) difiere a propósito del mid del contrato (2.87, de
+    bid=2.24/ask=3.50) para que el test falle si algo vuelve a usar el mark."""
     monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
-    position = _short_put_position(quantity=-1.0, average_price=6.0)
-    chain = OptionChain(symbol="TSLA", as_of=TODAY, underlying_price=330.0, contracts=[_tsla_put_contract()])
-    quote = Quote(symbol="TSLA", as_of=TODAY, last_price=330.0, bid=329.9, ask=330.1)
-    broker = _FakeBroker(positions=[position], chain=chain, quote=quote)
+    broker = _FakeBroker(orders=[_hood_order()], chain=_hood_chain(), quote=Quote(symbol="HOOD", as_of=TODAY, last_price=88.93, bid=88.9, ask=89.0))
 
-    real_trades.detect_and_alert_real_trades(
-        broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
-    )
+    real_trades.detect_and_alert_real_trades(broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
 
     rows = repo.get_real_trade_alerts(conn)
-    assert len(rows) == 1
-    # 6.0 x 100 x 1 = $600 (no 5.5 x 100 = $550 con el mid del contrato)
-    assert rows[0]["net_premium"] == pytest.approx(600.0, abs=0.01)
-    # breakeven: 320 - 6.0 = 314.0 (no 314.5 con el mid)
+    # 3.15 x 100 x 2 = $630 (no 2.87 x 100 x 2 = $574 con el mid del contrato)
+    assert rows[0]["net_premium"] == pytest.approx(630.0, abs=0.01)
+    # breakeven: 75 - 3.15 = 71.85 (no 72.13 con el mid)
     breakevens = json.loads(rows[0]["breakevens_json"])
-    assert breakevens == pytest.approx([314.0], abs=0.01)
+    assert breakevens == pytest.approx([71.85], abs=0.01)
 
 
-def test_detect_and_alert_real_trades_persists_position_snapshot(conn, monkeypatch):
+def test_detect_and_alert_real_trades_dedups_same_order_leg_across_runs(conn, monkeypatch):
+    """La ventana de detección se solapa a propósito entre corridas (REAL_TRADE_LOOKBACK_MINUTES
+    > cadencia del cron) — ver la misma orden dos veces no debe duplicar la alerta."""
     monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
-    position = _short_put_position(quantity=-1.0)
-    chain = OptionChain(symbol="TSLA", as_of=TODAY, underlying_price=330.0, contracts=[_tsla_put_contract()])
-    quote = Quote(symbol="TSLA", as_of=TODAY, last_price=330.0, bid=329.9, ask=330.1)
-    broker = _FakeBroker(positions=[position], chain=chain, quote=quote)
+    broker = _FakeBroker(orders=[_hood_order()], chain=_hood_chain(), quote=Quote(symbol="HOOD", as_of=TODAY, last_price=88.93, bid=88.9, ask=89.0))
 
-    real_trades.detect_and_alert_real_trades(broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+    first = real_trades.detect_and_alert_real_trades(broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+    second = real_trades.detect_and_alert_real_trades(broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
 
-    assert repo.get_position_snapshots(conn) == {("123", "TSLA  260821P00320000"): -1.0}
-
-
-def test_detect_and_alert_real_trades_no_alert_on_second_run_same_position(conn, monkeypatch):
-    """El tick siguiente, sin cambios en la posición, no debe generar una segunda alerta —
-    el diseño de reemplazo completo de position_snapshots ya deja registrado el estado actual."""
-    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
-    position = _short_put_position(quantity=-1.0)
-    chain = OptionChain(symbol="TSLA", as_of=TODAY, underlying_price=330.0, contracts=[_tsla_put_contract()])
-    quote = Quote(symbol="TSLA", as_of=TODAY, last_price=330.0, bid=329.9, ask=330.1)
-    broker = _FakeBroker(positions=[position], chain=chain, quote=quote)
-
-    real_trades.detect_and_alert_real_trades(broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
-    second_run = real_trades.detect_and_alert_real_trades(
-        broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
-    )
-
-    assert second_run == []
+    assert len(first) == 1
+    assert second == []
     assert len(repo.get_real_trade_alerts(conn)) == 1
 
 
-def test_detect_and_alert_real_trades_no_positions_generates_nothing(conn):
-    chain = OptionChain(symbol="TSLA", as_of=TODAY, underlying_price=330.0, contracts=[])
-    quote = Quote(symbol="TSLA", as_of=TODAY, last_price=330.0, bid=329.9, ask=330.1)
-    broker = _FakeBroker(positions=[], chain=chain, quote=quote)
+def test_detect_and_alert_real_trades_ignores_buy_to_open():
+    """Comprar opciones (protección, debit spreads) no es una venta de prima — fuera de este
+    detector, el resto del motor es un asesor de INGRESO."""
+    order = _hood_order(legs=[_hood_leg(instruction="BUY_TO_OPEN", position_effect="OPENING")])
+    broker = _FakeBroker(orders=[order], chain=_hood_chain(), quote=Quote(symbol="HOOD", as_of=TODAY, last_price=88.93, bid=88.9, ask=89.0))
+    generated = real_trades.detect_and_alert_real_trades(
+        broker, db.connect(":memory:"), _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
+    )
+    assert generated == []
 
+
+def test_detect_and_alert_real_trades_no_orders_generates_nothing(conn):
+    broker = _FakeBroker(orders=[], chain=_hood_chain(), quote=Quote(symbol="HOOD", as_of=TODAY, last_price=88.93, bid=88.9, ask=89.0))
     generated = real_trades.detect_and_alert_real_trades(
         broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
     )
@@ -231,11 +183,8 @@ def test_detect_and_alert_real_trades_no_positions_generates_nothing(conn):
     assert repo.get_real_trade_alerts(conn) == []
 
 
-def test_detect_and_alert_real_trades_never_raises_when_get_all_positions_fails(conn):
-    chain = OptionChain(symbol="TSLA", as_of=TODAY, underlying_price=330.0, contracts=[])
-    quote = Quote(symbol="TSLA", as_of=TODAY, last_price=330.0, bid=329.9, ask=330.1)
-    broker = _FakeBroker(positions=[], chain=chain, quote=quote, get_positions_raises=True)
-
+def test_detect_and_alert_real_trades_never_raises_when_get_orders_fails(conn):
+    broker = _FakeBroker(orders=[], chain=_hood_chain(), quote=Quote(symbol="HOOD", as_of=TODAY, last_price=88.93, bid=88.9, ask=89.0), get_orders_raises=True)
     generated = real_trades.detect_and_alert_real_trades(
         broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
     )
@@ -243,14 +192,9 @@ def test_detect_and_alert_real_trades_never_raises_when_get_all_positions_fails(
 
 
 def test_detect_and_alert_real_trades_skips_contract_not_found_in_chain(conn, monkeypatch):
-    """La cadena en vivo ya no tiene el strike exacto (delisted/vencimiento pasado) — se omite
-    la alerta de ESA posición pero no rompe el resto (acá no hay más posiciones, solo confirma
-    que no lanza y no persiste nada)."""
     monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
-    position = _short_put_position(quantity=-1.0)
-    chain = OptionChain(symbol="TSLA", as_of=TODAY, underlying_price=330.0, contracts=[])  # sin el contrato
-    quote = Quote(symbol="TSLA", as_of=TODAY, last_price=330.0, bid=329.9, ask=330.1)
-    broker = _FakeBroker(positions=[position], chain=chain, quote=quote)
+    empty_chain = OptionChain(symbol="HOOD", as_of=TODAY, underlying_price=88.93, contracts=[])
+    broker = _FakeBroker(orders=[_hood_order()], chain=empty_chain, quote=Quote(symbol="HOOD", as_of=TODAY, last_price=88.93, bid=88.9, ask=89.0))
 
     generated = real_trades.detect_and_alert_real_trades(
         broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
@@ -259,149 +203,86 @@ def test_detect_and_alert_real_trades_skips_contract_not_found_in_chain(conn, mo
     assert repo.get_real_trade_alerts(conn) == []
 
 
-def test_detect_and_alert_real_trades_reopens_after_full_close(conn, monkeypatch):
-    """Posición cerrada del todo (deja de aparecer en get_all_positions) y reabierta más tarde
-    con MENOS contratos que antes de cerrarla — debe detectarse como operación nueva, no
-    compararse contra el número viejo más grande (motivación de reemplazar el snapshot
-    completo en vez de upsert incremental)."""
+def test_detect_and_alert_real_trades_multiple_opening_legs_generate_separate_alerts(conn, monkeypatch):
+    """Cada apertura, su propio registro — pedido explícito 2026-07-28 (no promediar aperturas
+    incrementales entre sí). Acá una orden hipotética con 2 patas SELL_TO_OPEN de contratos
+    distintos genera 2 alertas independientes."""
     monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
-    chain = OptionChain(symbol="TSLA", as_of=TODAY, underlying_price=330.0, contracts=[_tsla_put_contract()])
-    quote = Quote(symbol="TSLA", as_of=TODAY, last_price=330.0, bid=329.9, ask=330.1)
+    order = _hood_order(legs=[
+        _hood_leg(quantity=2.0, price=3.15),
+        FilledOrderLeg(occ_symbol="HOOD  260904P00070000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=1.0, price=2.10),
+    ])
+    chain = OptionChain(
+        symbol="HOOD", as_of=TODAY, underlying_price=88.93,
+        contracts=[
+            _hood_contract(),
+            OptionContract(
+                symbol="HOOD  260904P00070000", option_type="put", strike=70.0, expiration=EXPIRATION,
+                bid=1.9, ask=2.3, last_price=2.1, implied_volatility=0.7, open_interest=10, volume=1, greeks=_greeks(),
+            ),
+        ],
+    )
+    broker = _FakeBroker(orders=[order], chain=chain, quote=Quote(symbol="HOOD", as_of=TODAY, last_price=88.93, bid=88.9, ask=89.0))
 
-    # Corrida 1: -3 contratos
-    broker_open = _FakeBroker(positions=[_short_put_position(quantity=-3.0)], chain=chain, quote=quote)
-    real_trades.detect_and_alert_real_trades(broker_open, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
-
-    # Corrida 2: posición cerrada del todo, ya no aparece
-    broker_closed = _FakeBroker(positions=[], chain=chain, quote=quote)
-    real_trades.detect_and_alert_real_trades(broker_closed, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
-    assert repo.get_position_snapshots(conn) == {}
-
-    # Corrida 3: reabierta con -1 (menos que el -3 original) — debe detectarse como nueva
-    broker_reopened = _FakeBroker(positions=[_short_put_position(quantity=-1.0)], chain=chain, quote=quote)
     generated = real_trades.detect_and_alert_real_trades(
-        broker_reopened, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
-    )
-    assert len(generated) == 1
-    assert len(repo.get_real_trade_alerts(conn)) == 2
-
-
-# --- Alcance de Fase 1: rolls NO deben generar alerta (aclarado por el usuario 2026-07-28) ---
-
-
-def _sofi_aug_put(quantity: float = -2.0, account_number: str = "123") -> AccountPosition:
-    return AccountPosition(
-        account_number=account_number, symbol="SOFI  260821P00021000", asset_type="OPTION",
-        quantity=quantity, average_price=0.30, market_value=quantity * 30.0, unrealized_pnl=0.0,
-        underlying_symbol="SOFI", option_type="put", strike=21.0, expiration=date(2026, 8, 21),
+        broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
     )
 
-
-def _sofi_sep_put(quantity: float = -2.0, account_number: str = "123") -> AccountPosition:
-    return AccountPosition(
-        account_number=account_number, symbol="SOFI  260918P00021000", asset_type="OPTION",
-        quantity=quantity, average_price=0.45, market_value=quantity * 45.0, unrealized_pnl=0.0,
-        underlying_symbol="SOFI", option_type="put", strike=21.0, expiration=date(2026, 9, 18),
-    )
+    assert len(generated) == 2
+    rows = repo.get_real_trade_alerts(conn)
+    assert len(rows) == 2
+    strikes = sorted(r["strike"] for r in rows)
+    assert strikes == [70.0, 75.0]
 
 
-def _sofi_chain() -> OptionChain:
-    contract = OptionContract(
-        symbol="SOFI  260918P00021000", option_type="put", strike=21.0, expiration=date(2026, 9, 18),
-        bid=0.44, ask=0.46, last_price=0.45, implied_volatility=0.55, open_interest=500, volume=50, greeks=_greeks(),
-    )
-    return OptionChain(symbol="SOFI", as_of=TODAY, underlying_price=17.0, contracts=[contract])
+# --- Alcance: rolls NO deben generar alerta (una orden con pata OPENING + CLOSING) ---
 
 
-def test_detect_and_alert_real_trades_suppresses_roll_same_underlying_same_cycle(conn, monkeypatch):
-    """El caso real que motivó esta aclaración de alcance: cerrar SOFI Aug21 $21P y abrir SOFI
-    Sep18 $21P en la MISMA corrida (un roll) no debe generar ninguna alerta."""
+def test_detect_and_alert_real_trades_suppresses_roll_same_order(conn, monkeypatch):
+    """El caso real que motivó esta aclaración de alcance: un roll de SOFI (Aug21->Sep18 $21P)
+    llega como UNA orden con una pata SELL_TO_OPEN + una pata BUY_TO_CLOSE — no debe alertar."""
     monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
-    chain = _sofi_chain()
-    quote = Quote(symbol="SOFI", as_of=TODAY, last_price=17.0, bid=16.9, ask=17.1)
+    order = FilledOrder(
+        order_id=1007347459242, account_number="74257810", fill_time=datetime(2026, 7, 27, 17, 4, tzinfo=timezone.utc),
+        legs=[
+            FilledOrderLeg(occ_symbol="SOFI  260918P00021000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=2.0, price=4.38),
+            FilledOrderLeg(occ_symbol="SOFI  260821P00021000", instruction="BUY_TO_CLOSE", position_effect="CLOSING", quantity=2.0, price=4.15),
+        ],
+    )
+    broker = _FakeBroker(orders=[order], chain=_hood_chain(), quote=Quote(symbol="SOFI", as_of=TODAY, last_price=17.0, bid=16.9, ask=17.1))
 
-    # Corrida 1: posición vieja (SOFI Aug21) ya establecida en el snapshot.
-    broker_before = _FakeBroker(positions=[_sofi_aug_put()], chain=chain, quote=quote)
-    real_trades.detect_and_alert_real_trades(broker_before, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
-
-    # Corrida 2 (el roll): SOFI Aug21 desapareció (cerrada), SOFI Sep18 es nueva.
-    broker_roll = _FakeBroker(positions=[_sofi_sep_put()], chain=chain, quote=quote)
     generated = real_trades.detect_and_alert_real_trades(
-        broker_roll, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
+        broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
     )
 
     assert generated == []
     assert repo.get_real_trade_alerts(conn) == []
-    # El snapshot SÍ se actualiza al estado actual (para no perder de vista la posición nueva
-    # en corridas futuras), aunque no se haya alertado.
-    assert repo.get_position_snapshots(conn) == {("123", "SOFI  260918P00021000"): -2.0}
 
 
-def test_detect_and_alert_real_trades_does_not_suppress_new_open_on_different_underlying(conn, monkeypatch):
-    """Cerrar SOFI y abrir TSLA en la misma corrida (subyacentes distintos) NO es un roll —
-    TSLA debe alertarse normalmente."""
+def test_detect_and_alert_real_trades_does_not_suppress_separate_close_and_open_orders(conn, monkeypatch):
+    """Mejora sobre la heurística anterior: cerrar en UNA orden y abrir en OTRA orden distinta
+    (no combinadas) del mismo subyacente ya NO se suprime — solo una orden con ambos efectos
+    combinados es un roll. Antes esto era un falso negativo documentado."""
     monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
-    sofi_chain = _sofi_chain()
-    tsla_chain = OptionChain(symbol="TSLA", as_of=TODAY, underlying_price=330.0, contracts=[_tsla_put_contract()])
-    sofi_quote = Quote(symbol="SOFI", as_of=TODAY, last_price=17.0, bid=16.9, ask=17.1)
-    tsla_quote = Quote(symbol="TSLA", as_of=TODAY, last_price=330.0, bid=329.9, ask=330.1)
-
-    class _MultiChainBroker(_FakeBroker):
-        def get_quote(self, symbol):
-            return sofi_quote if symbol == "SOFI" else tsla_quote
-
-        def get_option_chain(self, symbol, expiration_range_days=(7, 60)):
-            return sofi_chain if symbol == "SOFI" else tsla_chain
-
-    broker_before = _MultiChainBroker(positions=[_sofi_aug_put()], chain=sofi_chain, quote=sofi_quote)
-    real_trades.detect_and_alert_real_trades(broker_before, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
-
-    # SOFI cerrada, TSLA (subyacente distinto) abierta — no es un roll.
-    broker_after = _MultiChainBroker(positions=[_short_put_position(quantity=-1.0)], chain=tsla_chain, quote=tsla_quote)
-    generated = real_trades.detect_and_alert_real_trades(
-        broker_after, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
+    close_order = FilledOrder(
+        order_id=1, account_number="74257810", fill_time=datetime(2026, 7, 28, 10, 0, tzinfo=timezone.utc),
+        legs=[FilledOrderLeg(occ_symbol="SOFI  260821P00021000", instruction="BUY_TO_CLOSE", position_effect="CLOSING", quantity=2.0, price=4.15)],
     )
-
-    assert len(generated) == 1
-    assert generated[0]["symbol"] == "TSLA"
-
-
-def test_detect_and_alert_real_trades_does_not_suppress_across_different_accounts(conn, monkeypatch):
-    """Un cierre en la cuenta 123 no debe suprimir una apertura del mismo subyacente en la
-    cuenta 456 — son cuentas distintas, no hay roll posible entre ellas."""
-    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
-    chain = _sofi_chain()
-    quote = Quote(symbol="SOFI", as_of=TODAY, last_price=17.0, bid=16.9, ask=17.1)
-
-    broker_before = _FakeBroker(positions=[_sofi_aug_put(account_number="123")], chain=chain, quote=quote)
-    real_trades.detect_and_alert_real_trades(broker_before, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
-
-    # Cuenta 123 cierra SOFI Aug21; cuenta 456 (distinta) abre SOFI Sep18 — no es el mismo roll.
-    broker_after = _FakeBroker(positions=[_sofi_sep_put(account_number="456")], chain=chain, quote=quote)
-    generated = real_trades.detect_and_alert_real_trades(
-        broker_after, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
+    open_order = FilledOrder(
+        order_id=2, account_number="74257810", fill_time=datetime(2026, 7, 28, 10, 5, tzinfo=timezone.utc),
+        legs=[FilledOrderLeg(occ_symbol="SOFI  260918P00021000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=2.0, price=4.38)],
     )
+    chain = OptionChain(
+        symbol="SOFI", as_of=TODAY, underlying_price=17.0,
+        contracts=[OptionContract(
+            symbol="SOFI  260918P00021000", option_type="put", strike=21.0, expiration=date(2026, 9, 18),
+            bid=4.3, ask=4.46, last_price=4.38, implied_volatility=0.55, open_interest=500, volume=50, greeks=_greeks(),
+        )],
+    )
+    broker = _FakeBroker(orders=[close_order, open_order], chain=chain, quote=Quote(symbol="SOFI", as_of=TODAY, last_price=17.0, bid=16.9, ask=17.1))
 
-    assert len(generated) == 1
-    assert generated[0]["symbol"] == "SOFI"
-
-
-def test_detect_and_alert_real_trades_does_not_suppress_when_no_prior_close_this_cycle(conn, monkeypatch):
-    """Sin ningún cierre en la corrida actual, una apertura nueva del mismo subyacente que una
-    posición YA existente (ej. vender un segundo strike de SOFI) se alerta normalmente — no
-    todo lo que comparte subyacente es un roll, solo cuando algo se cerró en la misma corrida."""
-    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
-    chain = _sofi_chain()
-    quote = Quote(symbol="SOFI", as_of=TODAY, last_price=17.0, bid=16.9, ask=17.1)
-
-    broker_before = _FakeBroker(positions=[_sofi_aug_put()], chain=chain, quote=quote)
-    real_trades.detect_and_alert_real_trades(broker_before, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
-
-    # SOFI Aug21 SIGUE abierta (no se cerró) Y se abre SOFI Sep18 nueva — dos posiciones
-    # distintas del mismo subyacente coexistiendo, no un roll.
-    broker_after = _FakeBroker(positions=[_sofi_aug_put(), _sofi_sep_put()], chain=chain, quote=quote)
     generated = real_trades.detect_and_alert_real_trades(
-        broker_after, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
+        broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
     )
 
     assert len(generated) == 1

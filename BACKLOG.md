@@ -4,10 +4,12 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-28 (mañana — scheduler colgado durante horario de mercado
-diagnosticado y arreglado, bug real de Market Movers corregido, BTC real intentado y pausado a
-pedido del usuario, y bug real de Operaciones usando mark price en vez del fill real corregido
-con las 4 alertas históricas recalculadas — ver secciones dedicadas abajo).
+Última actualización: 2026-07-28 (mediodía — rediseño completo de detección de Operaciones vía
+`/orders` de Schwab, reemplazando el diff de posiciones y resolviendo de raíz el bug de mark
+price del ítem anterior; incidente real durante el despliegue con 60 notificaciones de WhatsApp
+falsas ya enviadas, documentado íntegro. Antes en la sesión: scheduler colgado diagnosticado y
+arreglado, bug de Market Movers corregido, BTC intentado y pausado a pedido del usuario — ver
+secciones dedicadas abajo).
 
 ## En progreso ahora
 
@@ -58,17 +60,15 @@ Ninguno.
 
 ## Alcance confirmado — Pestaña Operaciones, Fase 1 (aclarado por el usuario 2026-07-28)
 
-**Solo APERTURAS genuinas generan alerta.** Explícitamente FUERA de alcance en esta Fase 1
-(posible Fase 2 futura):
-- **Cierres** — nunca generaron alerta (diseño original, sin cambios).
-- **Rolls** (cerrar una opción y abrir otra distinta del mismo subyacente, típicamente una
-  sola orden combinada de Schwab) — **SÍ generaban alerta indebida hasta este fix** (ver
-  detalle completo en "Terminado y verificado" abajo), corregido con una heurística de
-  cierre+apertura del mismo subyacente en la misma corrida. Límite conocido y aceptado: un
-  cierre y una apertura NO relacionados del mismo subyacente dentro de la misma ventana de 3
-  minutos también se suprimirían (falso negativo infrecuente). Fase 2 (no implementada):
-  confirmar rolls vía el endpoint `/orders` de Schwab (misma orden combinada) en vez de
-  inferir por coincidencia de subyacente/ventana temporal.
+**Solo APERTURAS genuinas generan alerta.**
+- **Cierres** — nunca generan alerta (diseño original, sin cambios).
+- **Rolls** (cerrar una opción y abrir otra distinta del mismo subyacente, típicamente una sola
+  orden combinada de Schwab) — nunca generan alerta. **La "Fase 2" que quedaba pendiente
+  (confirmar rolls vía `/orders` en vez de una heurística de ventana temporal) ya está
+  implementada** — ver "Rediseño de detección vía /orders" abajo: una orden con una pata
+  OPENING y una CLOSING es un roll DETERMINÍSTICO por su propia composición, no una inferencia
+  entre corridas. La heurística vieja (y su falso negativo conocido) quedó completamente
+  reemplazada.
 
 ## Investigación pendiente — sin prioridad inmediata
 
@@ -421,11 +421,12 @@ Ninguno.
     del contrato NO se tocan — siguen siendo el spread real de mercado, correcto para
     `assess_liquidity` (advertir sobre spreads anchos es una pregunta de "¿es operable ahora?",
     distinta de "¿qué pagué?").
-    **Límite conocido**: si Schwab ya reporta un `average_price` BLENDEADO (posición con varios
-    lotes del mismo contrato comprados/vendidos en momentos distintos), el precio usado es el
-    promedio de TODOS los lotes al momento de la detección, no necesariamente el fill exacto
-    del lote incremental — mejor que el mark price, pero no perfecto. Fase 2 (no implementada,
-    mismo espíritu que la Fase 2 de rolls): confirmar vía `/orders` de Schwab.
+    **Límite conocido, resuelto del todo por el ítem #36**: en el momento de este fix, si Schwab
+    reportaba un `average_price` BLENDEADO (posición con varios lotes del mismo contrato
+    comprados/vendidos en momentos distintos) el precio usado era el promedio de TODOS los lotes,
+    no el fill exacto del lote incremental — mejor que el mark price, pero no perfecto. El
+    rediseño vía `/orders` (#36) elimina esta limitación por completo: cada orden ya trae su
+    fill exacto, sin promediar nada.
     Verificado con la posición real de HOOD: los 3 números del fix coinciden EXACTO con el
     cálculo manual del usuario. Las 4 alertas reales históricas corregidas retroactivamente en
     la DB (HOOD, TSLA, EWY x2 — una de ellas con fill real distinto al promedio actual de la
@@ -433,8 +434,54 @@ Ninguno.
     aplicarle el promedio blendeado ACTUAL a un fill que ya no lo representa). Verificado en
     navegador en vivo: las 4 tarjetas muestran números y comentario consistentes. 3 tests
     nuevos (`test_payoff.py`, `test_candidates.py`, `test_real_trades.py`) — 465/465 en verde.
+36. **Rediseño completo de detección de Operaciones: de diffear posiciones a leer órdenes
+    LLENADAS vía `/orders`** (pedido explícito 2026-07-28, tras evaluar complejidad primero).
+    Reemplaza TODO el mecanismo de la Fase 1 (tabla `position_snapshots`, diff de
+    posiciones/promedio blendeado, heurística de roll por ventana temporal) — confirmado en
+    vivo probando el endpoint real contra la cuenta: cada orden trae, por pata,
+    `instruction`/`positionEffect` (`SELL_TO_OPEN`/`OPENING` vs. `BUY_TO_CLOSE`/`CLOSING`) y el
+    fill EXACTO (`orderActivityCollection[].executionLegs[].price`) de ESA orden puntual — sin
+    promediar con otras aperturas del mismo contrato en momentos distintos. Un roll es una sola
+    orden con una pata OPENING y una CLOSING (confirmado con el roll real de SOFI de días
+    atrás: `complexOrderStrategyType: "CALENDAR"`), detectable con certeza por la composición
+    de la orden — ya no hace falta inferir nada entre corridas.
+    Piezas nuevas: `broker/models.py::FilledOrder/FilledOrderLeg` + `parse_occ_option_symbol`
+    (movido desde `schwab_client.py`, formato de la industria, ahora compartido);
+    `SchwabBrokerClient.get_recent_filled_orders(since)` (ventana angosta, ~15 min — pedir
+    varios días de una vez da timeout, confirmado pidiendo 3 días); `MockBrokerClient` devuelve
+    `[]` (sin cuentas reales en modo mock, mismo criterio que el resto). `real_trades.py`
+    reescrito: `_is_roll()` (una orden con pata OPENING + CLOSING), dedup por `(order_id,
+    occ_symbol)` vía la nueva columna `real_trade_alerts.order_id` — las ventanas de detección
+    se solapan a propósito entre corridas (más margen que la cadencia del cron), el dedup hace
+    que pedir de más sea inofensivo. Tabla `position_snapshots` DROPeada de la base real (ya
+    no la usa nada). Verificado en vivo: la orden real de HOOD reproduce el fill exacto
+    ($3.15), y una segunda apertura incremental de EWY (mismo contrato, distinto momento) trajo
+    su fill propio ($5.90) — confirmando además, con datos reales, que el promedio blendeado
+    usado por el ítem #35 ($5.225) YA no era exacto para ese lote puntual, motivo extra que
+    confirma el valor del rediseño. UI: Pestaña Operaciones ahora agrupa las tarjetas por fecha
+    ("⚡ Hoy · N operaciones" vs. fechas viejas), pedido explícito para distinguir de un
+    vistazo qué es nuevo. 34 tests nuevos (`test_models.py`, `test_schwab_client.py`,
+    `test_mock_client.py`, `test_real_trades.py`, `test_repository.py`) — 480/480 en verde.
 
-## Cómo se usa este archivo
+    **Incidente real durante el despliegue, con causa raíz y resolución** — se documenta
+    íntegro por transparencia: al reiniciar el scheduler con el código nuevo, el proceso VIEJO
+    (todavía corriendo con el mecanismo anterior mientras se terminaba de verificar el nuevo)
+    tuvo una falla transitoria de red pidiendo `/accounts/accountNumbers` a las 11:06 ET.
+    `get_all_positions()` devolvía `[]` en ese caso (sin excepción, `_iter_raw_positions`
+    swallowea el error) — y el código VIEJO, sin distinguir "sin posiciones" de "falló la
+    consulta", reemplazaba igual el snapshot completo con esa lista vacía
+    (`replace_position_snapshots(conn, [])`), borrando la base de comparación. La corrida
+    siguiente (3 min después) vio TODAS las ~60 posiciones cortas reales de la cuenta como
+    "nuevas" (nada en el snapshot vacío para compararlas), generando 60 alertas falsas — **y 60
+    notificaciones de WhatsApp reales enviadas al usuario** por operaciones que NO eran nuevas,
+    solo posiciones que ya tenía abiertas desde antes. Esto era un bug LATENTE del diseño
+    viejo (no introducido por el rediseño) que nunca se había disparado hasta esta falla de red
+    puntual. Acción tomada: desplegado el código nuevo de inmediato (que no tiene este riesgo —
+    sin tabla de snapshot que vaciar, una falla de red en `/orders` simplemente da 0 órdenes
+    esa corrida, sin corromper nada), las 60 filas espurias identificadas por su firma (mismo
+    rango de tiempo, `order_id IS NULL`, fuera de las 4 filas legítimas ya conocidas) y
+    borradas de la base. **Las 60 notificaciones de WhatsApp ya enviadas no se pueden
+    deshacer** — quedó reportado directamente al usuario en el momento.
 
 - Antes de arrancar algo nuevo: agregarlo a "Pendiente, no empezado" apenas se pide, aunque
   no se vaya a implementar en el momento.

@@ -1,12 +1,35 @@
 from __future__ import annotations
 
-from datetime import date
+import re
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel
 
 OptionType = Literal["call", "put"]
 GreeksSource = Literal["broker", "calculated"]
+
+# Símbolo OCC: 6 caracteres de root (padded con espacios) + YYMMDD + C/P + strike*1000 en 8
+# dígitos. Formato estable de la industria (no de un broker específico) — movido acá desde
+# broker/schwab_client.py (2026-07-28, rediseño de detección de operaciones reales vía /orders)
+# para que tanto el parseo de posiciones (schwab_client.py) como el de patas de órdenes
+# (alerts/real_trades.py) compartan la misma función en vez de duplicarla.
+_OCC_OPTION_SYMBOL_RE = re.compile(r"^(?P<root>.{6})(?P<yy>\d{2})(?P<mm>\d{2})(?P<dd>\d{2})(?P<cp>[CP])(?P<strike>\d{8})$")
+
+
+def parse_occ_option_symbol(symbol: str) -> tuple[str, date, str, float] | None:
+    """(underlying, expiration, option_type, strike) a partir del símbolo OCC, o None si no
+    matchea el formato (no es una opción estándar)."""
+    match = _OCC_OPTION_SYMBOL_RE.match(symbol)
+    if not match:
+        return None
+    try:
+        expiration = date(2000 + int(match["yy"]), int(match["mm"]), int(match["dd"]))
+    except ValueError:
+        return None
+    option_type = "call" if match["cp"] == "C" else "put"
+    strike = int(match["strike"]) / 1000
+    return match["root"].strip(), expiration, option_type, strike
 
 
 class Quote(BaseModel):
@@ -159,3 +182,29 @@ class OptionChain(BaseModel):
         if not expirations:
             raise ValueError(f"No hay vencimientos disponibles para {self.symbol}")
         return min(expirations, key=lambda e: abs((e - self.as_of).days - (min_days + max_days) / 2))
+
+
+class FilledOrderLeg(BaseModel):
+    """Una pata de una orden YA LLENADA (`status=FILLED` en Schwab) — Sección 'rediseño de
+    Operaciones vía /orders' (2026-07-28), reemplaza el diff de posiciones/promedio blendeado
+    de la Fase 1 anterior. `price` es el fill EXACTO de ESTA pata en ESTA orden puntual (de
+    `orderActivityCollection[].executionLegs[]`, agregado si hubo más de una ejecución parcial)
+    — no un promedio de toda la posición acumulada."""
+
+    occ_symbol: str
+    instruction: str  # "SELL_TO_OPEN" | "BUY_TO_OPEN" | "SELL_TO_CLOSE" | "BUY_TO_CLOSE"
+    position_effect: str  # "OPENING" | "CLOSING"
+    quantity: float
+    price: float
+
+
+class FilledOrder(BaseModel):
+    """Una orden llenada de Schwab (`/accounts/{hash}/orders`), con sus patas ya resueltas a
+    fill exacto. Una orden con una pata OPENING y una CLOSING en la MISMA orden es un roll
+    (cerrar+abrir combinado) — detectable con certeza por la composición de la orden, sin
+    heurística de ventana temporal/subyacente entre corridas (ver alerts/real_trades.py)."""
+
+    order_id: int
+    account_number: str
+    fill_time: datetime
+    legs: list[FilledOrderLeg]

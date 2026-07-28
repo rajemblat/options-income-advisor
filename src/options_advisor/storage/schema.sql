@@ -152,23 +152,11 @@ CREATE TABLE IF NOT EXISTS assigned_positions (
     FOREIGN KEY (origin_alert_id) REFERENCES alerts(id)
 );
 
--- Último snapshot de posiciones CORTAS de opciones por cuenta (Sección 'Operaciones' —
--- réplica automática de operaciones reales, pedido 2026-07-25) — reemplazado por completo cada
--- corrida del scheduler (ver storage/repository.py::replace_position_snapshots), no un
--- historial: solo hace falta el estado de la corrida anterior para diffear contra la actual.
-CREATE TABLE IF NOT EXISTS position_snapshots (
-    account_number TEXT NOT NULL,
-    symbol TEXT NOT NULL,
-    quantity REAL NOT NULL,
-    snapshot_ts TEXT NOT NULL,
-    underlying_symbol TEXT,
-    PRIMARY KEY (account_number, symbol)
-);
-
--- Operaciones reales de venta de opciones detectadas en la cuenta Schwab (diff contra
--- position_snapshots, ver alerts/real_trades.py) — tabla separada de candidate_contracts/alerts
--- a propósito: esas representan sugerencias no ejecutadas (con score/threshold/perfil), esto es
--- lo que el usuario YA hizo, sin nada que puntuar.
+-- Operaciones reales de venta de opciones detectadas en la cuenta Schwab (Sección 'Operaciones'
+-- — réplica automática de operaciones reales, pedido 2026-07-25; rediseñado 2026-07-28 para
+-- detectar vía /orders en vez de diffear posiciones, ver alerts/real_trades.py) — tabla separada
+-- de candidate_contracts/alerts a propósito: esas representan sugerencias no ejecutadas (con
+-- score/threshold/perfil), esto es lo que el usuario YA hizo, sin nada que puntuar.
 CREATE TABLE IF NOT EXISTS real_trade_alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_number TEXT NOT NULL,
@@ -182,6 +170,7 @@ CREATE TABLE IF NOT EXISTS real_trade_alerts (
     expiration_date TEXT NOT NULL,
     quantity INTEGER NOT NULL,
     entry_price REAL,
+    order_id INTEGER,
     legs_json TEXT,
     net_premium REAL,
     max_profit REAL,

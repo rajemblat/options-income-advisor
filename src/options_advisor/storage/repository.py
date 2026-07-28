@@ -12,7 +12,6 @@ from options_advisor.storage.models import (
     MacroSnapshot,
     NewsItem,
     Notification,
-    PositionSnapshot,
     RealTradeAlert,
 )
 
@@ -391,33 +390,13 @@ def get_open_assigned_positions(conn: sqlite3.Connection, symbol: str | None = N
     return conn.execute("SELECT * FROM assigned_positions WHERE status = 'open'").fetchall()
 
 
-def get_position_snapshots(conn: sqlite3.Connection) -> dict[tuple[str, str], float]:
-    """(account_number, symbol OCC) -> cantidad del snapshot de la corrida anterior — usado por
-    alerts/real_trades.py para diffear contra las posiciones cortas actuales."""
-    rows = conn.execute("SELECT account_number, symbol, quantity FROM position_snapshots").fetchall()
-    return {(r["account_number"], r["symbol"]): r["quantity"] for r in rows}
-
-
-def get_position_snapshot_underlyings(conn: sqlite3.Connection) -> dict[tuple[str, str], str | None]:
-    """(account_number, symbol OCC) -> subyacente del snapshot de la corrida anterior — usado
-    por alerts/real_trades.py para distinguir un ROLL (cierre + apertura del MISMO subyacente
-    en la misma corrida) de una apertura genuina, sin tener que re-parsear el símbolo OCC."""
-    rows = conn.execute("SELECT account_number, symbol, underlying_symbol FROM position_snapshots").fetchall()
-    return {(r["account_number"], r["symbol"]): r["underlying_symbol"] for r in rows}
-
-
-def replace_position_snapshots(conn: sqlite3.Connection, snapshots: list[PositionSnapshot]) -> None:
-    """Reemplaza TODO el contenido de la tabla por el estado actual de posiciones cortas de
-    opciones — no un upsert incremental: una posición cerrada (ya no aparece en `snapshots`)
-    debe desaparecer también de acá, así si se reabre el mismo contrato más adelante se detecta
-    como operación nueva en vez de compararse contra un número viejo más grande (ver
-    alerts/real_trades.py::detect_and_alert_real_trades)."""
-    conn.execute("DELETE FROM position_snapshots")
-    conn.executemany(
-        "INSERT INTO position_snapshots (account_number, symbol, quantity, snapshot_ts, underlying_symbol) VALUES (?, ?, ?, ?, ?)",
-        [(s.account_number, s.symbol, s.quantity, s.snapshot_ts.isoformat(), s.underlying_symbol) for s in snapshots],
-    )
-    conn.commit()
+def get_alerted_order_leg_keys(conn: sqlite3.Connection) -> set[tuple[int, str]]:
+    """(order_id, occ_symbol) de toda alerta real ya generada — clave de dedup contra
+    reprocesar la misma pata de la misma orden en corridas sucesivas del cron (las ventanas de
+    detección se solapan a propósito, ver alerts/real_trades.py). Filas de antes del rediseño
+    vía /orders (order_id NULL) no aportan nada acá, se excluyen."""
+    rows = conn.execute("SELECT order_id, occ_symbol FROM real_trade_alerts WHERE order_id IS NOT NULL").fetchall()
+    return {(r["order_id"], r["occ_symbol"]) for r in rows}
 
 
 def insert_real_trade_alert(conn: sqlite3.Connection, trade: RealTradeAlert) -> int:
@@ -425,11 +404,11 @@ def insert_real_trade_alert(conn: sqlite3.Connection, trade: RealTradeAlert) -> 
         """
         INSERT INTO real_trade_alerts
             (account_number, occ_symbol, symbol, trade_date, trade_ts, strategy_type, option_type,
-             strike, expiration_date, quantity, entry_price, legs_json, net_premium, max_profit,
-             max_loss, breakevens_json, probability_of_profit, dte, underlying_price,
+             strike, expiration_date, quantity, entry_price, order_id, legs_json, net_premium,
+             max_profit, max_loss, breakevens_json, probability_of_profit, dte, underlying_price,
              payoff_is_estimate, annualized_return_pct, early_close_projection_json,
              narrative_text, narrative_source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             trade.account_number,
@@ -443,6 +422,7 @@ def insert_real_trade_alert(conn: sqlite3.Connection, trade: RealTradeAlert) -> 
             trade.expiration_date.isoformat(),
             trade.quantity,
             trade.entry_price,
+            trade.order_id,
             json.dumps(trade.legs),
             trade.net_premium,
             trade.max_profit,

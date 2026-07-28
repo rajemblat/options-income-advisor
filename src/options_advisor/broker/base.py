@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from datetime import date
+from datetime import date, datetime
 
-from options_advisor.broker.models import AccountPosition, Mover, OptionChain, PriceBar, Quote
+from options_advisor.broker.models import AccountPosition, FilledOrder, Mover, OptionChain, PriceBar, Quote
 
 
 class BrokerClient(ABC):
@@ -51,6 +51,15 @@ class BrokerClient(ABC):
     def get_all_positions(self) -> list[AccountPosition]:
         """Todas las posiciones reales (acciones, opciones, ETFs) de todas las cuentas
         vinculadas — página de portafolio real, Entrega 1. [] si el broker no tiene cuentas
+        reales (MockBrokerClient)."""
+        ...
+
+    @abstractmethod
+    def get_recent_filled_orders(self, since: datetime) -> list[FilledOrder]:
+        """Órdenes LLENADAS (`status=FILLED`) desde `since` (timezone-aware, UTC) en todas las
+        cuentas vinculadas — usado por la Pestaña Operaciones (Sección 'rediseño vía /orders',
+        2026-07-28) para detectar aperturas nuevas con el fill EXACTO de cada orden, en vez de
+        diffear posiciones contra un promedio blendeado. [] si el broker no tiene cuentas
         reales (MockBrokerClient)."""
         ...
 
