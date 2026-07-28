@@ -20,7 +20,8 @@ inject_theme()
 render_header(
     icon("zap", size=24, color=ACCENT),
     "Eventos de riesgo",
-    f"Volatilidad esperada en los próximos {LOOKAHEAD_DAYS} días: FOMC, CPI, empleo y earnings de tu watchlist",
+    f"Eventos de la Fed en los próximos {LOOKAHEAD_DAYS} días: FOMC, CPI y reporte de empleo (NFP). "
+    "Earnings de símbolos individuales están en el Calendario de earnings, más abajo.",
 )
 
 conn = get_connection()
@@ -40,12 +41,16 @@ upcoming_events = json.loads(macro["upcoming_events_json"]) if macro and macro["
 
 earnings_by_symbol = {symbol: repo.get_latest_next_earnings_date(conn, symbol) for symbol in symbols}
 
-events = build_risk_calendar(upcoming_events, earnings_by_symbol, today, lookahead_days=LOOKAHEAD_DAYS)
+# Sección de arriba SOLO eventos de la Fed (FOMC/CPI/empleo) — pedido explícito 2026-07-27: no
+# mezclar earnings de símbolos individuales acá, esos van solo en el Calendario de earnings de
+# más abajo. earnings_by_symbol={} hace que build_risk_calendar no agregue ninguna fila de
+# earnings, sin tocar su firma (sigue reusándose para el calendario de rango de fechas abajo).
+events = build_risk_calendar(upcoming_events, {}, today, lookahead_days=LOOKAHEAD_DAYS)
 
 if not events:
     st.info(
-        "No hay eventos de riesgo detectados en los próximos días. Corré el análisis desde la página "
-        "principal si todavía no trajiste el contexto macro (FRED/Kalshi) ni earnings (Finnhub).",
+        "No hay eventos de la Fed detectados en los próximos días. Corré el análisis desde la página "
+        "principal si todavía no trajiste el contexto macro (FRED/Kalshi).",
         icon="⚡",
     )
 else:
@@ -62,9 +67,8 @@ else:
 
     st.caption(
         "Alto = FOMC, CPI o reporte de empleo (NFP): históricamente los que más mueven el mercado en general. "
-        "Medio = earnings de un símbolo puntual — el impacto real varía mucho por empresa; no hay movimiento "
-        "histórico de earnings pasados calibrado por símbolo todavía. Bajo = otros eventos macro que Finnhub "
-        "reporta con impacto menor. Earnings vacíos para un símbolo = no se pudo verificar (ver página Watchlist)."
+        "Medio = otro evento macro con impacto medio según Finnhub (ej. Retail Sales). Bajo = eventos macro "
+        "con impacto menor. Earnings de símbolos individuales: ver el Calendario de earnings más abajo."
     )
 
 st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
