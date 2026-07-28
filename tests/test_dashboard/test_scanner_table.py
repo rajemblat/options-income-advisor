@@ -106,3 +106,57 @@ def test_build_scanner_rows_handles_missing_breakeven():
 def test_build_scanner_rows_multiple_candidates():
     rows = build_scanner_rows([_candidate_row(symbol="TSLA"), _candidate_row(symbol="AAPL")])
     assert [r["Symbol"] for r in rows] == ["TSLA", "AAPL"]
+
+
+# --- Probabilidad OTM / Instrumento (Sección 'Pestaña Screener', pedido 2026-07-27) ---
+
+
+def test_build_scanner_rows_probability_otm_none_without_risk_free_rate():
+    row = build_scanner_rows([_candidate_row()])[0]
+    assert row["Probabilidad OTM (%)"] is None
+
+
+def test_build_scanner_rows_probability_otm_computed_when_risk_free_rate_given():
+    """Leg trae implied_volatility=0.32280 (ver default de OptionContract en el resto de los
+    tests de este archivo)."""
+    row = build_scanner_rows(
+        [
+            _candidate_row(
+                legs_json=json.dumps(
+                    [{"side": "sell", "option_type": "put", "strike": 320.0, "bid": 5.4, "volume": 50, "open_interest": 500, "implied_volatility": 0.30}]
+                )
+            )
+        ],
+        risk_free_rate=0.045,
+    )[0]
+    assert row["Probabilidad OTM (%)"] is not None
+    assert 0.0 <= row["Probabilidad OTM (%)"] <= 100.0
+    # Probabilidad OTM (contra el strike) siempre <= POP (contra el breakeven) para un put vendido.
+    assert row["Probabilidad OTM (%)"] <= row["POP (%)"]
+
+
+def test_build_scanner_rows_probability_otm_none_without_implied_volatility():
+    row = build_scanner_rows(
+        [_candidate_row(legs_json=json.dumps([{"side": "sell", "option_type": "put", "strike": 320.0, "bid": 5.4}]))],
+        risk_free_rate=0.045,
+    )[0]
+    assert row["Probabilidad OTM (%)"] is None
+
+
+def test_build_scanner_rows_instrumento_none_without_instrument_types():
+    row = build_scanner_rows([_candidate_row(symbol="TSLA")])[0]
+    assert row["Instrumento"] is None
+
+
+def test_build_scanner_rows_instrumento_from_mapping():
+    rows = build_scanner_rows(
+        [_candidate_row(symbol="SPY"), _candidate_row(symbol="AAPL")],
+        instrument_types={"SPY": "etf", "AAPL": "stock"},
+    )
+    assert rows[0]["Instrumento"] == "etf"
+    assert rows[1]["Instrumento"] == "stock"
+
+
+def test_build_scanner_rows_instrumento_none_for_symbol_missing_from_mapping():
+    row = build_scanner_rows([_candidate_row(symbol="TSLA")], instrument_types={"AAPL": "stock"})[0]
+    assert row["Instrumento"] is None

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 
-from options_advisor.alerts.formatting import compute_coverage, strategy_label
+from options_advisor.alerts.formatting import strategy_label
+from options_advisor.strategy.payoff import probability_otm
 
 # Sección "Vista tabla estilo Barchart en Escaneo" (pedido 2026-07-27): transforma filas de
 # `repo.get_recent_single_leg_candidates` (candidatos de una sola pata + IV Rank ya unido) en
@@ -22,10 +23,18 @@ def _pct_distance(option_type: str, reference: float, underlying_price: float) -
     return (reference - underlying_price) / underlying_price * 100
 
 
-def build_scanner_rows(candidates: list[dict]) -> list[dict]:
+def build_scanner_rows(
+    candidates: list[dict],
+    risk_free_rate: float | None = None,
+    instrument_types: dict[str, str | None] | None = None,
+) -> list[dict]:
     """Une legs_json/breakevens_json (JSON crudo tal como vienen de sqlite3.Row) en una fila
     plana por candidato. Candidatos sin datos suficientes (sin legs, sin underlying_price) se
-    omiten — no tiene sentido una fila de screener sin precio ni pata para calcular nada."""
+    omiten — no tiene sentido una fila de screener sin precio ni pata para calcular nada.
+
+    `risk_free_rate`/`instrument_types` son opcionales (Sección 'Pestaña Screener', pedido
+    2026-07-27) — sin ellos, "Probabilidad OTM (%)"/"Instrumento" quedan en None; la Vista
+    tabla de Escaneo (que no los necesita) sigue llamando esta función sin pasarlos."""
     rows: list[dict] = []
     for c in candidates:
         legs = json.loads(c["legs_json"]) if c["legs_json"] else []
@@ -39,10 +48,17 @@ def build_scanner_rows(candidates: list[dict]) -> list[dict]:
         breakeven = breakevens[0] if breakevens else None
         max_loss = c["max_loss"]
         net_premium = c["net_premium"]
+        dte = c["dte"]
+        sigma = leg.get("implied_volatility")
+
+        prob_otm = None
+        if risk_free_rate is not None and sigma is not None and dte is not None:
+            prob_otm = round(probability_otm(option_type, underlying_price, strike, dte, risk_free_rate, sigma) * 100, 1)
 
         rows.append(
             {
                 "Symbol": c["symbol"],
+                "Instrumento": (instrument_types or {}).get(c["symbol"]),
                 "Estrategia": strategy_label(c["strategy_type"]),
                 "Price": underlying_price,
                 "Exp Date": c["expiration_date"],
@@ -60,7 +76,8 @@ def build_scanner_rows(candidates: list[dict]) -> list[dict]:
                 "Return (%)": round(net_premium / max_loss * 100, 2) if net_premium is not None and max_loss else None,
                 "Rendimiento Anualizado (%)": c["annualized_return_pct"],
                 "POP (%)": round(c["probability_of_profit"] * 100, 1) if c["probability_of_profit"] is not None else None,
-                "DTE": c["dte"],
+                "Probabilidad OTM (%)": prob_otm,
+                "DTE": dte,
             }
         )
     return rows
