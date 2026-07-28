@@ -4,14 +4,13 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-27 (noche — Pestaña Operaciones, Fed/FRED, Calendario de earnings
-por rango, y los 4 bugs urgentes reportados en vivo, todos terminados y verificados).
+Última actualización: 2026-07-27/28 (madrugada — Pestaña Operaciones, Fed/FRED, Calendario de
+earnings por rango, los 4 bugs urgentes, y la vista tabla estilo Barchart en Escaneo, todos
+terminados y verificados).
 
 ## En progreso ahora
 
-Ninguno. Los 4 bugs urgentes de esta noche (ver "Terminado y verificado" #24-27) están
-resueltos y verificados con evidencia real. Sigue el punto 1 de "Pendiente" abajo (vista tabla
-estilo Barchart en Escaneo).
+Ninguno. Sigue el punto 1 de "Pendiente" abajo (Pestaña Screener).
 
 ## Hallazgo sin resolver — scheduler dejó de correr ~2h46m
 
@@ -26,26 +25,7 @@ ahora el proceso está corriendo y al día.
 
 ## Pendiente, no empezado — orden confirmado por el usuario 2026-07-26/27
 
-1. **Vista tabla estilo Barchart en Escaneo** (pedido 2026-07-27, a implementar DESPUÉS de
-   cerrar los 4 problemas urgentes de esta noche): vista alternativa de la página Escaneo —
-   tabla plana ordenable (clic en columna = rankea), no solo tarjetas expandidas. Columnas
-   pedidas: Symbol, Price, Exp Date, Strike, Moneyness (%), Bid, Breakeven, %BE, Volume, Open
-   Interest, IV Rank, Delta, Return, Rendimiento Anualizado, Probabilidad de beneficio.
-   **Auditoría de qué ya existe** (respuesta a lo pedido antes de implementar): symbol/
-   underlying_price/expiration_date/delta/breakevens/probability_of_profit/
-   annualized_return_pct/net_premium ya están en `CandidateContract`
-   (`storage/models.py`) — Strike sale de `strikes`/`legs`, Moneyness% y %BE se derivan de
-   strike/breakeven vs. underlying_price (mismo cálculo que `compute_coverage` en
-   `alerts/formatting.py`), Bid ya viaja en cada leg (`payoff.py::_leg_dict`). IV Rank vive en
-   `indicator_snapshots`, no en `candidate_contracts` — hace falta un JOIN por
-   (symbol, snapshot_date), mismo patrón que ya usa `pages/1_alertas.py`. **Lo único que falta
-   calcular de cero**: Volume y Open Interest — `OptionContract` (`broker/models.py`) ya trae
-   `open_interest`/`volume` del broker, pero `_leg_dict()` (`payoff.py`) no los copia al dict
-   de cada leg que se persiste en `legs_json` — hay que sumar esos 2 campos ahí (cambio
-   trivial, no hace falta tocar el schema porque `legs_json` ya es JSON libre). Complejidad:
-   **baja** — 1 campo nuevo en `_leg_dict`, un JOIN a `indicator_snapshots`, y una tabla
-   `st.dataframe` (ya ordenable por columna nativamente en Streamlit) en vez de tarjetas.
-2. **Pestaña "Screener" — buscador de opciones con filtros ajustables** (pedido 2026-07-27,
+1. **Pestaña "Screener" — buscador de opciones con filtros ajustables** (pedido 2026-07-27,
    estilo OptionSamurai/Barchart, sobre el mismo universo amplio de Escaneo, 411+ símbolos):
    filtros combinables (DTE, volumen, open interest, tipo de instrumento, strike, moneyness,
    delta, probabilidad OTM) sobre una tabla ordenable. **Auditoría de qué ya existe** (pedida
@@ -84,7 +64,7 @@ ahora el proceso está corriendo y al día.
    baldes categóricos (volumen/OI/moneyness) y la clasificación de instrumento son trabajo
    real, y probabilidad OTM necesita una decisión de producto antes de programarse (ver
    arriba). Recomendado: aclarar probabilidad OTM vs. POP con el usuario antes de arrancar.
-3. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
+2. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
    movimiento, aplicado por igual a todos los subyacentes de posiciones abiertas, recalculado
    con el motor de `payoff.py` existente. Muestra total proyectado vs. hoy (diferencia $ y %).
    Disclaimer de que es una simplificación (todo se mueve igual), no una predicción real.
@@ -327,6 +307,23 @@ ahora el proceso está corriendo y al día.
     (24-27: 0 tests nuevos combinados — todos son cableado de datos ya testeados o cambios de
     página sin lógica nueva; verificados en navegador con datos reales de producción en cada
     caso. 394/394 tests del repo en verde en todo momento.)
+28. **Vista tabla estilo Barchart en Escaneo**: `_leg_dict()` (`payoff.py`) ahora copia
+    `open_interest`/`volume` de cada `OptionContract` (antes se perdían al persistir en
+    `legs_json`, aunque el broker ya los devolvía). Nuevo
+    `repo.get_recent_single_leg_candidates()` (candidatos de las 4 estrategias de una sola pata
+    — Cash-Secured Put/Short Put/Covered Call/Short Call — con IV Rank ya unido vía LEFT JOIN a
+    `indicator_snapshots`) y `dashboard/scanner_table.py::build_scanner_rows()` (lógica pura,
+    sin Streamlit) arman la fila plana: Symbol/Estrategia/Price/Exp Date/Strike/Moneyness(%)/
+    Bid/Breakeven/%BE/Volume/Open Interest/IV Rank/Delta/Return(%)/Rendimiento Anualizado/POP.
+    Moneyness y %BE reusan el mismo sentido que `compute_coverage` (positivo = OTM, a favor del
+    vendedor); Return(%) es el retorno del PERÍODO (prima/pérdida máxima), distinto del
+    Rendimiento Anualizado ya existente. Tabla nueva al final de Escaneo vía `st.dataframe`,
+    ordenable nativamente por columna (sin JS adicional). Verificado en navegador en vivo: 412
+    candidatos reales, orden por IV Rank confirmado funcionando (flecha + valores ascendentes);
+    Volume/Open Interest en "None" para candidatos viejos (de antes del fix) pero confirmado
+    por separado con datos reales de Schwab que un candidato nuevo sí los trae
+    (open_interest=16305, volume=1726 en un put real de AAPL) — se van a ir poblando con cada
+    análisis nuevo. 17 tests nuevos (payoff, repository, scanner_table) — 408/408 en verde.
 
 ## Cómo se usa este archivo
 
