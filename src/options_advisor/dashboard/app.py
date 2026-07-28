@@ -114,6 +114,7 @@ pg = st.navigation(
         st.Page("pages/7_portafolio.py", title="Portafolio"),
         st.Page("pages/8_escaneo.py", title="Escaneo"),
         st.Page("pages/9_operaciones.py", title="Operaciones"),
+        st.Page("pages/10_screener.py", title="Screener"),
     ]
 )
 pg.run()
