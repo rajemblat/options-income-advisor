@@ -161,6 +161,7 @@ CREATE TABLE IF NOT EXISTS position_snapshots (
     symbol TEXT NOT NULL,
     quantity REAL NOT NULL,
     snapshot_ts TEXT NOT NULL,
+    underlying_symbol TEXT,
     PRIMARY KEY (account_number, symbol)
 );
 

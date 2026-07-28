@@ -32,6 +32,9 @@ _NEW_COLUMNS_BY_TABLE = {
     "macro_snapshot": {
         "cpi_yoy_date": "TEXT",
     },
+    "position_snapshots": {
+        "underlying_symbol": "TEXT",
+    },
 }
 
 

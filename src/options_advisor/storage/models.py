@@ -119,6 +119,10 @@ class PositionSnapshot(BaseModel):
     symbol: str  # OCC de la opción
     quantity: float  # negativo = corto; se guardan solo posiciones cortas, ver real_trades.py
     snapshot_ts: datetime
+    # Subyacente (ej. "SOFI") — sumado 2026-07-28 para poder distinguir un ROLL (cierre +
+    # apertura del MISMO subyacente en la misma corrida) de una apertura genuina nueva, ver
+    # alerts/real_trades.py::detect_and_alert_real_trades. None en filas de antes de este campo.
+    underlying_symbol: str | None = None
 
 
 class RealTradeAlert(BaseModel):

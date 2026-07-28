@@ -258,3 +258,125 @@ def test_detect_and_alert_real_trades_reopens_after_full_close(conn, monkeypatch
     )
     assert len(generated) == 1
     assert len(repo.get_real_trade_alerts(conn)) == 2
+
+
+# --- Alcance de Fase 1: rolls NO deben generar alerta (aclarado por el usuario 2026-07-28) ---
+
+
+def _sofi_aug_put(quantity: float = -2.0, account_number: str = "123") -> AccountPosition:
+    return AccountPosition(
+        account_number=account_number, symbol="SOFI  260821P00021000", asset_type="OPTION",
+        quantity=quantity, average_price=0.30, market_value=quantity * 30.0, unrealized_pnl=0.0,
+        underlying_symbol="SOFI", option_type="put", strike=21.0, expiration=date(2026, 8, 21),
+    )
+
+
+def _sofi_sep_put(quantity: float = -2.0, account_number: str = "123") -> AccountPosition:
+    return AccountPosition(
+        account_number=account_number, symbol="SOFI  260918P00021000", asset_type="OPTION",
+        quantity=quantity, average_price=0.45, market_value=quantity * 45.0, unrealized_pnl=0.0,
+        underlying_symbol="SOFI", option_type="put", strike=21.0, expiration=date(2026, 9, 18),
+    )
+
+
+def _sofi_chain() -> OptionChain:
+    contract = OptionContract(
+        symbol="SOFI  260918P00021000", option_type="put", strike=21.0, expiration=date(2026, 9, 18),
+        bid=0.44, ask=0.46, last_price=0.45, implied_volatility=0.55, open_interest=500, volume=50, greeks=_greeks(),
+    )
+    return OptionChain(symbol="SOFI", as_of=TODAY, underlying_price=17.0, contracts=[contract])
+
+
+def test_detect_and_alert_real_trades_suppresses_roll_same_underlying_same_cycle(conn, monkeypatch):
+    """El caso real que motivó esta aclaración de alcance: cerrar SOFI Aug21 $21P y abrir SOFI
+    Sep18 $21P en la MISMA corrida (un roll) no debe generar ninguna alerta."""
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    chain = _sofi_chain()
+    quote = Quote(symbol="SOFI", as_of=TODAY, last_price=17.0, bid=16.9, ask=17.1)
+
+    # Corrida 1: posición vieja (SOFI Aug21) ya establecida en el snapshot.
+    broker_before = _FakeBroker(positions=[_sofi_aug_put()], chain=chain, quote=quote)
+    real_trades.detect_and_alert_real_trades(broker_before, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+
+    # Corrida 2 (el roll): SOFI Aug21 desapareció (cerrada), SOFI Sep18 es nueva.
+    broker_roll = _FakeBroker(positions=[_sofi_sep_put()], chain=chain, quote=quote)
+    generated = real_trades.detect_and_alert_real_trades(
+        broker_roll, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
+    )
+
+    assert generated == []
+    assert repo.get_real_trade_alerts(conn) == []
+    # El snapshot SÍ se actualiza al estado actual (para no perder de vista la posición nueva
+    # en corridas futuras), aunque no se haya alertado.
+    assert repo.get_position_snapshots(conn) == {("123", "SOFI  260918P00021000"): -2.0}
+
+
+def test_detect_and_alert_real_trades_does_not_suppress_new_open_on_different_underlying(conn, monkeypatch):
+    """Cerrar SOFI y abrir TSLA en la misma corrida (subyacentes distintos) NO es un roll —
+    TSLA debe alertarse normalmente."""
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    sofi_chain = _sofi_chain()
+    tsla_chain = OptionChain(symbol="TSLA", as_of=TODAY, underlying_price=330.0, contracts=[_tsla_put_contract()])
+    sofi_quote = Quote(symbol="SOFI", as_of=TODAY, last_price=17.0, bid=16.9, ask=17.1)
+    tsla_quote = Quote(symbol="TSLA", as_of=TODAY, last_price=330.0, bid=329.9, ask=330.1)
+
+    class _MultiChainBroker(_FakeBroker):
+        def get_quote(self, symbol):
+            return sofi_quote if symbol == "SOFI" else tsla_quote
+
+        def get_option_chain(self, symbol, expiration_range_days=(7, 60)):
+            return sofi_chain if symbol == "SOFI" else tsla_chain
+
+    broker_before = _MultiChainBroker(positions=[_sofi_aug_put()], chain=sofi_chain, quote=sofi_quote)
+    real_trades.detect_and_alert_real_trades(broker_before, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+
+    # SOFI cerrada, TSLA (subyacente distinto) abierta — no es un roll.
+    broker_after = _MultiChainBroker(positions=[_short_put_position(quantity=-1.0)], chain=tsla_chain, quote=tsla_quote)
+    generated = real_trades.detect_and_alert_real_trades(
+        broker_after, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
+    )
+
+    assert len(generated) == 1
+    assert generated[0]["symbol"] == "TSLA"
+
+
+def test_detect_and_alert_real_trades_does_not_suppress_across_different_accounts(conn, monkeypatch):
+    """Un cierre en la cuenta 123 no debe suprimir una apertura del mismo subyacente en la
+    cuenta 456 — son cuentas distintas, no hay roll posible entre ellas."""
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    chain = _sofi_chain()
+    quote = Quote(symbol="SOFI", as_of=TODAY, last_price=17.0, bid=16.9, ask=17.1)
+
+    broker_before = _FakeBroker(positions=[_sofi_aug_put(account_number="123")], chain=chain, quote=quote)
+    real_trades.detect_and_alert_real_trades(broker_before, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+
+    # Cuenta 123 cierra SOFI Aug21; cuenta 456 (distinta) abre SOFI Sep18 — no es el mismo roll.
+    broker_after = _FakeBroker(positions=[_sofi_sep_put(account_number="456")], chain=chain, quote=quote)
+    generated = real_trades.detect_and_alert_real_trades(
+        broker_after, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
+    )
+
+    assert len(generated) == 1
+    assert generated[0]["symbol"] == "SOFI"
+
+
+def test_detect_and_alert_real_trades_does_not_suppress_when_no_prior_close_this_cycle(conn, monkeypatch):
+    """Sin ningún cierre en la corrida actual, una apertura nueva del mismo subyacente que una
+    posición YA existente (ej. vender un segundo strike de SOFI) se alerta normalmente — no
+    todo lo que comparte subyacente es un roll, solo cuando algo se cerró en la misma corrida."""
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    chain = _sofi_chain()
+    quote = Quote(symbol="SOFI", as_of=TODAY, last_price=17.0, bid=16.9, ask=17.1)
+
+    broker_before = _FakeBroker(positions=[_sofi_aug_put()], chain=chain, quote=quote)
+    real_trades.detect_and_alert_real_trades(broker_before, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+
+    # SOFI Aug21 SIGUE abierta (no se cerró) Y se abre SOFI Sep18 nueva — dos posiciones
+    # distintas del mismo subyacente coexistiendo, no un roll.
+    broker_after = _FakeBroker(positions=[_sofi_aug_put(), _sofi_sep_put()], chain=chain, quote=quote)
+    generated = real_trades.detect_and_alert_real_trades(
+        broker_after, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
+    )
+
+    assert len(generated) == 1
+    assert generated[0]["symbol"] == "SOFI"

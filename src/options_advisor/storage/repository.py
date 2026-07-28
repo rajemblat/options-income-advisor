@@ -398,6 +398,14 @@ def get_position_snapshots(conn: sqlite3.Connection) -> dict[tuple[str, str], fl
     return {(r["account_number"], r["symbol"]): r["quantity"] for r in rows}
 
 
+def get_position_snapshot_underlyings(conn: sqlite3.Connection) -> dict[tuple[str, str], str | None]:
+    """(account_number, symbol OCC) -> subyacente del snapshot de la corrida anterior — usado
+    por alerts/real_trades.py para distinguir un ROLL (cierre + apertura del MISMO subyacente
+    en la misma corrida) de una apertura genuina, sin tener que re-parsear el símbolo OCC."""
+    rows = conn.execute("SELECT account_number, symbol, underlying_symbol FROM position_snapshots").fetchall()
+    return {(r["account_number"], r["symbol"]): r["underlying_symbol"] for r in rows}
+
+
 def replace_position_snapshots(conn: sqlite3.Connection, snapshots: list[PositionSnapshot]) -> None:
     """Reemplaza TODO el contenido de la tabla por el estado actual de posiciones cortas de
     opciones — no un upsert incremental: una posición cerrada (ya no aparece en `snapshots`)
@@ -406,8 +414,8 @@ def replace_position_snapshots(conn: sqlite3.Connection, snapshots: list[Positio
     alerts/real_trades.py::detect_and_alert_real_trades)."""
     conn.execute("DELETE FROM position_snapshots")
     conn.executemany(
-        "INSERT INTO position_snapshots (account_number, symbol, quantity, snapshot_ts) VALUES (?, ?, ?, ?)",
-        [(s.account_number, s.symbol, s.quantity, s.snapshot_ts.isoformat()) for s in snapshots],
+        "INSERT INTO position_snapshots (account_number, symbol, quantity, snapshot_ts, underlying_symbol) VALUES (?, ?, ?, ?, ?)",
+        [(s.account_number, s.symbol, s.quantity, s.snapshot_ts.isoformat(), s.underlying_symbol) for s in snapshots],
     )
     conn.commit()
 

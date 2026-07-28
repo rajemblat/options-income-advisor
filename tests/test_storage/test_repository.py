@@ -188,6 +188,27 @@ def test_replace_position_snapshots_round_trip(conn):
     assert snapshots == {("123", "TSLA  260821P00320000"): -1.0, ("123", "AAPL  260821C00200000"): -2.0}
 
 
+def test_get_position_snapshot_underlyings_round_trip(conn):
+    repo.replace_position_snapshots(
+        conn,
+        [
+            PositionSnapshot(
+                account_number="123", symbol="TSLA  260821P00320000", quantity=-1.0,
+                snapshot_ts=datetime(2026, 7, 27, 10, 0), underlying_symbol="TSLA",
+            ),
+        ],
+    )
+    assert repo.get_position_snapshot_underlyings(conn) == {("123", "TSLA  260821P00320000"): "TSLA"}
+
+
+def test_get_position_snapshot_underlyings_none_when_not_provided(conn):
+    repo.replace_position_snapshots(
+        conn,
+        [PositionSnapshot(account_number="123", symbol="TSLA  260821P00320000", quantity=-1.0, snapshot_ts=datetime(2026, 7, 27, 10, 0))],
+    )
+    assert repo.get_position_snapshot_underlyings(conn) == {("123", "TSLA  260821P00320000"): None}
+
+
 def test_replace_position_snapshots_forgets_closed_positions(conn):
     """Un reemplazo completo (no upsert incremental) — una posición que ya no aparece en la
     corrida actual debe desaparecer de la tabla, así si se reabre el mismo contrato más

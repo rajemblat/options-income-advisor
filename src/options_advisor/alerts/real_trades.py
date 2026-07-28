@@ -186,14 +186,46 @@ def detect_and_alert_real_trades(
         return []
 
     previous = repo.get_position_snapshots(conn)
+    previous_underlyings = repo.get_position_snapshot_underlyings(conn)
     new_trades = _detect_new_short_trades(positions, previous)
+
+    # Alcance de Fase 1 (aclarado por el usuario 2026-07-28): la Pestaña Operaciones SOLO debe
+    # alertar APERTURAS genuinas — nunca cierres, y tampoco ROLLS (cerrar una opción y abrir
+    # otra distinta del MISMO subyacente, típicamente en una sola orden combinada de Schwab).
+    # Un roll técnicamente SÍ pasa por _detect_new_short_trades (la pata nueva es un símbolo
+    # OCC nunca visto antes, así que "previous.get(key, 0.0)" da 0 y se ve como apertura desde
+    # cero) — confirmado en la práctica: un roll real de SOFI generó una alerta indebida la
+    # noche del 2026-07-27, antes de esta aclaración de alcance.
+    #
+    # Heurística de Fase 1 (documentada como tal, con su límite conocido — ver BACKLOG.md):
+    # si el MISMO subyacente tiene una posición que estaba corta en la corrida anterior y ya
+    # no aparece en absoluto en la corrida actual (cerrada del todo, no solo reducida), CUALQUIER
+    # apertura nueva de ESE MISMO subyacente en esta misma corrida se trata como parte de un
+    # roll y se suprime (no genera alerta). Límite conocido y aceptado: si el usuario cierra una
+    # posición y, sin relación, abre una posición NUEVA e independiente del mismo subyacente
+    # dentro de la misma ventana de 3 minutos del cron, también se suprimiría — un falso
+    # negativo infrecuente, preferible a alertar rolls por error. Fase 2 (no implementada):
+    # usar el endpoint /orders de Schwab para confirmar que el cierre y la apertura vinieron de
+    # la MISMA orden combinada, en vez de inferirlo por coincidencia de subyacente/ventana.
+    current_short_keys = {(p.account_number, p.symbol) for p in positions if p.asset_type == "OPTION" and p.quantity < 0}
+    closed_underlyings_by_account: dict[str, set[str]] = {}
+    for key in previous:
+        if key in current_short_keys:
+            continue  # sigue abierta (entera o parcialmente reducida), no se cerró del todo
+        account_number, _occ_symbol = key
+        underlying = previous_underlyings.get(key)
+        if underlying:
+            closed_underlyings_by_account.setdefault(account_number, set()).add(underlying)
 
     # Reemplaza el snapshot completo con el estado actual de posiciones CORTAS de opciones —
     # también "olvida" posiciones cerradas (ya no aparecen en `positions`), así si se reabre el
     # mismo contrato más adelante se detecta como operación nueva en vez de compararse contra
     # un número viejo más grande (ver storage/repository.py::replace_position_snapshots).
     current_shorts = [
-        PositionSnapshot(account_number=p.account_number, symbol=p.symbol, quantity=p.quantity, snapshot_ts=datetime.now())
+        PositionSnapshot(
+            account_number=p.account_number, symbol=p.symbol, quantity=p.quantity,
+            snapshot_ts=datetime.now(), underlying_symbol=p.underlying_symbol,
+        )
         for p in positions
         if p.asset_type == "OPTION" and p.quantity < 0
     ]
@@ -201,6 +233,12 @@ def detect_and_alert_real_trades(
 
     generated: list[dict] = []
     for position, contracts_added in new_trades:
+        if position.underlying_symbol and position.underlying_symbol in closed_underlyings_by_account.get(position.account_number, set()):
+            logger.info(
+                "%s: subyacente %s tuvo un cierre en esta misma corrida — tratada como probable ROLL, sin alerta (Fase 1)",
+                position.symbol, position.underlying_symbol,
+            )
+            continue
         try:
             result = _build_and_persist_real_trade_alert(
                 broker, conn, settings, today, position, contracts_added, share_positions, anthropic_api_key, finnhub_api_key
