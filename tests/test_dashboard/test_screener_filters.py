@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+from options_advisor.dashboard.screener_filters import (
+    apply_filters,
+    classify_delta_bucket,
+    classify_moneyness_bucket,
+    classify_open_interest_bucket,
+    classify_volume_bucket,
+)
+
+
+def _row(**overrides) -> dict:
+    defaults = dict(
+        Symbol="TSLA",
+        DTE=25,
+        Strike=320.0,
+        Delta=-0.25,
+        Volume=50,
+        **{"Open Interest": 500, "Moneyness (%)": 8.0, "Instrumento": "stock", "Probabilidad OTM (%)": 70.0},
+    )
+    defaults.update(overrides)
+    return defaults
+
+
+# --- bucket classifiers ---
+
+
+def test_classify_volume_bucket_boundaries():
+    assert classify_volume_bucket(0) == "Muy bajo"
+    assert classify_volume_bucket(9) == "Muy bajo"
+    assert classify_volume_bucket(10) == "Bajo"
+    assert classify_volume_bucket(49) == "Bajo"
+    assert classify_volume_bucket(50) == "Medio"
+    assert classify_volume_bucket(999) == "Alto"
+    assert classify_volume_bucket(1000) == "Muy alto"
+    assert classify_volume_bucket(1_000_000) == "Muy alto"
+
+
+def test_classify_volume_bucket_none_for_none():
+    assert classify_volume_bucket(None) is None
+
+
+def test_classify_open_interest_bucket_boundaries():
+    assert classify_open_interest_bucket(0) == "Muy bajo"
+    assert classify_open_interest_bucket(500) == "Medio"
+    assert classify_open_interest_bucket(15000) == "Muy alto"
+
+
+def test_classify_moneyness_bucket_atm_around_zero():
+    assert classify_moneyness_bucket(0.0) == "ATM"
+    assert classify_moneyness_bucket(4.9) == "ATM"
+    assert classify_moneyness_bucket(-4.9) == "ATM"
+
+
+def test_classify_moneyness_bucket_deep_otm_and_itm():
+    assert classify_moneyness_bucket(20.0) == "Deep OTM"
+    assert classify_moneyness_bucket(-20.0) == "Deep ITM"
+
+
+def test_classify_moneyness_bucket_otm_and_itm():
+    assert classify_moneyness_bucket(10.0) == "OTM"
+    assert classify_moneyness_bucket(-10.0) == "ITM"
+
+
+def test_classify_delta_bucket_uses_absolute_value():
+    """Un put vendido tiene delta NEGATIVO (-0.25) pero se clasifica igual que una call de
+    +0.25 — la magnitud es lo que importa para el balde, no el signo."""
+    assert classify_delta_bucket(-0.25) == classify_delta_bucket(0.25)
+    assert classify_delta_bucket(-0.10) == "Bajo (0-0.25)"
+    assert classify_delta_bucket(0.60) == "Alto (0.50-0.75)"
+    assert classify_delta_bucket(0.90) == "Muy alto (>0.75)"
+
+
+def test_classify_delta_bucket_none_for_none():
+    assert classify_delta_bucket(None) is None
+
+
+# --- apply_filters ---
+
+
+def test_apply_filters_no_filters_returns_all_rows():
+    rows = [_row(Symbol="A"), _row(Symbol="B")]
+    assert apply_filters(rows) == rows
+
+
+def test_apply_filters_dte_range():
+    rows = [_row(Symbol="A", DTE=10), _row(Symbol="B", DTE=40)]
+    result = apply_filters(rows, dte_range=(0, 30))
+    assert [r["Symbol"] for r in result] == ["A"]
+
+
+def test_apply_filters_dte_range_excludes_row_with_missing_dte():
+    rows = [_row(Symbol="A", DTE=None)]
+    assert apply_filters(rows, dte_range=(0, 30)) == []
+
+
+def test_apply_filters_strike_range():
+    rows = [_row(Symbol="A", Strike=50.0), _row(Symbol="B", Strike=500.0)]
+    result = apply_filters(rows, strike_range=(0.0, 100.0))
+    assert [r["Symbol"] for r in result] == ["A"]
+
+
+def test_apply_filters_delta_buckets():
+    rows = [_row(Symbol="A", Delta=-0.10), _row(Symbol="B", Delta=-0.60)]
+    result = apply_filters(rows, delta_buckets=["Bajo (0-0.25)"])
+    assert [r["Symbol"] for r in result] == ["A"]
+
+
+def test_apply_filters_volume_buckets():
+    rows = [_row(Symbol="A", Volume=5), _row(Symbol="B", Volume=5000)]
+    result = apply_filters(rows, volume_buckets=["Muy alto"])
+    assert [r["Symbol"] for r in result] == ["B"]
+
+
+def test_apply_filters_open_interest_buckets():
+    rows = [_row(Symbol="A", **{"Open Interest": 10}), _row(Symbol="B", **{"Open Interest": 20000})]
+    result = apply_filters(rows, open_interest_buckets=["Muy alto"])
+    assert [r["Symbol"] for r in result] == ["B"]
+
+
+def test_apply_filters_moneyness_buckets():
+    rows = [_row(Symbol="A", **{"Moneyness (%)": 0.0}), _row(Symbol="B", **{"Moneyness (%)": 20.0})]
+    result = apply_filters(rows, moneyness_buckets=["Deep OTM"])
+    assert [r["Symbol"] for r in result] == ["B"]
+
+
+def test_apply_filters_instrument_types():
+    rows = [_row(Symbol="A", Instrumento="stock"), _row(Symbol="B", Instrumento="etf")]
+    result = apply_filters(rows, instrument_types=["etf"])
+    assert [r["Symbol"] for r in result] == ["B"]
+
+
+def test_apply_filters_instrument_types_excludes_unknown():
+    rows = [_row(Symbol="A", Instrumento=None)]
+    assert apply_filters(rows, instrument_types=["stock"]) == []
+
+
+def test_apply_filters_min_probability_otm():
+    rows = [_row(Symbol="A", **{"Probabilidad OTM (%)": 50.0}), _row(Symbol="B", **{"Probabilidad OTM (%)": 90.0})]
+    result = apply_filters(rows, min_probability_otm=80.0)
+    assert [r["Symbol"] for r in result] == ["B"]
+
+
+def test_apply_filters_min_probability_otm_excludes_missing_data():
+    rows = [_row(Symbol="A", **{"Probabilidad OTM (%)": None})]
+    assert apply_filters(rows, min_probability_otm=50.0) == []
+
+
+def test_apply_filters_combines_multiple_criteria_with_and():
+    rows = [
+        _row(Symbol="MATCH", DTE=25, Delta=-0.20, Instrumento="stock"),
+        _row(Symbol="WRONG_DELTA", DTE=25, Delta=-0.80, Instrumento="stock"),
+        _row(Symbol="WRONG_INSTRUMENT", DTE=25, Delta=-0.20, Instrumento="etf"),
+    ]
+    result = apply_filters(rows, dte_range=(0, 30), delta_buckets=["Bajo (0-0.25)"], instrument_types=["stock"])
+    assert [r["Symbol"] for r in result] == ["MATCH"]
