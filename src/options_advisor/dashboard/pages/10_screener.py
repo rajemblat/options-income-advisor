@@ -77,11 +77,26 @@ else:
         if settings.broker.mode != "schwab":
             st.caption("Requiere modo Schwab (Quote.instrument_type no está disponible en modo mock).")
 
+    # Volume/Open Interest solo se persisten en candidatos generados DESPUÉS del fix del
+    # 2026-07-27 (ver BACKLOG.md #28) — bug real reportado por el usuario esa misma noche:
+    # "Screener muestra 0 resultados incluso quitando todos los filtros restrictivos". Root
+    # cause: candidatos VIEJOS (persistidos antes del fix) tienen Volume/Open Interest en None
+    # SIEMPRE, así que filtrar por cualquier balde de Volumen/OI excluye TODO el dataset actual
+    # (0 de 412 candidatos tienen este dato hoy) — no era un bug en la lógica de filtrado (ya
+    # verificado: sin filtros da 412/412), sino un dato todavía no poblado. Aviso explícito acá
+    # para que no parezca que el screener está roto.
+    rows_with_volume = sum(1 for r in all_rows if r["Volume"] is not None)
+    rows_with_oi = sum(1 for r in all_rows if r["Open Interest"] is not None)
+
     col7, col8 = st.columns(2)
     with col7:
         volume_buckets = st.multiselect("Volumen", list(VOLUME_BUCKETS), default=[])
+        if rows_with_volume < len(all_rows):
+            st.caption(f"⚠️ Solo {rows_with_volume}/{len(all_rows)} candidatos tienen este dato — se va poblando con cada análisis nuevo.")
     with col8:
         open_interest_buckets = st.multiselect("Open Interest", list(OPEN_INTEREST_BUCKETS), default=[])
+        if rows_with_oi < len(all_rows):
+            st.caption(f"⚠️ Solo {rows_with_oi}/{len(all_rows)} candidatos tienen este dato — se va poblando con cada análisis nuevo.")
 
     filtered_rows = apply_filters(
         all_rows,
@@ -99,7 +114,12 @@ else:
     st.markdown(f"**{len(filtered_rows)}** de {len(all_rows)} candidato(s) cumplen todos los filtros activos.")
 
     if not filtered_rows:
-        st.info("Ningún candidato cumple esta combinación de filtros — probá aflojar alguno.", icon="🔎")
+        hint = ""
+        if volume_buckets and rows_with_volume == 0:
+            hint = " Ningún candidato actual tiene dato de Volumen todavía — probá sin ese filtro."
+        elif open_interest_buckets and rows_with_oi == 0:
+            hint = " Ningún candidato actual tiene dato de Open Interest todavía — probá sin ese filtro."
+        st.info(f"Ningún candidato cumple esta combinación de filtros — probá aflojar alguno.{hint}", icon="🔎")
     else:
         df = pd.DataFrame(filtered_rows)
         st.dataframe(
