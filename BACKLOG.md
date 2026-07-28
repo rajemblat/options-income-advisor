@@ -4,50 +4,100 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-27 (madrugada, trabajo autónomo overnight — Pestaña Operaciones y
-Fed/FRED terminadas, cron propio más seguido desplegado, bug real de Market Movers corregido).
+Última actualización: 2026-07-27 (noche — Pestaña Operaciones, Fed/FRED y Calendario de earnings
+por rango terminados; resolviendo 4 bugs urgentes reportados en vivo).
 
 ## En progreso ahora
 
-Ninguno. Sigue el punto 1 de "Pendiente" abajo (Calendario de earnings) en el orden confirmado
-por el usuario.
+Bugs urgentes reportados en vivo 2026-07-27 (noche), en el orden que pidió el usuario — ver
+sección de abajo para el detalle de cada uno. #1 (Operaciones no detectaba) ya resuelto y
+verificado. Siguiendo con #2 (earnings AMD/MSFT faltantes).
 
-## Bugs reportados por el usuario esta noche (2026-07-27) — estado
+## Bugs urgentes reportados en vivo — 2026-07-27 (noche), estado
 
-- **Botón ☰ del sidebar, no respondía al primer clic**: mejora aplicada (commit `a3e9c6d`,
-  detalle abajo) pero **no confirmada 100%** — no pude reproducir el fallo de forma consistente
-  con clics automatizados para verificar que es EL root cause exacto. Falta que el usuario
-  confirme en uso normal. Si vuelve a pasar, revisar de nuevo con este contexto ya investigado.
-- **Market Movers mostraba +0.00%/$0.00 en todos los símbolos**: **corregido y confirmado**,
-  bug real (no falta de datos) — ver "Terminado y verificado" #20.
-- **2 operaciones reales de hoy que no aparecían en Operaciones**: corrida la detección en vivo
-  dos veces (una vez apenas se pidió, otra vez más tarde para descartar timing) — **0 posiciones
-  cortas de opciones nuevas o aumentadas** en ambas corridas; las únicas diferencias encontradas
-  contra el snapshot guardado son 13 posiciones LARGAS de opciones (protección de spreads ya
-  existentes, ej. la escalera de puts de OKLO, los combos de USO) — fuera de scope del detector
-  por diseño (Sección "Operaciones", solo detecta VENTAS de opciones, no compras). **Sin poder
-  confirmar la causa real**: no existe ningún endpoint de órdenes/transacciones en el código
-  (`broker/base.py` no tiene `get_orders`/`get_transactions`, solo posiciones/cotizaciones/
-  cadenas/movers) para poder ver qué se ejecutó exactamente hoy — la hipótesis más probable es
-  que esas 2 operaciones fueron cierres (buy-to-close, que el detector ignora a propósito —
-  cerrar no es una venta nueva), compras de opciones largas, o compraventa de acciones (no
-  opciones), ninguna de las cuales activa este detector tal como está diseñado. Si eran ventas
-  de opciones nuevas y no aparecen, puede ser un problema de timing/settlement de la API de
-  Schwab — el cron rápido nuevo (cada 3 min, ver #21) las va a agarrar automáticamente apenas
-  aparezcan como posición corta. Confirmar con el usuario qué tipo de operación fue exactamente.
+1. **RESUELTO Y VERIFICADO — Operaciones no detectaba las operaciones reales de hoy**: root
+   cause encontrado con el endpoint real `/orders` de Schwab (no expuesto antes en el código,
+   usado acá puntualmente para diagnosticar): el usuario abrió 3 posiciones nuevas hoy entre
+   las 13:00-13:04 EDT (AMD 260904P00325000, EWY 260904P00130000, y un roll de SOFI de
+   Aug21→Sep18 $21P) — pero mi propio script de siembra del baseline de anoche (para la demo de
+   TSLA, corrido a las ~13:41 EDT) capturó el estado de la cuenta EN ESE MOMENTO como "ya
+   existente", tragándose silenciosamente esas 3 operaciones reales sin alertar. El AMD se
+   cerró horas después (15:12 EDT, buy-to-close) — no se generó alerta retroactiva para esa
+   (ya no es una posición abierta, y el usuario confirmó que por ahora solo quiere APERTURAS,
+   no cierres). EWY y SOFI siguen abiertas: generadas manualmente con los datos reales del fill
+   de Schwab (`_build_and_persist_real_trade_alert` llamado directo, `trade_ts` corregido al
+   horario real de cada fill) y verificadas en navegador — aparecen con P&L real, POP real,
+   narración real de Claude. Confirmado con una corrida de detección posterior: 0 nuevas (ya no
+   queda nada pendiente). Esto fue un efecto secundario puntual de MI script manual de anoche,
+   no un bug de la lógica de detección en sí — de acá en adelante (sin más siembras manuales)
+   no debería repetirse. **Hallazgo aparte, sin resolver todavía**: el proceso del scheduler
+   dejó de ejecutar el cron de detección entre las 15:48 y 18:34 (~2h46m sin correr, se ve en
+   `data/logs/scheduler.err.log` como jobs "missed" en vez de ejecutados) — causa no confirmada
+   (posible suspensión de la laptop; hay un `caffeinate` corriendo hace 92h que debería
+   prevenir sleep por inactividad, así que no es la explicación obvia). Si vuelve a pasar,
+   investigar de nuevo — por ahora el scheduler está corriendo y al día.
+2. **En progreso — Calendario de earnings no muestra AMD/MSFT** (reportado, ambos tienen
+   earnings esta semana): investigando si es límite de resultados, filtro de fecha, o problema
+   puntual del endpoint de Finnhub para esos símbolos.
+3. **Pendiente — Eventos de riesgo mezclado con earnings**: separar para que esa página muestre
+   SOLO eventos de la Fed (FOMC/CPI/empleo) con los niveles alto/medio/bajo ya existentes; los
+   earnings de símbolos individuales quedan solo en el Calendario de earnings nuevo (#1 de
+   "Pendiente" antes de este bug, hoy dentro de esta misma página — hay que separarlas en
+   páginas o secciones distintas).
+4. **Pendiente — Watchlist sin precio ni % de cambio**: agregar precio actual y % de cambio del
+   día a la tabla.
 
-## Pendiente, no empezado — orden confirmado por el usuario 2026-07-26
+## Pendiente, no empezado — orden confirmado por el usuario 2026-07-26/27
 
-1. **Calendario de earnings con búsqueda por semana o rango de fechas** en Eventos de Riesgo —
-   selector de semana o rango desde/hasta, earnings de la watchlist (y opcionalmente universo
-   amplio) dentro de ese rango, ordenados por fecha. Complejidad: **baja** — página de
-   filtro/tabla sobre datos de earnings que ya se usan para el aviso de clusters simultáneos.
+1. **Vista tabla estilo Barchart en Escaneo** (pedido 2026-07-27, a implementar DESPUÉS de
+   cerrar los 4 problemas urgentes de esta noche): vista alternativa de la página Escaneo —
+   tabla plana ordenable (clic en columna = rankea), no solo tarjetas expandidas. Columnas
+   pedidas: Symbol, Price, Exp Date, Strike, Moneyness (%), Bid, Breakeven, %BE, Volume, Open
+   Interest, IV Rank, Delta, Return, Rendimiento Anualizado, Probabilidad de beneficio.
+   **Auditoría de qué ya existe** (respuesta a lo pedido antes de implementar): symbol/
+   underlying_price/expiration_date/delta/breakevens/probability_of_profit/
+   annualized_return_pct/net_premium ya están en `CandidateContract`
+   (`storage/models.py`) — Strike sale de `strikes`/`legs`, Moneyness% y %BE se derivan de
+   strike/breakeven vs. underlying_price (mismo cálculo que `compute_coverage` en
+   `alerts/formatting.py`), Bid ya viaja en cada leg (`payoff.py::_leg_dict`). IV Rank vive en
+   `indicator_snapshots`, no en `candidate_contracts` — hace falta un JOIN por
+   (symbol, snapshot_date), mismo patrón que ya usa `pages/1_alertas.py`. **Lo único que falta
+   calcular de cero**: Volume y Open Interest — `OptionContract` (`broker/models.py`) ya trae
+   `open_interest`/`volume` del broker, pero `_leg_dict()` (`payoff.py`) no los copia al dict
+   de cada leg que se persiste en `legs_json` — hay que sumar esos 2 campos ahí (cambio
+   trivial, no hace falta tocar el schema porque `legs_json` ya es JSON libre). Complejidad:
+   **baja** — 1 campo nuevo en `_leg_dict`, un JOIN a `indicator_snapshots`, y una tabla
+   `st.dataframe` (ya ordenable por columna nativamente en Streamlit) en vez de tarjetas.
 2. **Simulador de escenarios en Portafolio real**: selector alcista/bajista/neutral + % de
    movimiento, aplicado por igual a todos los subyacentes de posiciones abiertas, recalculado
    con el motor de `payoff.py` existente. Muestra total proyectado vs. hoy (diferencia $ y %).
    Disclaimer de que es una simplificación (todo se mueve igual), no una predicción real.
    Complejidad: **baja/media** — reusa el motor de payoff existente, con precedente directo
    (rendimiento anualizado + cierre anticipado ya hicieron algo similar).
+
+## Investigación pendiente — sin prioridad inmediata
+
+- **Options Time & Sales** (pedido 2026-07-27, idea del mismo ejemplo de Barchart que el
+  screener de arriba): detalle de cada operación individual ejecutada en una opción (precio,
+  tamaño, hora, si fue en bid/ask) — no datos agregados del día. **Investigado antes de
+  prometer nada** (búsqueda web, sin acceso a la documentación oficial completa de Schwab):
+  el Trader API de Schwab SÍ tiene una capa de streaming separada (WebSocket, autenticación
+  vía un endpoint REST distinto — `get_user_principals` — no las mismas API keys REST que usa
+  hoy `schwab_client.py`) con un servicio nombrado `TIMESALE_OPTIONS` mencionado en fuentes de
+  terceros como agregadores tipo Grokipedia. **Pero** la documentación más detallada que
+  encontré (`schwab-py`, librería no oficial ampliamente usada) NO confirma `TIMESALE_OPTIONS`
+  como funcionando — solo lista Level One Quotes, Level Two Order Book, OHLCV Charts, Screener
+  y Account Activity como streams confirmados, y advierte explícitamente que "algunos streams
+  nunca funcionaron, aunque la documentación (vieja, de la API predecesora TDA) los mencionaba".
+  **Conclusión honesta**: viable en principio, pero sin confirmar en la práctica. Complejidad
+  real independientemente de si el stream existe: **alta** — es una arquitectura nueva
+  (cliente WebSocket persistente con su propio manejo de reconexión/heartbeat) distinta a las
+  consultas REST periódicas que usa todo el resto de la app (`scheduler/jobs.py` corre en
+  cron, no mantiene conexiones abiertas) — no es sumar un endpoint, es sumar un subsistema.
+  **Antes de programar nada**: hacer un spike chico con las credenciales reales para confirmar
+  si `TIMESALE_OPTIONS` responde algo en la práctica, antes de invertir en la arquitectura de
+  streaming completa. Sin prioridad asignada, el usuario lo pidió explícitamente "sin
+  prioridad inmediata".
 
 ## Bloqueado / diferido — decisión de producto o diseño pendiente
 
@@ -209,6 +259,16 @@ por el usuario.
        🔔 en el digest pre-apertura, con dedup para no repetir el mismo aviso si el job corre
        más de una vez el mismo día.
     28 tests nuevos — 390/390 en verde.
+23. **Calendario de earnings con búsqueda por rango de fechas** en Eventos de riesgo (pedido
+    2026-07-26): selector Desde/Hasta con atajos (Esta semana/Próxima semana/Próximos 30 días)
+    sobre la watchlist (sin llamadas nuevas, reusa `repo.get_latest_next_earnings_date`) +
+    checkbox "Incluir universo amplio" que trae earnings de TODAS las empresas en el rango con
+    una sola llamada a Finnhub (`finnhub_client.get_earnings_calendar_range`, sin filtro de
+    symbol) en vez de una consulta por símbolo. Columna "En mi watchlist" distingue el origen.
+    Verificado en navegador en vivo (6 earnings reales de la watchlist, 1235 con universo
+    amplio). 15 tests nuevos — 394/394 en verde. **Nota 2026-07-27**: el usuario reportó que
+    AMD/MSFT (earnings esta semana) no aparecían — bug real bajo investigación, ver sección de
+    bugs urgentes arriba, todavía sin resolver al momento de este commit.
 
 ## Cómo se usa este archivo
 
