@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+import os
+from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
 
 from options_advisor.alerts.risk_calendar import build_risk_calendar
 from options_advisor.dashboard.components import ACCENT, get_connection, get_symbols, icon, inject_theme, render_header, render_notification_bell, risk_level_pill_html
+from options_advisor.market_context import finnhub_client
 from options_advisor.storage import repository as repo
 
 LOOKAHEAD_DAYS = 30
@@ -58,15 +60,64 @@ else:
     )
 
 st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
-st.subheader("📅 Calendario de earnings — toda la watchlist")
-
-earnings_rows = [
-    {"Símbolo": symbol, "Próximos earnings": d.isoformat() if d else None, "_sort": d or date.max}
-    for symbol, d in earnings_by_symbol.items()
-]
-earnings_df = pd.DataFrame(sorted(earnings_rows, key=lambda r: r["_sort"]))[["Símbolo", "Próximos earnings"]]
-st.dataframe(earnings_df, use_container_width=True, hide_index=True)
+st.subheader("📅 Calendario de earnings por rango de fechas")
 st.caption(
-    "Ordenado por fecha más próxima primero (Finnhub `/calendar/earnings`). 'None' = no se pudo "
-    "verificar la fecha todavía — confirmá manualmente antes de operar ese símbolo."
+    "Buscá earnings dentro de una semana o rango específico — de tu watchlist, o (marcando la "
+    "casilla) de cualquier empresa que reporte en esa ventana, no solo las que seguís."
 )
+
+preset_col, from_col, to_col = st.columns([1.3, 1, 1])
+with preset_col:
+    preset = st.selectbox("Atajo", ["Personalizado", "Esta semana", "Próxima semana", "Próximos 30 días"])
+
+if preset == "Esta semana":
+    default_from = today - timedelta(days=today.weekday())
+    default_to = default_from + timedelta(days=6)
+elif preset == "Próxima semana":
+    default_from = today - timedelta(days=today.weekday()) + timedelta(days=7)
+    default_to = default_from + timedelta(days=6)
+elif preset == "Próximos 30 días":
+    default_from, default_to = today, today + timedelta(days=30)
+else:
+    default_from, default_to = today, today + timedelta(days=7)
+
+with from_col:
+    range_from = st.date_input("Desde", value=default_from, key=f"earnings_from_{preset}")
+with to_col:
+    range_to = st.date_input("Hasta", value=default_to, min_value=range_from, key=f"earnings_to_{preset}")
+
+include_universe = st.checkbox("Incluir universo amplio (no solo mi watchlist)", value=False)
+
+if range_from > range_to:
+    st.error("La fecha 'Desde' no puede ser posterior a 'Hasta'.")
+else:
+    watchlist_set = set(symbols)
+    rows = [
+        {"Fecha": d.isoformat(), "Símbolo": symbol, "En mi watchlist": True, "_sort": d}
+        for symbol, d in earnings_by_symbol.items()
+        if d and range_from <= d <= range_to
+    ]
+
+    if include_universe:
+        finnhub_api_key = os.environ.get("FINNHUB_API_KEY")
+        with st.spinner("Buscando earnings de todas las empresas en ese rango..."):
+            universe_rows = finnhub_client.get_earnings_calendar_range(range_from, range_to, finnhub_api_key)
+        already_listed = {r["Símbolo"] for r in rows}
+        for row in universe_rows:
+            if row["symbol"] in already_listed:
+                continue  # ya viene de la watchlist arriba, no duplicar
+            rows.append(
+                {
+                    "Fecha": row["date"],
+                    "Símbolo": row["symbol"],
+                    "En mi watchlist": row["symbol"] in watchlist_set,
+                    "_sort": date.fromisoformat(row["date"]),
+                }
+            )
+
+    if not rows:
+        st.info("No se encontraron earnings en ese rango.", icon="📅")
+    else:
+        df = pd.DataFrame(sorted(rows, key=lambda r: (r["_sort"], r["Símbolo"])))[["Fecha", "Símbolo", "En mi watchlist"]]
+        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.caption(f"{len(df)} resultado(s) entre {range_from.isoformat()} y {range_to.isoformat()}.")

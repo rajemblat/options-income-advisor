@@ -44,6 +44,46 @@ def test_get_recent_news_without_api_key_returns_empty_list():
     assert finnhub_client.get_recent_news("AAPL", AS_OF, api_key=None) == []
 
 
+def test_get_earnings_calendar_range_without_api_key_returns_empty_list():
+    assert finnhub_client.get_earnings_calendar_range(AS_OF, AS_OF, api_key=None) == []
+
+
+def test_get_earnings_calendar_range_parses_and_sorts_by_date_then_symbol(monkeypatch):
+    monkeypatch.setattr(
+        httpx,
+        "get",
+        _mock_response(
+            {
+                "earningsCalendar": [
+                    {"symbol": "MSFT", "date": "2026-07-25", "hour": "amc"},
+                    {"symbol": "AAPL", "date": "2026-07-25", "hour": "bmo"},
+                    {"symbol": "NVDA", "date": "2026-07-24", "hour": "amc"},
+                ]
+            }
+        ),
+    )
+    result = finnhub_client.get_earnings_calendar_range(date(2026, 7, 22), date(2026, 7, 29), api_key="fake-key")
+    assert [(r["symbol"], r["date"]) for r in result] == [("NVDA", "2026-07-24"), ("AAPL", "2026-07-25"), ("MSFT", "2026-07-25")]
+    assert result[0]["hour"] == "amc"
+
+
+def test_get_earnings_calendar_range_skips_rows_without_symbol_or_date(monkeypatch):
+    monkeypatch.setattr(
+        httpx, "get", _mock_response({"earningsCalendar": [{"symbol": "AAPL"}, {"date": "2026-07-25"}, {"symbol": "MSFT", "date": "2026-07-25"}]})
+    )
+    result = finnhub_client.get_earnings_calendar_range(date(2026, 7, 22), date(2026, 7, 29), api_key="fake-key")
+    assert len(result) == 1
+    assert result[0]["symbol"] == "MSFT"
+
+
+def test_get_earnings_calendar_range_returns_empty_on_failure(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise httpx.ConnectError("no network", request=httpx.Request("GET", "https://finnhub.io/api/v1/x"))
+
+    monkeypatch.setattr(httpx, "get", _boom)
+    assert finnhub_client.get_earnings_calendar_range(AS_OF, AS_OF, api_key="fake-key") == []
+
+
 def test_get_recent_news_sorts_by_datetime_desc(monkeypatch):
     monkeypatch.setattr(
         httpx,

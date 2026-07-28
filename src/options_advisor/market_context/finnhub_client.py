@@ -39,6 +39,37 @@ def get_next_earnings_date(symbol: str, as_of: date, api_key: str | None, lookah
         return None
 
 
+def get_earnings_calendar_range(from_date: date, to_date: date, api_key: str | None) -> list[dict]:
+    """Earnings de TODAS las empresas (no un símbolo puntual) publicados en [from_date, to_date]
+    — mismo endpoint que `get_next_earnings_date` pero SIN el filtro `symbol`, Finnhub devuelve
+    el calendario completo en una sola llamada. Usado por el selector de rango de fechas de
+    Eventos de riesgo (Sección 'Calendario de earnings', pedido 2026-07-26) para el modo
+    "universo amplio" — evita pedir earnings símbolo por símbolo (cientos de llamadas) cuando
+    se quiere ver todo lo que reporta en una ventana, no solo la watchlist. [] si no hay API key
+    o falla la llamada (mismo criterio que el resto del módulo: nunca rompe el caller)."""
+    if not api_key:
+        return []
+    try:
+        response = httpx.get(
+            f"{BASE_URL}/calendar/earnings",
+            params={"from": from_date.isoformat(), "to": to_date.isoformat(), "token": api_key},
+            timeout=_TIMEOUT,
+        )
+        response.raise_for_status()
+        rows = response.json().get("earningsCalendar", [])
+        return sorted(
+            (
+                {"symbol": row["symbol"], "date": row["date"], "hour": row.get("hour")}
+                for row in rows
+                if row.get("symbol") and row.get("date")
+            ),
+            key=lambda r: (r["date"], r["symbol"]),
+        )
+    except Exception:
+        logger.warning("Finnhub earnings calendar (rango completo) no disponible; se omite", exc_info=True)
+        return []
+
+
 def get_recent_news(symbol: str, as_of: date, api_key: str | None, lookback_days: int = 7, limit: int = 5) -> list[dict]:
     """Noticias recientes de `symbol` vía Finnhub `/company-news`. Lista vacía (nunca
     excepción) si no hay API key, falla la llamada, o no hay noticias en el rango."""
