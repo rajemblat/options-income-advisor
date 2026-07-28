@@ -139,6 +139,48 @@ def test_get_quote_no_post_market_change_when_key_absent(client, monkeypatch):
     assert quote.post_market_change_pct is None
 
 
+# --- instrument_type (Sección 'Pestaña Screener', pedido 2026-07-27) ---
+
+
+def test_get_quote_classifies_etf(client, monkeypatch):
+    """Shape real confirmado en vivo 2026-07-27: SPY -> assetMainType=EQUITY, assetSubType=ETF."""
+    payload = {"SPY": {"assetMainType": "EQUITY", "assetSubType": "ETF", "quote": {"lastPrice": 680.0, "bidPrice": 679.9, "askPrice": 680.1}}}
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    assert client.get_quote("SPY").instrument_type == "etf"
+
+
+def test_get_quote_classifies_common_stock(client, monkeypatch):
+    """AAPL -> assetMainType=EQUITY, assetSubType=COE (Common Equity) — cualquier EQUITY que
+    no sea ETF se clasifica "stock", sin depender de conocer todos los códigos de Schwab."""
+    payload = {"AAPL": {"assetMainType": "EQUITY", "assetSubType": "COE", "quote": {"lastPrice": 335.0, "bidPrice": 334.9, "askPrice": 335.1}}}
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    assert client.get_quote("AAPL").instrument_type == "stock"
+
+
+def test_get_quote_classifies_index(client, monkeypatch):
+    """$RUT -> assetMainType=INDEX, sin assetSubType."""
+    payload = {"$RUT": {"assetMainType": "INDEX", "quote": {"lastPrice": 2930.0, "bidPrice": 2930.0, "askPrice": 2930.0}}}
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    assert client.get_quote("$RUT").instrument_type == "index"
+
+
+def test_get_quote_instrument_type_none_when_asset_main_type_absent(client, monkeypatch):
+    payload = {"AAPL": {"quote": {"lastPrice": 335.0, "bidPrice": 334.9, "askPrice": 335.1}}}
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    assert client.get_quote("AAPL").instrument_type is None
+
+
+def test_get_quotes_batch_classifies_instrument_type(client, monkeypatch):
+    payload = {
+        "SPY": {"assetMainType": "EQUITY", "assetSubType": "ETF", "quote": {"lastPrice": 680.0, "bidPrice": 679.9, "askPrice": 680.1}},
+        "AAPL": {"assetMainType": "EQUITY", "assetSubType": "COE", "quote": {"lastPrice": 335.0, "bidPrice": 334.9, "askPrice": 335.1}},
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quotes = client.get_quotes(["SPY", "AAPL"])
+    assert quotes["SPY"].instrument_type == "etf"
+    assert quotes["AAPL"].instrument_type == "stock"
+
+
 def test_get_quotes_batch_parses_net_change_fields(client, monkeypatch):
     payload = {"NVDA": {"quote": {"lastPrice": 180.5, "bidPrice": 180.4, "askPrice": 180.6, "netChange": -1.2, "netPercentChange": -0.66}}}
     monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))

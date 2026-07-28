@@ -34,6 +34,20 @@ def _parse_schwab_date(raw: str | None) -> date | None:
         return None
 
 
+def _classify_instrument_type(entry: dict) -> str | None:
+    """"stock" | "etf" | "index" a partir de `assetMainType`/`assetSubType` — ya vienen en la
+    MISMA respuesta de `/quotes` que ya se pide (`entry`, el dict completo por símbolo, no
+    `entry["quote"]"), confirmado en vivo 2026-07-27: SPY -> EQUITY/ETF, AAPL -> EQUITY/COE,
+    $RUT -> INDEX/None. Sección 'Pestaña Screener', filtro de tipo de instrumento — no hace
+    falta pedir `/instruments` aparte, el dato ya estaba disponible sin usar."""
+    main_type = entry.get("assetMainType")
+    if main_type == "INDEX":
+        return "index"
+    if main_type == "EQUITY":
+        return "etf" if entry.get("assetSubType") == "ETF" else "stock"
+    return None
+
+
 def _parse_quote_change_fields(quote: dict) -> dict:
     """`netChange`/`netPercentChange` reflejan el precio "actual" (incluye pre/after-market si
     hay sesión extendida en curso) vs. el cierre anterior. `postMarketChange`/
@@ -139,7 +153,8 @@ class SchwabBrokerClient(BrokerClient):
 
     def get_quote(self, symbol: str) -> Quote:
         data = self._get(f"/{symbol}/quotes", params={})
-        quote = data[symbol]["quote"]
+        entry = data[symbol]
+        quote = entry["quote"]
         last_price = quote["lastPrice"]
         return Quote(
             symbol=symbol,
@@ -150,7 +165,8 @@ class SchwabBrokerClient(BrokerClient):
             # vez de fallar (no hay spread real que reportar para un índice).
             bid=quote.get("bidPrice", last_price),
             ask=quote.get("askPrice", last_price),
-            next_ex_dividend_date=_parse_next_ex_dividend_date(data[symbol].get("fundamental") or {}),
+            next_ex_dividend_date=_parse_next_ex_dividend_date(entry.get("fundamental") or {}),
+            instrument_type=_classify_instrument_type(entry),
             **_parse_quote_change_fields(quote),
         )
 
@@ -178,6 +194,7 @@ class SchwabBrokerClient(BrokerClient):
                 bid=quote.get("bidPrice", last_price),  # índices sin bid/ask, ver get_quote()
                 ask=quote.get("askPrice", last_price),
                 next_ex_dividend_date=_parse_next_ex_dividend_date(entry.get("fundamental") or {}),
+                instrument_type=_classify_instrument_type(entry),
                 **_parse_quote_change_fields(quote),
             )
         return quotes

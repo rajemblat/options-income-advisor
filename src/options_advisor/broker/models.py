@@ -28,6 +28,12 @@ class Quote(BaseModel):
     net_change: float = 0.0
     net_change_pct: float = 0.0
     post_market_change_pct: float | None = None
+    # "stock" | "etf" | "index" | None — sumado 2026-07-27 para el filtro de tipo de instrumento
+    # de la Pestaña Screener. Viene de assetMainType/assetSubType que Schwab YA devuelve en
+    # /quotes (sin llamada nueva, ver schwab_client.py::_classify_instrument_type) — None en
+    # modo mock (las fixtures no tienen esta clasificación) o si Schwab no la expone para ese
+    # símbolo puntual.
+    instrument_type: str | None = None
 
 
 class PriceBar(BaseModel):
