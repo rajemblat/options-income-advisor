@@ -843,8 +843,10 @@ def render_alert_card(
         st.code(shorten_for_sharing(alert["narrative_text"]) if alert["narrative_text"] else "Sin texto disponible.", language=None)
 
 
-# Filtro de rango de fechas en la Pestaña Operaciones (pedido 2026-07-29) — orden fijo para el
-# selectbox, valor = días hacia atrás desde hoy (None = sin filtro, todo el historial).
+# Filtro de rango de fechas, compartido por Pestaña Operaciones (pedido 2026-07-29) y Pestaña
+# Alertas (pedido 2026-07-29, mismo filtro pero con default "Hoy" en vez de "Todo" — ver
+# 1_alertas.py) — orden fijo para el selectbox, valor = días hacia atrás desde hoy (None = sin
+# filtro, todo el historial).
 DATE_RANGE_OPTIONS: dict[str, int | None] = {
     "Hoy": 0,
     "Última semana": 7,
@@ -854,15 +856,17 @@ DATE_RANGE_OPTIONS: dict[str, int | None] = {
 }
 
 
-def filter_trades_by_date_range(trades: list[sqlite3.Row], range_label: str, today: date) -> list[sqlite3.Row]:
-    """Filtra `trades` (ya ordenados DESC por `trade_ts` desde el repo) por `trade_date` >=
-    `today - días` — "Hoy" usa 0 días hacia atrás (`trade_date >= today`), así que cualquier
-    operación de días anteriores queda afuera sin necesitar un chequeo de igualdad aparte."""
+def filter_by_date_range(rows: list[sqlite3.Row], range_label: str, today: date, date_field: str = "trade_date") -> list[sqlite3.Row]:
+    """Filtra `rows` (ya ordenados DESC por su timestamp desde el repo — `trade_ts` en
+    Operaciones, `alert_ts` en Alertas) por `date_field` >= `today - días` — "Hoy" usa 0 días
+    hacia atrás (`>= today`), así que cualquier fila de días anteriores queda afuera sin
+    necesitar un chequeo de igualdad aparte. `date_field` por defecto `"trade_date"`
+    (Operaciones); Alertas pasa `date_field="alert_date"`."""
     days = DATE_RANGE_OPTIONS.get(range_label)
     if days is None:
-        return trades
+        return rows
     cutoff = today - timedelta(days=days)
-    return [t for t in trades if date.fromisoformat(t["trade_date"]) >= cutoff]
+    return [r for r in rows if date.fromisoformat(r[date_field]) >= cutoff]
 
 
 def render_real_trade_card(

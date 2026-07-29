@@ -4,10 +4,16 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-29 (filtro de rango de fechas en la Pestaña Operaciones: Hoy /
-Última semana / Últimos 15 días / Último mes / Todo, manteniendo el agrupamiento visual por
-fecha que ya existía — verificado en vivo con capturas de "Hoy" (solo el grupo de hoy) y
-"Últimos 15 días" (hoy + 28/07 juntos). Antes en la sesión: healthcheck automático del scheduler
+Última actualización: 2026-07-29 (Pestaña Alertas: mismo filtro de rango de fechas que
+Operaciones, con agrupamiento visual por fecha nuevo ahí también — default "Hoy" a pedido
+explícito del usuario, sin borrar nada del historial. `filter_by_date_range` generalizado
+(antes `filter_trades_by_date_range`, específico de Operaciones) con un parámetro `date_field`
+para reusarse en ambas páginas. Verificado en vivo: "Hoy" sin alertas hoy (mensaje distinto de
+"sin alertas nunca"), "Todo" muestra el historial agrupado por fecha. Antes en la sesión:
+filtro de rango de fechas en la Pestaña Operaciones: Hoy / Última semana / Últimos 15 días /
+Último mes / Todo, manteniendo el agrupamiento visual por fecha que ya existía — verificado en
+vivo con capturas de "Hoy" (solo el grupo de hoy) y "Últimos 15 días" (hoy + 28/07 juntos).
+Antes en la sesión: healthcheck automático del scheduler
 implementado a pedido del usuario tras la 3ra recurrencia del cuelgue en 3 días: un LaunchAgent
 nuevo corre cada 5 min todo el día, detecta "colgado mudo" (proceso vivo, log sin actividad
 durante horario de mercado), lo reinicia solo, corre un catch-up de operaciones reales con
@@ -791,6 +797,25 @@ Ninguno.
     en verde. Verificado en vivo con capturas: "Hoy" muestra solo el grupo "⚡ Hoy · 4
     operaciones" (el grupo del 28/07 desaparece); "Últimos 15 días" muestra ambos grupos juntos,
     agrupamiento intacto.
+
+44. **Pestaña Alertas: filtro de rango de fechas + agrupamiento visual por fecha** (pedido
+    2026-07-29, "que se limpie automáticamente cada día mostrando solo las de hoy"). Aclarado
+    con el usuario antes de programar: NO borrar nada de la base — historial completo
+    conservado, solo la vista por defecto cambia. `filter_trades_by_date_range` (Operaciones) se
+    generalizó a `filter_by_date_range(rows, range_label, today, date_field="trade_date")` —
+    mismo `DATE_RANGE_OPTIONS`, ahora con un parámetro `date_field` para reusarse en Alertas
+    (`date_field="alert_date"`) sin duplicar la función. A diferencia de Operaciones (default
+    "Todo"), acá el default es "Hoy" — pedido explícito del usuario de que la vista al entrar
+    muestre solo lo de hoy. Se sumó el mismo agrupamiento visual por fecha que ya tenía
+    Operaciones (`itertools.groupby` sobre `alert_date`, "⚡ Hoy" vs "🕐 DD/MM/AAAA"), que Alertas
+    no tenía antes (mostraba todo en una lista plana). Selectbox nuevo como 4ta columna junto a
+    Símbolo/Perfil de riesgo/Estrategia. Mensaje de "sin resultados" también distingue "nunca
+    hubo alertas" de "hay alertas pero ninguna coincide con el filtro actual". 8 tests nuevos
+    (`test_components.py`, incluyendo uno que verifica el `date_field` genérico) — 569/569 en
+    verde. Verificado en vivo: con "Hoy" seleccionado (default) no había alertas de candidatos
+    generadas hoy todavía — mensaje correcto de "sin resultados para el filtro" (no confundido
+    con "nunca hubo alertas"); con "Todo" se ve el historial completo agrupado, ej. "🕐
+    28/07/2026 · 200 alertas".
 
 ## Cómo se usa este archivo
 

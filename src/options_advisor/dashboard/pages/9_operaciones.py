@@ -10,7 +10,7 @@ from options_advisor.dashboard.components import (
     DATE_RANGE_OPTIONS,
     GOOD,
     TEXT_MUTED,
-    filter_trades_by_date_range,
+    filter_by_date_range,
     get_connection,
     icon,
     inject_theme,
@@ -46,7 +46,7 @@ with filter_col2:
     selected_range = st.selectbox("Rango de fechas", range_labels, index=range_labels.index("Todo"))
 
 trades = all_trades if selected_symbol == "Todos" else [t for t in all_trades if t["symbol"] == selected_symbol]
-trades = filter_trades_by_date_range(trades, selected_range, date.today())
+trades = filter_by_date_range(trades, selected_range, date.today())
 
 macro = repo.get_latest_macro_snapshot(conn)
 fed_meeting_date = macro["fed_meeting_date"] if macro else None
