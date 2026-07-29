@@ -178,12 +178,14 @@ roll genuino de la cuenta (pata OPENING+CLOSING en la misma orden, sin alerta �
 esperado de Fase 1). LaunchAgent registrado con `launchctl bootstrap`, corrida de `RunAtLoad`
 confirmada sin acción (sistema ya sano en ese momento).
 
-**Prevención de sueño** (evaluado, NO ejecutado): `sudo pmset -c disablesleep 1` evitaría el
-sueño profundo mientras esté enchufada (root cause de las 3 recurrencias), pero es un cambio de
-configuración del sistema — fuera de lo que puedo ejecutar yo mismo. Se le pasó el comando
-exacto al usuario para que lo corra si quiere (con el healthcheck ya activo, es una mejora
-opcional para reducir la FRECUENCIA de cuelgues, no una dependencia para que el sistema se
-recupere solo).
+**Prevención de sueño** (evaluado, decisión final: no aplicar por ahora): `sudo pmset -c
+disablesleep 1` evitaría el sueño profundo mientras esté enchufada (root cause de las 3
+recurrencias), pero es un cambio de configuración del sistema — fuera de lo que puedo ejecutar
+yo mismo, y requiere una contraseña tipeada en una Terminal real (no vía `!` en el chat, que no
+soporta prompts interactivos). Se le pasó el comando exacto al usuario varias veces; decidió no
+aplicarlo por ahora y confiar en el healthcheck (2026-07-29). Queda documentado acá por si se
+quiere retomar más adelante — no es una dependencia para que el sistema se recupere solo, el
+healthcheck ya cubre el caso real.
 
 ## Pendiente, no empezado
 
