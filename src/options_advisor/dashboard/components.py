@@ -680,24 +680,24 @@ def _capital_at_risk_caveat_html(max_loss: float | None, capital_available: floa
 
 
 def _historical_move_caveat_html(occurrences: int | None, total_windows: int | None, window_days: int | None) -> str:
-    """"Check histórico" (pedido 2026-07-28): de todas las ventanas de `window_days` días
-    CALENDARIO en los últimos ~5 años, cuántas veces el precio real se movió al menos tanto
-    como necesitaría moverse HOY para llegar al strike de esta alerta — ver
-    strategy/backtest.py::historical_move_frequency(). Deliberadamente NO es un simple ✅/❌: un
-    número/porcentaje da más contexto que un check binario, y SIEMPRE aclara que es análisis
-    histórico (lo que pasó antes), no una garantía de que no vuelva a pasar."""
+    """"Check histórico" (pedido 2026-07-28, texto simplificado 2026-07-29): cuántas veces
+    DISTINTAS (eventos, no ventanas solapadas — ver strategy/backtest.py::historical_move_
+    frequency()) el precio real tocó el nivel que necesitaría tocar HOY para llegar al strike
+    de esta alerta, en los últimos ~5 años. Texto simple a propósito (pedido explícito: sin
+    porcentajes ni jerga de "ventanas"), pero SIEMPRE aclara que es análisis histórico (lo que
+    pasó antes), no una garantía de que no vuelva a pasar."""
     if occurrences is None or not total_windows:
         return ""
     if occurrences == 0:
         return (
             f"<div style='color:{GOOD}; font-size:0.82rem; margin-top:0.3rem;'>{icon('check-circle', size=14, color=GOOD)} "
-            f"Nunca ocurrió en los últimos ~5 años (0 de {total_windows:,} ventanas de {window_days}d) — "
+            "Nunca tocó este nivel en los últimos ~5 años — "
             "análisis histórico, no garantiza el futuro.</div>"
         )
-    pct = occurrences / total_windows * 100
+    veces = "1 vez" if occurrences == 1 else f"{occurrences} veces"
     return (
         f"<div style='color:{WARNING}; font-size:0.82rem; margin-top:0.3rem;'>{icon('alert-triangle', size=14, color=WARNING)} "
-        f"Ocurrió en {occurrences} de {total_windows:,} ventanas de {window_days}d ({pct:.1f}%) en los últimos ~5 años — "
+        f"En los últimos ~5 años, el precio tocó este nivel {veces} — "
         "análisis histórico, no garantiza el futuro.</div>"
     )
 

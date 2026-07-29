@@ -135,6 +135,50 @@ def test_historical_move_frequency_zero_window_days_returns_none():
     assert historical_move_frequency(bars, "put", strike=90.0, reference_price=100.0, window_days=0) is None
 
 
+# --- agrupamiento de rachas en eventos distintos (pedido 2026-07-29) ---
+
+
+def test_historical_move_frequency_groups_one_dip_seen_by_many_overlapping_windows_as_one_event():
+    """Una sola caída puede ser "vista" por varios puntos de partida distintos (cualquier
+    ventana que alcance a incluir ese día) — eso debe contar como 1 evento real, no una
+    ocurrencia por cada ventana que la ve."""
+    bars = _flat_series(30)
+    bars[10] = _bar(10, close=99.0, low=80.0)  # una única caída puntual
+    result = historical_move_frequency(bars, "put", strike=90.0, reference_price=100.0, window_days=5)
+    assert result is not None
+    assert result.occurrences == 1
+    # el crudo de ventanas afectadas es mayor a 1 (varias ventanas distintas alcanzan a ver el
+    # mismo día 10) — confirma que sí había algo que agrupar, no que la caída solo afectó 1 ventana.
+    hits = sum(
+        1
+        for start in range(0, 30 - 5)
+        if any(bars[d].low <= 80.0 for d in range(start, min(start + 6, 30)))
+    )
+    assert hits > 1
+
+
+def test_historical_move_frequency_counts_two_separated_dips_as_two_events():
+    """Dos caídas reales, separadas por un tramo suficientemente largo sin caídas, deben
+    contarse como 2 eventos distintos — no fusionarse en uno solo."""
+    bars = _flat_series(60)
+    bars[5] = _bar(5, close=99.0, low=80.0)
+    bars[40] = _bar(40, close=99.0, low=80.0)
+    result = historical_move_frequency(bars, "put", strike=90.0, reference_price=100.0, window_days=5)
+    assert result is not None
+    assert result.occurrences == 2
+
+
+def test_historical_move_frequency_sustained_multi_day_move_is_still_one_event():
+    """Si el precio se queda varios días seguidos por debajo del nivel (no un solo día), sigue
+    siendo 1 evento — no uno por día."""
+    bars = _flat_series(30)
+    for offset in (10, 11, 12, 13):
+        bars[offset] = _bar(offset, close=81.0, low=80.0)
+    result = historical_move_frequency(bars, "put", strike=90.0, reference_price=100.0, window_days=5)
+    assert result is not None
+    assert result.occurrences == 1
+
+
 # --- compute_historical_move_check (wrapper usado por engine.py/real_trades.py) ---
 
 

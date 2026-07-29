@@ -4,10 +4,16 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-28 (noche — "check histórico" nuevo en las alertas: de todas las
-ventanas de N días (=DTE) en los últimos ~5 años, cuántas veces el precio se movió tanto como
-necesitaría moverse hoy para llegar al strike, calculado una vez al generar la alerta y guardado
-(no en tiempo real), aplicado a Alertas de candidatos y Operaciones reales. Antes en la sesión:
+Última actualización: 2026-07-29 (refinado el "check histórico" de las alertas a pedido del
+usuario: el texto ya no muestra "N de M ventanas (X.X%)" — ahora agrupa rachas de ventanas
+solapadas que ven la misma caída/suba sostenida en un solo evento real, y el badge dice
+simplemente "el precio tocó este nivel N veces" en los últimos ~5 años, sin porcentajes ni
+jerga técnica. Verificado en vivo: el ejemplo de WFC bajó de 330 ventanas solapadas a 41
+eventos distintos. Antes en la sesión (2026-07-28): "check histórico" nuevo en las alertas: de
+todas las ventanas de N días (=DTE) en los últimos ~5 años, cuántas veces el precio se movió
+tanto como necesitaría moverse hoy para llegar al strike, calculado una vez al generar la
+alerta y guardado (no en tiempo real), aplicado a Alertas de candidatos y Operaciones reales.
+Antes en la sesión:
 reordenadas las columnas del Screener a pedido explícito (las 15 "originales" primero en orden
 fijo, las 6 derivadas al final); bug real de filas duplicadas en el Screener (Cash-Secured Put vs Short Put (Naked),
 mismo contrato exacto) corregido de raíz en el motor + deduplicado a nivel de visualización
@@ -611,6 +617,28 @@ Ninguno.
     — coherente con el ejemplo de 45 DTE (menor cobertura exigida = mayor frecuencia histórica,
     relación matemáticamente esperada). 26 tests nuevos (`test_backtest.py`,
     `test_repository.py`, `test_real_trades.py`, `test_components.py`) — 541/541 en verde.
+
+    **Refinamiento 2026-07-29 (feedback real del usuario: el texto "N de M ventanas (X.X%)" no
+    se entendía de un vistazo, y el usuario detectó correctamente que el conteo crudo de
+    ventanas infla el número — una sola caída sostenida es "vista" por decenas de ventanas
+    solapadas que arrancan en días distintos, contando el mismo evento de mercado muchas veces).**
+    `historical_move_frequency()` ahora agrupa rachas de ventanas consecutivas que cumplen la
+    condición en un solo evento real: un evento nuevo arranca solo cuando aparece una ventana
+    que cumple justo después de una (o más) que no cumplió (el precio se recuperó y volvió a
+    caer/subir en un episodio distinto) — así una caída sostenida de varios días sigue contando
+    como 1, no una vez por cada punto de partida que alcanza a verla. `total_windows` se
+    conserva en la base para referencia interna pero ya no se muestra en el badge. Texto nuevo,
+    sin porcentajes ni jerga técnica: "Nunca tocó este nivel en los últimos ~5 años" (0 casos) o
+    "En los últimos ~5 años, el precio tocó este nivel N veces" (N>0) — siempre con la misma
+    aclaración de que es análisis histórico, no garantía futura.
+    Verificado con el mismo ejemplo real ya mostrado antes en vivo (WFC Iron Condor, put
+    strike $79, 31 DTE): el crudo de ventanas solapadas daba 330 de 1,235 (26.7%) — con el
+    conteo de eventos distintos da **41 veces**, una reducción de ~8x que confirma que la
+    métrica anterior sobrecontaba. Recalculados también los otros 5 registros reales ya
+    persistidos esta sesión (AAPL 260→26, USO 291→58 ×3, VNQ 36→5) — todos bajan de forma
+    consistente. 4 tests nuevos que verifican explícitamente el agrupamiento (una sola caída
+    vista por muchas ventanas solapadas = 1 evento; dos caídas separadas = 2 eventos; un
+    movimiento sostenido de varios días = 1 evento, no uno por día) — 545/545 en verde.
 
 ## Cómo se usa este archivo
 

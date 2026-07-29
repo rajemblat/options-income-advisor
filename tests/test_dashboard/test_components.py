@@ -130,17 +130,22 @@ def test_historical_move_caveat_empty_without_total_windows():
 
 def test_historical_move_caveat_zero_occurrences_shows_green_check():
     html = _historical_move_caveat_html(0, 1250, 45)
-    assert "Nunca ocurrió" in html
-    assert "1,250" in html
-    assert "45d" in html
+    assert "Nunca tocó este nivel" in html
     assert GOOD in html
 
 
-def test_historical_move_caveat_nonzero_occurrences_shows_count_and_percent():
+def test_historical_move_caveat_nonzero_occurrences_shows_simple_count():
     html = _historical_move_caveat_html(8, 1250, 45)
-    assert "Ocurrió en 8 de 1,250 ventanas de 45d" in html
-    assert "0.6%" in html
+    assert "el precio tocó este nivel 8 veces" in html
+    assert "ventanas" not in html
+    assert "%" not in html
     assert WARNING in html
+
+
+def test_historical_move_caveat_singular_for_one_occurrence():
+    html = _historical_move_caveat_html(1, 1250, 45)
+    assert "el precio tocó este nivel 1 vez" in html
+    assert "1 veces" not in html
 
 
 def test_historical_move_caveat_always_clarifies_its_historical_not_a_guarantee():
