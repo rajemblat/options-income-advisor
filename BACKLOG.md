@@ -4,12 +4,15 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-29 (refinado el "check histórico" de las alertas a pedido del
-usuario: el texto ya no muestra "N de M ventanas (X.X%)" — ahora agrupa rachas de ventanas
-solapadas que ven la misma caída/suba sostenida en un solo evento real, y el badge dice
-simplemente "el precio tocó este nivel N veces" en los últimos ~5 años, sin porcentajes ni
-jerga técnica. Verificado en vivo: el ejemplo de WFC bajó de 330 ventanas solapadas a 41
-eventos distintos. Antes en la sesión (2026-07-28): "check histórico" nuevo en las alertas: de
+Última actualización: 2026-07-29 (Market Movers ahora cubre Nasdaq y Dow Jones además de
+S&P 500, con pestañas para elegir cuál ver — confirmado en vivo que `/movers/$COMPX` y
+`/movers/$DJI` de Schwab funcionan igual que `/movers/$SPX`. Antes en la sesión: refinado el
+"check histórico" de las alertas a pedido del usuario: el texto ya no muestra "N de M ventanas
+(X.X%)" — ahora agrupa rachas de ventanas solapadas que ven la misma caída/suba sostenida en un
+solo evento real, y el badge dice simplemente "el precio tocó este nivel N veces" en los
+últimos ~5 años, sin porcentajes ni jerga técnica. Verificado en vivo: el ejemplo de WFC bajó
+de 330 ventanas solapadas a 41 eventos distintos. Antes en la sesión (2026-07-28): "check
+histórico" nuevo en las alertas: de
 todas las ventanas de N días (=DTE) en los últimos ~5 años, cuántas veces el precio se movió
 tanto como necesitaría moverse hoy para llegar al strike, calculado una vez al generar la
 alerta y guardado (no en tiempo real), aplicado a Alertas de candidatos y Operaciones reales.
@@ -639,6 +642,22 @@ Ninguno.
     consistente. 4 tests nuevos que verifican explícitamente el agrupamiento (una sola caída
     vista por muchas ventanas solapadas = 1 evento; dos caídas separadas = 2 eventos; un
     movimiento sostenido de varios días = 1 evento, no uno por día) — 545/545 en verde.
+
+42. **Market Movers: agregados Nasdaq y Dow Jones** (pedido 2026-07-29, solo mostraba S&P 500).
+    Confirmado en vivo ANTES de programar (pedido explícito del usuario) que el mismo endpoint
+    `/movers/{index}` de Schwab que ya funcionaba con `$SPX` soporta `$COMPX` (Nasdaq Composite)
+    y `$DJI` (Dow Jones) sin cambios — mismo formato de respuesta, probado con el mercado
+    abierto (10 movers reales devueltos para cada uno). Entre las 2 opciones planteadas (pestañas
+    vs. los 3 paneles en paralelo) se eligió pestañas: cada panel ya trae ganadoras+perdedoras
+    con hasta 8 filas cada una, ponerlos en paralelo hubiera sido demasiado espacio vertical.
+    `dashboard/components.py::MARKET_MOVERS_INDICES` (dict código→nombre para mostrar) +
+    `render_market_movers_panel(index)` ahora usa el nombre amigable en el título en vez del
+    código crudo del índice. `app.py::render_general_page` reemplaza la llamada única por
+    `st.tabs(...)` iterando sobre los 3 índices. Verificado en vivo con las 3 pestañas: S&P 500
+    (Ford +5.21%, AMD -4.05%), Nasdaq (Nocera +113.43%, Li Bang Intl -18.34%) y Dow Jones
+    (Coca-Cola +2.54%, Procter & Gamble -2.69%) — datos reales, no simulados. 545/545 en verde
+    (sin tests nuevos: es reuso directo de la función ya probada `split_gainers_losers`, solo
+    cambia qué índice se le pasa).
 
 ## Cómo se usa este archivo
 

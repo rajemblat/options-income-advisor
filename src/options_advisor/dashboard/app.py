@@ -7,6 +7,7 @@ import streamlit as st
 
 from options_advisor.dashboard.components import (
     ACCENT,
+    MARKET_MOVERS_INDICES,
     cached_quotes,
     get_broker,
     get_connection,
@@ -66,7 +67,12 @@ def render_general_page() -> None:
         st.success("Listo. Revisá la página de Alertas.")
 
     st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
-    render_market_movers_panel()
+    # Pedido 2026-07-29: cubrir más que solo $SPX — pestañas en vez de los 3 paneles en
+    # paralelo (mucho espacio visual, cada uno ya trae ganadoras+perdedoras con hasta 8 filas).
+    movers_tabs = st.tabs(list(MARKET_MOVERS_INDICES.values()))
+    for tab, index_code in zip(movers_tabs, MARKET_MOVERS_INDICES):
+        with tab:
+            render_market_movers_panel(index_code)
 
     st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
     render_portfolio_summary_panel(conn, date.today())

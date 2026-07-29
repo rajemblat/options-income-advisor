@@ -472,6 +472,12 @@ def split_gainers_losers(movers: list[Mover]) -> tuple[list[Mover], list[Mover]]
     return gainers, losers
 
 
+# Índices soportados por Market Movers (pedido 2026-07-29: cubrir más que solo $SPX) —
+# confirmado en vivo contra Schwab real que `/movers/$COMPX` (Nasdaq) y `/movers/$DJI` (Dow)
+# funcionan igual que `/movers/$SPX`, mismo formato de respuesta.
+MARKET_MOVERS_INDICES = {"$SPX": "S&P 500", "$COMPX": "Nasdaq", "$DJI": "Dow Jones"}
+
+
 def render_market_movers_panel(index: str = "$SPX") -> None:
     """Ganadoras/perdedoras del índice de referencia, estilo CNBC — endpoint `/movers`
     confirmado en vivo 2026-07-25 (ver NOTES.md). Vacío fuera de horario de mercado (el
@@ -480,7 +486,8 @@ def render_market_movers_panel(index: str = "$SPX") -> None:
     qué no se piden ambas direcciones por separado."""
     gainers, losers = split_gainers_losers(cached_movers(index, "VOLUME"))
 
-    html = ["<div class='oia-card'>", f"<div style='font-size:1.1rem; font-weight:700;'>{icon('bar-chart', size=18, color=ACCENT)} Market Movers · {index}</div>"]
+    label = MARKET_MOVERS_INDICES.get(index, index)
+    html = ["<div class='oia-card'>", f"<div style='font-size:1.1rem; font-weight:700;'>{icon('bar-chart', size=18, color=ACCENT)} Market Movers · {label}</div>"]
 
     if not gainers and not losers:
         html.append(f"<div style='color:{TEXT_MUTED}; margin-top:0.4rem;'>Sin datos de movers ahora mismo (fuera de horario de mercado, o sin fixture en modo mock).</div>")
