@@ -9,6 +9,7 @@ from options_advisor.dashboard.components import (
     WARNING,
     _capital_at_risk_caveat_html,
     _historical_move_caveat_html,
+    _similar_move_caveat_html,
     classify_volatility_level,
     filter_by_date_range,
     split_gainers_losers,
@@ -158,6 +159,62 @@ def test_historical_move_caveat_always_clarifies_its_historical_not_a_guarantee(
     assert "no garantiza el futuro" in _historical_move_caveat_html(8, 1250, 45)
     assert "histórico" in _historical_move_caveat_html(0, 1250, 45)
     assert "histórico" in _historical_move_caveat_html(8, 1250, 45)
+
+
+# --- _similar_move_caveat_html (refinamiento del check histórico, pedido 2026-07-29: banda de
+# tolerancia de plazo/magnitud, mostrado APARTE del badge de arriba, no en su reemplazo) ---
+
+
+def test_similar_move_caveat_empty_without_data():
+    assert _similar_move_caveat_html(None, None) == ""
+
+
+def test_similar_move_caveat_zero_shows_green_check():
+    html = _similar_move_caveat_html(0, 0)
+    assert GOOD in html
+    assert "pasó 0 veces" in html
+
+
+def test_similar_move_caveat_shows_similar_count():
+    html = _similar_move_caveat_html(4, 0)
+    assert "pasó 4 veces" in html
+    assert WARNING in html
+    assert "AÚN MÁS GRANDE" not in html  # sin crashes mayores, no debe mencionarlos
+
+
+def test_similar_move_caveat_singular_for_one_similar_occurrence():
+    html = _similar_move_caveat_html(1, 0)
+    assert "pasó 1 vez" in html
+    assert "1 veces" not in html
+
+
+def test_similar_move_caveat_mentions_bigger_crashes_when_present():
+    """El escenario más peligroso (crashes más grandes que la banda "similar") no debe quedar
+    escondido — pedido explícito del usuario tras la aclaración de que la banda de tolerancia
+    deja afuera los crashes grandes."""
+    html = _similar_move_caveat_html(2, 3)
+    assert "pasó 2 veces" in html
+    assert "hubo 3 veces" in html
+    assert "AÚN MÁS GRANDE" in html
+
+
+def test_similar_move_caveat_singular_for_one_bigger_occurrence():
+    html = _similar_move_caveat_html(0, 1)
+    assert "hubo 1 vez" in html
+    assert "1 veces una caída" not in html
+
+
+def test_similar_move_caveat_always_clarifies_its_historical_not_a_guarantee():
+    assert "no garantiza el futuro" in _similar_move_caveat_html(0, 0)
+    assert "no garantiza el futuro" in _similar_move_caveat_html(4, 2)
+    assert "histórico" in _similar_move_caveat_html(0, 0)
+    assert "histórico" in _similar_move_caveat_html(4, 2)
+
+
+def test_similar_move_caveat_mentions_tolerance_bands():
+    html = _similar_move_caveat_html(1, 0)
+    assert "±3 puntos" in html
+    assert "±7 días" in html
 
 
 # --- filter_by_date_range (filtro de rango compartido por Operaciones y Alertas, 2026-07-29) ---

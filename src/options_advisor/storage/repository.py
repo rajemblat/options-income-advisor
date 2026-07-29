@@ -179,8 +179,9 @@ def insert_candidate_contract(conn: sqlite3.Connection, candidate: CandidateCont
              delta, gamma, theta, vega, rho, greeks_source, conviction_score, scoring_breakdown_json,
              legs_json, net_premium, max_profit, max_loss, breakevens_json, probability_of_profit,
              dte, underlying_price, payoff_is_estimate, annualized_return_pct, early_close_projection_json,
-             historical_move_occurrences, historical_move_total_windows)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             historical_move_occurrences, historical_move_total_windows,
+             similar_move_occurrences, similar_move_bigger_occurrences)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             candidate.symbol,
@@ -209,6 +210,8 @@ def insert_candidate_contract(conn: sqlite3.Connection, candidate: CandidateCont
             json.dumps(candidate.early_close_projection),
             candidate.historical_move_occurrences,
             candidate.historical_move_total_windows,
+            candidate.similar_move_occurrences,
+            candidate.similar_move_bigger_occurrences,
         ),
     )
     conn.commit()
@@ -420,8 +423,9 @@ def insert_real_trade_alert(conn: sqlite3.Connection, trade: RealTradeAlert) -> 
                  max_profit, max_loss, breakevens_json, probability_of_profit, dte, underlying_price,
                  payoff_is_estimate, annualized_return_pct, early_close_projection_json,
                  historical_move_occurrences, historical_move_total_windows,
+                 similar_move_occurrences, similar_move_bigger_occurrences,
                  narrative_text, narrative_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trade.account_number,
@@ -449,6 +453,8 @@ def insert_real_trade_alert(conn: sqlite3.Connection, trade: RealTradeAlert) -> 
                 json.dumps(trade.early_close_projection),
                 trade.historical_move_occurrences,
                 trade.historical_move_total_windows,
+                trade.similar_move_occurrences,
+                trade.similar_move_bigger_occurrences,
                 trade.narrative_text,
                 trade.narrative_source,
             ),

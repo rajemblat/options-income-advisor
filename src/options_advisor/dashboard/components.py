@@ -26,6 +26,7 @@ from options_advisor.dashboard.portfolio_summary import summarize_portfolio
 from options_advisor.scheduler.market_calendar import MarketSession, market_session
 from options_advisor.storage import db
 from options_advisor.storage import repository as repo
+from options_advisor.strategy.backtest import DEFAULT_DAY_TOLERANCE_DAYS, DEFAULT_PCT_TOLERANCE_POINTS
 
 load_dotenv(PROJECT_ROOT / ".env")
 
@@ -709,6 +710,33 @@ def _historical_move_caveat_html(occurrences: int | None, total_windows: int | N
     )
 
 
+def _similar_move_caveat_html(similar_occurrences: int | None, bigger_occurrences: int | None) -> str:
+    """Refina el check histórico de arriba (pedido 2026-07-29): en vez de un umbral "o más",
+    busca movimientos de MAGNITUD parecida (±3 puntos porcentuales) en un PLAZO parecido (±1
+    semana) — ver strategy/backtest.py::historical_similar_move_frequency(). Se muestra APARTE
+    del badge de arriba (decisión explícita del usuario: mantener los dos números, no
+    reemplazar uno por el otro). `bigger_occurrences` (caídas más grandes que la banda, en el
+    mismo plazo) se aclara siempre que sea > 0 — el escenario más peligroso no debe quedar
+    escondido detrás de un número que solo mira "parecidos"."""
+    if similar_occurrences is None or bigger_occurrences is None:
+        return ""
+    parts = []
+    veces_similar = "1 vez" if similar_occurrences == 1 else f"{similar_occurrences} veces"
+    parts.append(
+        f"Con más precisión (mismo % aprox. ±{DEFAULT_PCT_TOLERANCE_POINTS:.0f} puntos, mismo plazo aprox. "
+        f"±{DEFAULT_DAY_TOLERANCE_DAYS} días): pasó {veces_similar}"
+    )
+    if bigger_occurrences > 0:
+        veces_bigger = "1 vez" if bigger_occurrences == 1 else f"{bigger_occurrences} veces"
+        parts.append(f"y hubo {veces_bigger} una caída AÚN MÁS GRANDE en un plazo similar")
+    color = WARNING if similar_occurrences > 0 or bigger_occurrences > 0 else GOOD
+    icon_name = "alert-triangle" if similar_occurrences > 0 or bigger_occurrences > 0 else "check-circle"
+    return (
+        f"<div style='color:{color}; font-size:0.82rem; margin-top:0.3rem;'>{icon(icon_name, size=14, color=color)} "
+        f"{' — '.join(parts)} — análisis histórico, no garantiza el futuro.</div>"
+    )
+
+
 def render_alert_card(
     alert: sqlite3.Row,
     candidate: sqlite3.Row | None,
@@ -782,6 +810,9 @@ def render_alert_card(
         )
         if historical_caveat:
             html.append(historical_caveat)
+        similar_caveat = _similar_move_caveat_html(candidate["similar_move_occurrences"], candidate["similar_move_bigger_occurrences"])
+        if similar_caveat:
+            html.append(similar_caveat)
 
     if legs:
         html.append("<div style='margin-top:0.8rem;'>")
@@ -943,6 +974,9 @@ def render_real_trade_card(
     )
     if historical_caveat:
         html.append(historical_caveat)
+    similar_caveat = _similar_move_caveat_html(trade["similar_move_occurrences"], trade["similar_move_bigger_occurrences"])
+    if similar_caveat:
+        html.append(similar_caveat)
 
     if legs:
         html.append("<div style='margin-top:0.8rem;'>")

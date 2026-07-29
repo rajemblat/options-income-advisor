@@ -4,7 +4,16 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-29 (bug real URGENTE corregido: la detección de Operaciones
+Última actualización: 2026-07-29 (check histórico refinado con una banda de tolerancia de
+plazo (±1 semana) Y magnitud (±3 puntos porcentuales) — pedido explícito del usuario para
+buscar "movimientos SIMILARES" en vez de solo "movimientos de al menos este tamaño". Confirmado
+con el usuario ANTES de programar (ejemplo concreto con números reales, aclarando que es una
+pregunta distinta a la del badge existente) y con 2 preguntas de diseño respondidas: los
+crashes más grandes que la banda se muestran APARTE (no se esconden), y el badge nuevo
+COEXISTE con el existente (no lo reemplaza). Verificado en vivo con datos reales de Citigroup:
+"pasó 76 veces — y hubo 22 veces una caída AÚN MÁS GRANDE en un plazo similar", junto al badge
+original ("tocó este nivel 32 veces"). Antes en la sesión: bug real URGENTE corregido: la
+detección de Operaciones
 procesaba cada pata VENDIDA de una orden combinada por separado, así que un Iron Condor de 4
 patas de AMD se guardaba como 2 alertas sueltas de 1 pata desnuda cada una (Cash-Secured Put +
 Short Call Naked), ignorando las 2 patas COMPRADAS que definen el riesgo acotado. Fix: la orden
@@ -852,6 +861,42 @@ Ninguno.
     spread rechazado/composición no reconocida + integración end-to-end con dedup;
     `test_candidates.py`: `build_from_real_legs` con 4 y 2 patas, greeks netos) — 581/581 en
     verde.
+
+46. **Check histórico refinado: banda de tolerancia de plazo + magnitud, aparte del badge
+    existente** (pedido 2026-07-29). El badge original ("tocó este nivel N veces") usa un
+    umbral "o más" (cualquier caída IGUAL o MAYOR al % de cobertura de hoy cuenta) — el usuario
+    pidió algo más preciso: "movimientos de magnitud SIMILAR en un plazo similar", no "al
+    menos tan grande". Antes de programar, confirmé el entendimiento con un ejemplo concreto
+    (strike $300/precio $350/45 DTE → 14.3% requerido, banda de plazo 38-52 días con ±1 semana,
+    banda de magnitud 11.3%-17.3% con ±3 puntos porcentuales) y expliqué que es una pregunta
+    DISTINTA, no una extensión — un crash mucho más grande que la cobertura de hoy (ej. -40%)
+    queda FUERA del conteo "similar" aunque hubiera perforado la posición con margen de sobra.
+    2 decisiones de diseño confirmadas por el usuario antes de implementar: (1) los crashes
+    "más grandes que la banda" se muestran APARTE en vez de esconderse, (2) el badge nuevo
+    coexiste con el existente en vez de reemplazarlo.
+    `strategy/backtest.py::historical_similar_move_frequency()` — para cada punto de partida
+    posible, revisa TODOS los días entre `window_days-7` y `window_days+7`; si el movimiento
+    acumulado cae dentro de la banda porcentual en algún punto, es "similar"; si nunca entra a
+    la banda pero el movimiento final del rango la superó por arriba, es "más grande todavía".
+    Mismo agrupamiento de rachas consecutivas en un evento distinto que ya usa el badge
+    original. `compute_historical_checks()` reemplaza al viejo `compute_historical_move_check`
+    — pide el historial de 5 años a Schwab UNA sola vez y corre AMBOS análisis sobre los mismos
+    datos, para no duplicar la llamada de red por tener 2 checks en vez de 1.
+    2 columnas nuevas en `candidate_contracts`/`real_trade_alerts`
+    (`similar_move_occurrences`/`similar_move_bigger_occurrences`), mismo patrón de migración
+    ya establecido. Badge nuevo en `components.py::_similar_move_caveat_html()`, mostrado
+    DEBAJO del badge existente en ambas tarjetas (Alertas y Operaciones): "Con más precisión
+    (mismo % aprox. ±3 puntos, mismo plazo aprox. ±7 días): pasó N veces" + "y hubo M veces una
+    caída AÚN MÁS GRANDE en un plazo similar" cuando M>0 — siempre con la misma aclaración de
+    que es análisis histórico, no garantía futura.
+    24 tests nuevos (`test_backtest.py`: banda de magnitud, crash grande clasificado aparte,
+    movimiento chico sin contar en ninguno, tolerancia de plazo, agrupamiento de rachas,
+    wrapper combinado pide el historial una sola vez; `test_components.py`: badge con/sin
+    crashes grandes, singular/plural, aclaración histórica siempre presente;
+    `test_repository.py`: persistencia de las 2 columnas nuevas en ambas tablas) — 602/602 en
+    verde. Verificado en vivo con datos reales de Citigroup (CSP, strike $115, 37 DTE): badge
+    original "tocó este nivel 32 veces", badge nuevo "pasó 76 veces — y hubo 22 veces una caída
+    AÚN MÁS GRANDE en un plazo similar" — ambos badges visibles a la vez en la misma tarjeta.
 
 ## Cómo se usa este archivo
 

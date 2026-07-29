@@ -129,7 +129,7 @@ def _build_and_persist_real_trade_alert(
     option_type/acciones en cartera como siempre) o varias patas YA CLASIFICADAS por
     `_classify_opening_legs` (Iron Condor, credit spread — `strategy_type_override` fijo, no se
     re-resuelve). La primera pata de la lista es la "principal" (siempre la vendida ancla —
-    mismo criterio que `compute_coverage`/`compute_historical_move_check`): sus datos van en las
+    mismo criterio que `compute_coverage`/`compute_historical_checks`): sus datos van en las
     columnas singulares de `real_trade_alerts` (occ_symbol/option_type/strike/entry_price), el
     resto de la composición completa vive en `legs_json` (ver `payoff.legs`, ya genérico a N
     patas)."""
@@ -210,7 +210,7 @@ def _build_and_persist_real_trade_alert(
     )
     narrative_text, narrative_source = narrate_real_trade(context, settings.llm, anthropic_api_key)
 
-    historical_check = backtest.compute_historical_move_check(broker, quote_symbol, payoff.legs, payoff.underlying_price, payoff.dte)
+    historical_check, similar_check = backtest.compute_historical_checks(broker, quote_symbol, payoff.legs, payoff.underlying_price, payoff.dte)
 
     trade = RealTradeAlert(
         account_number=order.account_number,
@@ -238,6 +238,8 @@ def _build_and_persist_real_trade_alert(
         early_close_projection=payoff.early_close_projection,
         historical_move_occurrences=historical_check.occurrences if historical_check else None,
         historical_move_total_windows=historical_check.total_windows if historical_check else None,
+        similar_move_occurrences=similar_check.similar_occurrences if similar_check else None,
+        similar_move_bigger_occurrences=similar_check.bigger_occurrences if similar_check else None,
         narrative_text=narrative_text,
         narrative_source=narrative_source,
     )

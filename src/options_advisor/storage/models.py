@@ -68,6 +68,14 @@ class CandidateContract(BaseModel):
     # tienen valor, o ambos quedan None.
     historical_move_occurrences: int | None = None
     historical_move_total_windows: int | None = None
+    # "Movimiento similar" (pedido 2026-07-29, refina el check histórico de arriba): en vez de
+    # un umbral "o más", busca movimientos de magnitud PARECIDA (±3 puntos porcentuales) en un
+    # plazo parecido (±1 semana) — ver strategy/backtest.py::historical_similar_move_frequency().
+    # `similar_move_bigger_occurrences`: crashes que superaron la banda de tolerancia por
+    # arriba (más grandes que "similar") en el mismo rango de días — mostrado aparte para no
+    # esconder el escenario más peligroso detrás de un número que solo mira "parecidos".
+    similar_move_occurrences: int | None = None
+    similar_move_bigger_occurrences: int | None = None
 
 
 class Alert(BaseModel):
@@ -151,6 +159,14 @@ class RealTradeAlert(BaseModel):
     # "Check histórico" (pedido 2026-07-28) — ver CandidateContract, mismo campo/mismo criterio.
     historical_move_occurrences: int | None = None
     historical_move_total_windows: int | None = None
+    # "Movimiento similar" (pedido 2026-07-29, refina el check histórico de arriba): en vez de
+    # un umbral "o más", busca movimientos de magnitud PARECIDA (±3 puntos porcentuales) en un
+    # plazo parecido (±1 semana) — ver strategy/backtest.py::historical_similar_move_frequency().
+    # `similar_move_bigger_occurrences`: crashes que superaron la banda de tolerancia por
+    # arriba (más grandes que "similar") en el mismo rango de días — mostrado aparte para no
+    # esconder el escenario más peligroso detrás de un número que solo mira "parecidos".
+    similar_move_occurrences: int | None = None
+    similar_move_bigger_occurrences: int | None = None
     narrative_text: str | None = None
     narrative_source: NarrativeSource | None = None
 

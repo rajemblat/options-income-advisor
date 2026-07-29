@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from options_advisor.broker.models import PriceBar
-from options_advisor.strategy.backtest import compute_historical_move_check, historical_move_frequency
+from options_advisor.strategy.backtest import compute_historical_checks, historical_move_frequency, historical_similar_move_frequency
 
 BASE = date(2024, 1, 1)
 
@@ -179,7 +179,8 @@ def test_historical_move_frequency_sustained_multi_day_move_is_still_one_event()
     assert result.occurrences == 1
 
 
-# --- compute_historical_move_check (wrapper usado por engine.py/real_trades.py) ---
+# --- compute_historical_checks (wrapper usado por engine.py/real_trades.py, pide el
+# historial UNA sola vez y corre ambos análisis: umbral "o más" + banda de magnitud similar) ---
 
 
 class _FakeBrokerForBacktest:
@@ -193,7 +194,7 @@ class _FakeBrokerForBacktest:
         return self._bars[-lookback_days:]
 
 
-def test_compute_historical_move_check_picks_first_sell_leg():
+def test_compute_historical_checks_picks_first_sell_leg():
     bars = _flat_series(400)
     bars[10] = _bar(10, close=100.0, low=80.0)
     broker = _FakeBrokerForBacktest(bars)
@@ -201,35 +202,129 @@ def test_compute_historical_move_check_picks_first_sell_leg():
         {"side": "buy", "option_type": "put", "strike": 70.0},  # pata comprada, debe ignorarse
         {"side": "sell", "option_type": "put", "strike": 90.0},
     ]
-    result = compute_historical_move_check(broker, "TST", legs, underlying_price=100.0, dte=5)
-    assert result is not None
-    assert result.occurrences >= 1
+    historical, similar = compute_historical_checks(broker, "TST", legs, underlying_price=100.0, dte=5)
+    assert historical is not None
+    assert historical.occurrences >= 1
+    assert similar is not None
 
 
-def test_compute_historical_move_check_none_without_sell_leg():
+def test_compute_historical_checks_none_without_sell_leg():
     broker = _FakeBrokerForBacktest()
     legs = [{"side": "buy", "option_type": "put", "strike": 90.0}]
-    assert compute_historical_move_check(broker, "TST", legs, underlying_price=100.0, dte=5) is None
+    assert compute_historical_checks(broker, "TST", legs, underlying_price=100.0, dte=5) == (None, None)
 
 
-def test_compute_historical_move_check_none_without_underlying_price():
+def test_compute_historical_checks_none_without_underlying_price():
     broker = _FakeBrokerForBacktest()
     legs = [{"side": "sell", "option_type": "put", "strike": 90.0}]
-    assert compute_historical_move_check(broker, "TST", legs, underlying_price=None, dte=5) is None
+    assert compute_historical_checks(broker, "TST", legs, underlying_price=None, dte=5) == (None, None)
 
 
-def test_compute_historical_move_check_none_without_dte():
+def test_compute_historical_checks_none_without_dte():
     broker = _FakeBrokerForBacktest()
     legs = [{"side": "sell", "option_type": "put", "strike": 90.0}]
-    assert compute_historical_move_check(broker, "TST", legs, underlying_price=100.0, dte=None) is None
+    assert compute_historical_checks(broker, "TST", legs, underlying_price=100.0, dte=None) == (None, None)
 
 
-def test_compute_historical_move_check_none_when_broker_raises():
+def test_compute_historical_checks_none_when_broker_raises():
     broker = _FakeBrokerForBacktest(raises=True)
     legs = [{"side": "sell", "option_type": "put", "strike": 90.0}]
-    assert compute_historical_move_check(broker, "TST", legs, underlying_price=100.0, dte=5) is None
+    assert compute_historical_checks(broker, "TST", legs, underlying_price=100.0, dte=5) == (None, None)
 
 
-def test_compute_historical_move_check_empty_legs_returns_none():
+def test_compute_historical_checks_empty_legs_returns_none():
     broker = _FakeBrokerForBacktest()
-    assert compute_historical_move_check(broker, "TST", [], underlying_price=100.0, dte=5) is None
+    assert compute_historical_checks(broker, "TST", [], underlying_price=100.0, dte=5) == (None, None)
+
+
+def test_compute_historical_checks_fetches_price_history_only_once():
+    """Antes había 2 wrappers separados, cada uno pidiendo el historial por su cuenta — ahora
+    debe ser UNA sola llamada a Schwab para ambos análisis."""
+    calls = []
+
+    class _CountingBroker(_FakeBrokerForBacktest):
+        def get_price_history(self, symbol, lookback_days):
+            calls.append(symbol)
+            return super().get_price_history(symbol, lookback_days)
+
+    broker = _CountingBroker()
+    legs = [{"side": "sell", "option_type": "put", "strike": 90.0}]
+    compute_historical_checks(broker, "TST", legs, underlying_price=100.0, dte=5)
+    assert len(calls) == 1
+
+
+# --- historical_similar_move_frequency (pedido 2026-07-29: refina el check histórico con una
+# banda de tolerancia de plazo Y magnitud, en vez de un umbral "o más") ---
+
+
+def test_historical_similar_move_frequency_counts_move_within_band():
+    """Caída del 15% (dentro de la banda 11.3%-17.3% para un requerido de 14.3%) — cuenta como
+    "similar", no como "más grande". La caída tiene que caer dentro de [start+38, start+52]
+    días para que la entrada del día 0 la vea (ventana de 45 días ±7 de tolerancia) — día 45
+    cae justo en el medio de ese rango."""
+    bars = _flat_series(120)
+    bars[45] = _bar(45, close=100.0, low=85.0)  # 15% de caída
+    result = historical_similar_move_frequency(bars, "put", strike=85.7, reference_price=100.0, window_days=45)
+    assert result is not None
+    assert result.similar_occurrences == 1
+    assert result.bigger_occurrences == 0
+
+
+def test_historical_similar_move_frequency_big_crash_counts_as_bigger_not_similar():
+    """Caída del 40% (muy por encima de la banda 11.3%-17.3% para un requerido de 14.3%) — NO
+    debe contar como "similar" (sería engañoso, un evento mucho peor que "parecido"), pero SÍ
+    debe aparecer en bigger_occurrences (el escenario más peligroso, mostrado aparte)."""
+    bars = _flat_series(120)
+    bars[45] = _bar(45, close=100.0, low=60.0)  # 40% de caída
+    result = historical_similar_move_frequency(bars, "put", strike=85.7, reference_price=100.0, window_days=45)
+    assert result is not None
+    assert result.similar_occurrences == 0
+    assert result.bigger_occurrences == 1
+
+
+def test_historical_similar_move_frequency_small_move_counts_as_neither():
+    """Caída del 5% (por debajo de la banda 11.3%-17.3%) — ni similar ni más grande."""
+    bars = _flat_series(120)
+    bars[45] = _bar(45, close=100.0, low=95.0)  # 5% de caída
+    result = historical_similar_move_frequency(bars, "put", strike=85.7, reference_price=100.0, window_days=45)
+    assert result is not None
+    assert result.similar_occurrences == 0
+    assert result.bigger_occurrences == 0
+
+
+def test_historical_similar_move_frequency_respects_day_tolerance():
+    """Una caída que solo se ve completa varios días DESPUÉS del window_days exacto (pero
+    dentro del margen de ±day_tolerance_days) debe contar igual — antes (umbral exacto) se
+    hubiera perdido este caso."""
+    bars = _flat_series(120)
+    bars[48] = _bar(48, close=100.0, low=85.0)  # día 48, fuera de una ventana de EXACTAMENTE 45
+    result = historical_similar_move_frequency(
+        bars, "put", strike=85.7, reference_price=100.0, window_days=45, day_tolerance_days=7
+    )
+    assert result is not None
+    assert result.similar_occurrences == 1
+
+
+def test_historical_similar_move_frequency_groups_consecutive_similar_events():
+    bars = _flat_series(150)
+    for offset in (45, 46, 47):
+        bars[offset] = _bar(offset, close=85.0, low=85.0)  # caída sostenida ~15%
+    result = historical_similar_move_frequency(bars, "put", strike=85.7, reference_price=100.0, window_days=45)
+    assert result is not None
+    assert result.similar_occurrences == 1
+
+
+def test_historical_similar_move_frequency_none_when_strike_already_itm():
+    bars = _flat_series(120)
+    assert historical_similar_move_frequency(bars, "put", strike=110.0, reference_price=100.0, window_days=45) is None
+
+
+def test_historical_similar_move_frequency_none_for_empty_history():
+    assert historical_similar_move_frequency([], "put", strike=90.0, reference_price=100.0, window_days=45) is None
+
+
+def test_historical_similar_move_frequency_none_when_insufficient_trailing_data():
+    """Necesita datos hasta window_days + day_tolerance_days después del último punto de
+    partida posible — con muy pocos días de historia, ninguna ventana se puede evaluar."""
+    bars = _flat_series(10)
+    assert historical_similar_move_frequency(bars, "put", strike=85.7, reference_price=100.0, window_days=45) is None

@@ -140,10 +140,10 @@ def process_symbol_alerts(
             logger.exception("Fallo al calcular payoff de %s/%s; se omite este candidato", snap.symbol, strategy_type)
             continue
 
-        historical_check = (
-            backtest.compute_historical_move_check(broker, snap.symbol, payoff.legs, payoff.underlying_price, payoff.dte)
+        historical_check, similar_check = (
+            backtest.compute_historical_checks(broker, snap.symbol, payoff.legs, payoff.underlying_price, payoff.dte)
             if broker is not None
-            else None
+            else (None, None)
         )
 
         candidate_id = repo.insert_candidate_contract(
@@ -174,6 +174,8 @@ def process_symbol_alerts(
                 annualized_return_pct=payoff.annualized_return_pct,
                 historical_move_occurrences=historical_check.occurrences if historical_check else None,
                 historical_move_total_windows=historical_check.total_windows if historical_check else None,
+                similar_move_occurrences=similar_check.similar_occurrences if similar_check else None,
+                similar_move_bigger_occurrences=similar_check.bigger_occurrences if similar_check else None,
                 early_close_projection=payoff.early_close_projection,
             ),
         )

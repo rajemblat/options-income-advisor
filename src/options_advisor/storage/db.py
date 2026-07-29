@@ -24,6 +24,8 @@ _NEW_COLUMNS_BY_TABLE = {
         "early_close_projection_json": "TEXT",
         "historical_move_occurrences": "INTEGER",
         "historical_move_total_windows": "INTEGER",
+        "similar_move_occurrences": "INTEGER",
+        "similar_move_bigger_occurrences": "INTEGER",
     },
     "indicator_snapshots": {
         "next_earnings_date": "TEXT",
@@ -38,6 +40,8 @@ _NEW_COLUMNS_BY_TABLE = {
         "order_id": "INTEGER",
         "historical_move_occurrences": "INTEGER",
         "historical_move_total_windows": "INTEGER",
+        "similar_move_occurrences": "INTEGER",
+        "similar_move_bigger_occurrences": "INTEGER",
     },
 }
 

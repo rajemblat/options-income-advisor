@@ -240,6 +240,23 @@ def test_insert_real_trade_alert_historical_move_check_defaults_to_null(conn):
     assert rows[0]["historical_move_total_windows"] is None
 
 
+# --- similar_move_occurrences/bigger_occurrences (refinamiento del check histórico, 2026-07-29) ---
+
+
+def test_insert_real_trade_alert_persists_similar_move_check(conn):
+    repo.insert_real_trade_alert(conn, _real_trade_alert(similar_move_occurrences=4, similar_move_bigger_occurrences=1))
+    rows = repo.get_real_trade_alerts(conn)
+    assert rows[0]["similar_move_occurrences"] == 4
+    assert rows[0]["similar_move_bigger_occurrences"] == 1
+
+
+def test_insert_real_trade_alert_similar_move_check_defaults_to_null(conn):
+    repo.insert_real_trade_alert(conn, _real_trade_alert())
+    rows = repo.get_real_trade_alerts(conn)
+    assert rows[0]["similar_move_occurrences"] is None
+    assert rows[0]["similar_move_bigger_occurrences"] is None
+
+
 # --- order_id / get_alerted_order_leg_keys (rediseño de detección vía /orders, 2026-07-28) ---
 
 
@@ -362,6 +379,22 @@ def test_insert_candidate_contract_historical_move_check_defaults_to_null(conn):
     rows = repo.get_recent_single_leg_candidates(conn)
     assert rows[0]["historical_move_occurrences"] is None
     assert rows[0]["historical_move_total_windows"] is None
+
+
+def test_insert_candidate_contract_persists_similar_move_check(conn):
+    candidate = _candidate("TSLA")
+    candidate = candidate.model_copy(update={"similar_move_occurrences": 2, "similar_move_bigger_occurrences": 1})
+    repo.insert_candidate_contract(conn, candidate)
+    rows = repo.get_recent_single_leg_candidates(conn)
+    assert rows[0]["similar_move_occurrences"] == 2
+    assert rows[0]["similar_move_bigger_occurrences"] == 1
+
+
+def test_insert_candidate_contract_similar_move_check_defaults_to_null(conn):
+    repo.insert_candidate_contract(conn, _candidate("TSLA"))
+    rows = repo.get_recent_single_leg_candidates(conn)
+    assert rows[0]["similar_move_occurrences"] is None
+    assert rows[0]["similar_move_bigger_occurrences"] is None
 
 
 def test_get_recent_single_leg_candidates_excludes_multi_leg_strategies(conn):
