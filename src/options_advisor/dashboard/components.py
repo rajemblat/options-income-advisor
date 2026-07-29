@@ -4,7 +4,7 @@ import json
 import math
 import os
 import sqlite3
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -841,6 +841,28 @@ def render_alert_card(
 
     with st.expander("📋 Copiar alerta (para WhatsApp/Telegram)", key=f"copy_alert_expander_{alert['id']}"):
         st.code(shorten_for_sharing(alert["narrative_text"]) if alert["narrative_text"] else "Sin texto disponible.", language=None)
+
+
+# Filtro de rango de fechas en la Pestaña Operaciones (pedido 2026-07-29) — orden fijo para el
+# selectbox, valor = días hacia atrás desde hoy (None = sin filtro, todo el historial).
+DATE_RANGE_OPTIONS: dict[str, int | None] = {
+    "Hoy": 0,
+    "Última semana": 7,
+    "Últimos 15 días": 15,
+    "Último mes": 30,
+    "Todo": None,
+}
+
+
+def filter_trades_by_date_range(trades: list[sqlite3.Row], range_label: str, today: date) -> list[sqlite3.Row]:
+    """Filtra `trades` (ya ordenados DESC por `trade_ts` desde el repo) por `trade_date` >=
+    `today - días` — "Hoy" usa 0 días hacia atrás (`trade_date >= today`), así que cualquier
+    operación de días anteriores queda afuera sin necesitar un chequeo de igualdad aparte."""
+    days = DATE_RANGE_OPTIONS.get(range_label)
+    if days is None:
+        return trades
+    cutoff = today - timedelta(days=days)
+    return [t for t in trades if date.fromisoformat(t["trade_date"]) >= cutoff]
 
 
 def render_real_trade_card(

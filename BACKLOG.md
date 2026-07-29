@@ -4,13 +4,17 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-29 (healthcheck automático del scheduler implementado a pedido
-del usuario tras la 3ra recurrencia del cuelgue en 3 días: un LaunchAgent nuevo corre cada 5 min
-todo el día, detecta "colgado mudo" (proceso vivo, log sin actividad durante horario de
-mercado), lo reinicia solo, corre un catch-up de operaciones reales con ventana proporcional al
-tiempo perdido, y notifica con una notificación nativa de macOS inmediata — validado en vivo de
-punta a punta (log fabricado como "viejo", detectó, reinició, catch-up encontró y suprimió
-correctamente un roll real). Antes en la sesión: URGENTE resuelto: scheduler colgado de nuevo —
+Última actualización: 2026-07-29 (filtro de rango de fechas en la Pestaña Operaciones: Hoy /
+Última semana / Últimos 15 días / Último mes / Todo, manteniendo el agrupamiento visual por
+fecha que ya existía — verificado en vivo con capturas de "Hoy" (solo el grupo de hoy) y
+"Últimos 15 días" (hoy + 28/07 juntos). Antes en la sesión: healthcheck automático del scheduler
+implementado a pedido del usuario tras la 3ra recurrencia del cuelgue en 3 días: un LaunchAgent
+nuevo corre cada 5 min todo el día, detecta "colgado mudo" (proceso vivo, log sin actividad
+durante horario de mercado), lo reinicia solo, corre un catch-up de operaciones reales con
+ventana proporcional al tiempo perdido, y notifica con una notificación nativa de macOS
+inmediata — validado en vivo de punta a punta (log fabricado como "viejo", detectó, reinició,
+catch-up encontró y suprimió correctamente un roll real). Antes en la sesión: URGENTE resuelto:
+scheduler colgado de nuevo —
 esa 3ra vez — dejó pasar operaciones reales de hoy hasta que se detectó y reinició manualmente;
 al investigar en vivo se encontró Y corrigió un bug real de duplicados en la detección de
 Operaciones, causado por una carrera entre 2 procesos corriendo la detección al mismo tiempo,
@@ -767,6 +771,24 @@ Ninguno.
     (Coca-Cola +2.54%, Procter & Gamble -2.69%) — datos reales, no simulados. 545/545 en verde
     (sin tests nuevos: es reuso directo de la función ya probada `split_gainers_losers`, solo
     cambia qué índice se le pasa).
+
+43. **Pestaña Operaciones: filtro de rango de fechas** (pedido 2026-07-29). Selectbox nuevo
+    junto al de Símbolo, mismas 5 opciones pedidas en el orden pedido: Hoy / Última semana /
+    Últimos 15 días / Último mes / Todo (default "Todo", preserva el comportamiento de antes
+    para quien no toque el filtro). `dashboard/components.py::DATE_RANGE_OPTIONS` (dict
+    etiqueta→días hacia atrás, `None` = sin filtro) + `filter_trades_by_date_range(trades,
+    range_label, today)` — función pura, filtra sobre las filas ya traídas por
+    `repo.get_real_trade_alerts` (no una query nueva a la base, el volumen actual de operaciones
+    reales no lo justifica). "Hoy" usa 0 días hacia atrás (`trade_date >= today`), evita un
+    chequeo de igualdad aparte. El agrupamiento visual por fecha (`itertools.groupby`, "⚡ Hoy"
+    vs "🕐 DD/MM/AAAA") sigue funcionando igual porque el filtro se aplica ANTES de agrupar, no
+    después — no hizo falta tocar esa lógica. Mensaje de "sin resultados" mejorado: distingue
+    "no hay ninguna operación detectada todavía" (mensaje original) de "hay operaciones pero
+    ninguna coincide con el filtro actual" (mensaje nuevo), para no confundir al usuario cuando
+    el filtro simplemente no tiene resultados. 7 tests nuevos (`test_components.py`) — 568/568
+    en verde. Verificado en vivo con capturas: "Hoy" muestra solo el grupo "⚡ Hoy · 4
+    operaciones" (el grupo del 28/07 desaparece); "Últimos 15 días" muestra ambos grupos juntos,
+    agrupamiento intacto.
 
 ## Cómo se usa este archivo
 

@@ -7,8 +7,10 @@ import streamlit as st
 
 from options_advisor.dashboard.components import (
     ACCENT,
+    DATE_RANGE_OPTIONS,
     GOOD,
     TEXT_MUTED,
+    filter_trades_by_date_range,
     get_connection,
     icon,
     inject_theme,
@@ -35,9 +37,16 @@ render_notification_bell(conn)
 # símbolo que el usuario opere, no solo los ~15 monitoreados por el motor de sugerencias.
 all_trades = repo.get_real_trade_alerts(conn, limit=200)
 symbols = ["Todos"] + sorted({t["symbol"] for t in all_trades})
-selected_symbol = st.selectbox("Símbolo", symbols)
+
+filter_col1, filter_col2 = st.columns(2)
+with filter_col1:
+    selected_symbol = st.selectbox("Símbolo", symbols)
+with filter_col2:
+    range_labels = list(DATE_RANGE_OPTIONS.keys())
+    selected_range = st.selectbox("Rango de fechas", range_labels, index=range_labels.index("Todo"))
 
 trades = all_trades if selected_symbol == "Todos" else [t for t in all_trades if t["symbol"] == selected_symbol]
+trades = filter_trades_by_date_range(trades, selected_range, date.today())
 
 macro = repo.get_latest_macro_snapshot(conn)
 fed_meeting_date = macro["fed_meeting_date"] if macro else None
@@ -45,12 +54,15 @@ investor_profile = repo.get_investor_profile(conn)
 capital_available = investor_profile.capital_available if investor_profile else None
 
 if not trades:
-    st.info(
-        "Todavía no se detectó ninguna operación real. Se generan automáticamente cuando se abre "
-        "una posición nueva de venta de opciones en tu cuenta Schwab — no hace falta hacer nada acá, "
-        "solo correr el análisis (o esperar al polling automático) después de operar.",
-        icon="✅",
-    )
+    if all_trades:
+        st.info("No hay operaciones que coincidan con el símbolo y/o rango de fechas seleccionado.", icon="🔍")
+    else:
+        st.info(
+            "Todavía no se detectó ninguna operación real. Se generan automáticamente cuando se abre "
+            "una posición nueva de venta de opciones en tu cuenta Schwab — no hace falta hacer nada acá, "
+            "solo correr el análisis (o esperar al polling automático) después de operar.",
+            icon="✅",
+        )
 else:
     # Agrupadas por fecha (pedido 2026-07-28: separar visualmente lo de HOY de lo viejo, "para
     # que sea obvio de un vistazo cuáles son nuevas") — `trades` ya viene ordenado DESC por

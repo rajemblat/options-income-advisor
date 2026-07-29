@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from options_advisor.broker.models import Mover
 from options_advisor.dashboard.components import (
     CRITICAL,
@@ -8,6 +10,7 @@ from options_advisor.dashboard.components import (
     _capital_at_risk_caveat_html,
     _historical_move_caveat_html,
     classify_volatility_level,
+    filter_trades_by_date_range,
     split_gainers_losers,
 )
 
@@ -155,3 +158,54 @@ def test_historical_move_caveat_always_clarifies_its_historical_not_a_guarantee(
     assert "no garantiza el futuro" in _historical_move_caveat_html(8, 1250, 45)
     assert "histórico" in _historical_move_caveat_html(0, 1250, 45)
     assert "histórico" in _historical_move_caveat_html(8, 1250, 45)
+
+
+# --- filter_trades_by_date_range (filtro de rango en Pestaña Operaciones, pedido 2026-07-29) ---
+
+
+def _trade(trade_date: str, symbol: str = "TST") -> dict:
+    return {"trade_date": trade_date, "symbol": symbol}
+
+
+TODAY = date(2026, 7, 29)
+
+
+def test_filter_trades_by_date_range_todo_returns_everything_unfiltered():
+    trades = [_trade("2026-07-29"), _trade("2026-01-01"), _trade("2020-05-05")]
+    assert filter_trades_by_date_range(trades, "Todo", TODAY) == trades
+
+
+def test_filter_trades_by_date_range_hoy_excludes_previous_days():
+    trades = [_trade("2026-07-29"), _trade("2026-07-28")]
+    result = filter_trades_by_date_range(trades, "Hoy", TODAY)
+    assert result == [_trade("2026-07-29")]
+
+
+def test_filter_trades_by_date_range_ultima_semana_boundary_is_inclusive():
+    """7 días exactos atrás debe quedar INCLUIDO (cutoff = today - 7, comparación >=)."""
+    trades = [_trade("2026-07-22"), _trade("2026-07-21")]
+    result = filter_trades_by_date_range(trades, "Última semana", TODAY)
+    assert result == [_trade("2026-07-22")]
+
+
+def test_filter_trades_by_date_range_ultimos_15_dias():
+    trades = [_trade("2026-07-14"), _trade("2026-07-13")]
+    result = filter_trades_by_date_range(trades, "Últimos 15 días", TODAY)
+    assert result == [_trade("2026-07-14")]
+
+
+def test_filter_trades_by_date_range_ultimo_mes():
+    trades = [_trade("2026-06-29"), _trade("2026-06-28")]
+    result = filter_trades_by_date_range(trades, "Último mes", TODAY)
+    assert result == [_trade("2026-06-29")]
+
+
+def test_filter_trades_by_date_range_empty_input_returns_empty():
+    assert filter_trades_by_date_range([], "Hoy", TODAY) == []
+
+
+def test_filter_trades_by_date_range_preserves_original_order():
+    """No debe reordenar — `trades` ya viene ordenado DESC por trade_ts desde el repo."""
+    trades = [_trade("2026-07-29", "B"), _trade("2026-07-29", "A"), _trade("2026-07-28", "C")]
+    result = filter_trades_by_date_range(trades, "Hoy", TODAY)
+    assert [t["symbol"] for t in result] == ["B", "A"]
