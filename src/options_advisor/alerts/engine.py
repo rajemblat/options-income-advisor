@@ -5,11 +5,13 @@ import sqlite3
 from datetime import datetime
 
 from options_advisor.alerts import dedup, narrator, notifier
+from options_advisor.broker.base import BrokerClient
 from options_advisor.config import Settings
 from options_advisor.indicators.pipeline import SymbolAnalysis
 from options_advisor.market_context import finnhub_client
 from options_advisor.storage import repository as repo
 from options_advisor.storage.models import Alert, CandidateContract
+from options_advisor.strategy import backtest
 from options_advisor.strategy import candidates as candidate_builder
 from options_advisor.strategy import payoff as payoff_calc
 from options_advisor.strategy import scoring
@@ -50,6 +52,7 @@ def process_symbol_alerts(
     risk_level: str | None = None,
     recent_news: list[dict] | None = None,
     block_new_candidates: bool = False,
+    broker: BrokerClient | None = None,
 ) -> list[dict]:
     """Corre selector → candidatos → scoring → filtro de umbral → dedup → narrador → persistencia
     para un símbolo ya analizado (Sección 6 de la hoja de ruta). Devuelve las alertas nuevas
@@ -68,7 +71,12 @@ def process_symbol_alerts(
     block_new_candidates: True en días de riesgo alto (CPI/NFP/FOMC, ver
     `scheduler/jobs.py::_run_full_analysis` y `settings.strategy.block_new_candidates_on_high_risk_days`)
     — no genera NINGÚN candidato nuevo ese día, sea cual sea el perfil de riesgo. Solo bloquea
-    sugerencias nuevas, nunca alertas ya persistidas ni posiciones ya abiertas."""
+    sugerencias nuevas, nunca alertas ya persistidas ni posiciones ya abiertas.
+
+    broker: si se pasa (jobs.py lo hace siempre), habilita el "check histórico" (pedido
+    2026-07-28, ver strategy/backtest.py) — pide 5 años de precio real y calcula cuántas
+    ventanas de `dte` días tocaron un movimiento como el que esta alerta necesita. None (tests
+    que no lo pasan) simplemente lo omite, mismo criterio que el resto de datos opcionales."""
     snap = analysis.snapshot
     if block_new_candidates:
         logger.info("%s: bloqueado por día de riesgo alto (CPI/NFP/FOMC) — no se generan candidatos nuevos", snap.symbol)
@@ -132,6 +140,12 @@ def process_symbol_alerts(
             logger.exception("Fallo al calcular payoff de %s/%s; se omite este candidato", snap.symbol, strategy_type)
             continue
 
+        historical_check = (
+            backtest.compute_historical_move_check(broker, snap.symbol, payoff.legs, payoff.underlying_price, payoff.dte)
+            if broker is not None
+            else None
+        )
+
         candidate_id = repo.insert_candidate_contract(
             conn,
             CandidateContract(
@@ -158,6 +172,8 @@ def process_symbol_alerts(
                 underlying_price=payoff.underlying_price,
                 payoff_is_estimate=payoff.is_estimate,
                 annualized_return_pct=payoff.annualized_return_pct,
+                historical_move_occurrences=historical_check.occurrences if historical_check else None,
+                historical_move_total_windows=historical_check.total_windows if historical_check else None,
                 early_close_projection=payoff.early_close_projection,
             ),
         )

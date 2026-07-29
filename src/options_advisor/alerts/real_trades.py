@@ -12,6 +12,7 @@ from options_advisor.config import Settings
 from options_advisor.market_context import finnhub_client
 from options_advisor.storage import repository as repo
 from options_advisor.storage.models import RealTradeAlert
+from options_advisor.strategy import backtest
 from options_advisor.strategy import candidates as candidate_builder
 from options_advisor.strategy import constants as c
 from options_advisor.strategy import payoff as payoff_calc
@@ -126,6 +127,8 @@ def _build_and_persist_real_trade_alert(
     )
     narrative_text, narrative_source = narrate_real_trade(context, settings.llm, anthropic_api_key)
 
+    historical_check = backtest.compute_historical_move_check(broker, quote_symbol, payoff.legs, payoff.underlying_price, payoff.dte)
+
     trade = RealTradeAlert(
         account_number=order.account_number,
         occ_symbol=leg.occ_symbol,
@@ -150,6 +153,8 @@ def _build_and_persist_real_trade_alert(
         payoff_is_estimate=payoff.is_estimate,
         annualized_return_pct=payoff.annualized_return_pct,
         early_close_projection=payoff.early_close_projection,
+        historical_move_occurrences=historical_check.occurrences if historical_check else None,
+        historical_move_total_windows=historical_check.total_windows if historical_check else None,
         narrative_text=narrative_text,
         narrative_source=narrative_source,
     )

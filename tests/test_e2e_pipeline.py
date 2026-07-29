@@ -46,7 +46,7 @@ def test_full_pipeline_iv_rank_bootstrap_and_alert_dedup(mock_fixtures_dir):
     assert last_analysis.snapshot.iv_rank is not None
     assert last_analysis.snapshot.iv_rank > 50
 
-    alerts_first_run = process_symbol_alerts(conn, last_analysis, settings, anthropic_api_key=None)
+    alerts_first_run = process_symbol_alerts(conn, last_analysis, settings, anthropic_api_key=None, broker=client)
     assert len(alerts_first_run) > 0
     # La fixture es una tendencia alcista monótona → RSI ~100 (extremo sobrecomprado) → el
     # selector aplica sesgo bajista y evita vender puts frescos en un rally así, ofreciendo en
@@ -55,7 +55,7 @@ def test_full_pipeline_iv_rank_bootstrap_and_alert_dedup(mock_fixtures_dir):
 
     # Repetir el mismo día (como si el scheduler corriera de nuevo 30 min después) no
     # debe generar alertas duplicadas.
-    alerts_second_run = process_symbol_alerts(conn, last_analysis, settings, anthropic_api_key=None)
+    alerts_second_run = process_symbol_alerts(conn, last_analysis, settings, anthropic_api_key=None, broker=client)
     assert alerts_second_run == []
 
     persisted = conn.execute("SELECT COUNT(*) AS n FROM alerts WHERE symbol = 'TST'").fetchone()

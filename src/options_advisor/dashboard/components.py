@@ -679,6 +679,29 @@ def _capital_at_risk_caveat_html(max_loss: float | None, capital_available: floa
     return ""
 
 
+def _historical_move_caveat_html(occurrences: int | None, total_windows: int | None, window_days: int | None) -> str:
+    """"Check histórico" (pedido 2026-07-28): de todas las ventanas de `window_days` días
+    CALENDARIO en los últimos ~5 años, cuántas veces el precio real se movió al menos tanto
+    como necesitaría moverse HOY para llegar al strike de esta alerta — ver
+    strategy/backtest.py::historical_move_frequency(). Deliberadamente NO es un simple ✅/❌: un
+    número/porcentaje da más contexto que un check binario, y SIEMPRE aclara que es análisis
+    histórico (lo que pasó antes), no una garantía de que no vuelva a pasar."""
+    if occurrences is None or not total_windows:
+        return ""
+    if occurrences == 0:
+        return (
+            f"<div style='color:{GOOD}; font-size:0.82rem; margin-top:0.3rem;'>{icon('check-circle', size=14, color=GOOD)} "
+            f"Nunca ocurrió en los últimos ~5 años (0 de {total_windows:,} ventanas de {window_days}d) — "
+            "análisis histórico, no garantiza el futuro.</div>"
+        )
+    pct = occurrences / total_windows * 100
+    return (
+        f"<div style='color:{WARNING}; font-size:0.82rem; margin-top:0.3rem;'>{icon('alert-triangle', size=14, color=WARNING)} "
+        f"Ocurrió en {occurrences} de {total_windows:,} ventanas de {window_days}d ({pct:.1f}%) en los últimos ~5 años — "
+        "análisis histórico, no garantiza el futuro.</div>"
+    )
+
+
 def render_alert_card(
     alert: sqlite3.Row,
     candidate: sqlite3.Row | None,
@@ -746,6 +769,12 @@ def render_alert_card(
     capital_caveat = _capital_at_risk_caveat_html(candidate["max_loss"] if candidate else None, capital_available)
     if capital_caveat:
         html.append(capital_caveat)
+    if candidate:
+        historical_caveat = _historical_move_caveat_html(
+            candidate["historical_move_occurrences"], candidate["historical_move_total_windows"], candidate["dte"]
+        )
+        if historical_caveat:
+            html.append(historical_caveat)
 
     if legs:
         html.append("<div style='margin-top:0.8rem;'>")
@@ -876,6 +905,11 @@ def render_real_trade_card(
     capital_caveat = _capital_at_risk_caveat_html(trade["max_loss"], capital_available)
     if capital_caveat:
         html.append(capital_caveat)
+    historical_caveat = _historical_move_caveat_html(
+        trade["historical_move_occurrences"], trade["historical_move_total_windows"], trade["dte"]
+    )
+    if historical_caveat:
+        html.append(historical_caveat)
 
     if legs:
         html.append("<div style='margin-top:0.8rem;'>")

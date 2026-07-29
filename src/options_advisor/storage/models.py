@@ -60,6 +60,14 @@ class CandidateContract(BaseModel):
     payoff_is_estimate: bool = False
     annualized_return_pct: float | None = None
     early_close_projection: list[dict] = []
+    # "Check histórico" (pedido 2026-07-28): de cuántas ventanas de `dte` días en los últimos
+    # ~5 años el precio real se movió al menos tanto como necesitaría moverse hoy para llegar a
+    # este strike — ver strategy/backtest.py::historical_move_frequency(). None si no se pudo
+    # calcular (sin datos suficientes, o el strike ya estaba ITM al momento de generar la
+    # alerta). total_windows=0 nunca se persiste como 0 con occurrences no-None — o ambos
+    # tienen valor, o ambos quedan None.
+    historical_move_occurrences: int | None = None
+    historical_move_total_windows: int | None = None
 
 
 class Alert(BaseModel):
@@ -140,6 +148,9 @@ class RealTradeAlert(BaseModel):
     payoff_is_estimate: bool = False
     annualized_return_pct: float | None = None
     early_close_projection: list[dict] = []
+    # "Check histórico" (pedido 2026-07-28) — ver CandidateContract, mismo campo/mismo criterio.
+    historical_move_occurrences: int | None = None
+    historical_move_total_windows: int | None = None
     narrative_text: str | None = None
     narrative_source: NarrativeSource | None = None
 

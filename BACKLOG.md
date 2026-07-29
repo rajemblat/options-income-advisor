@@ -4,9 +4,12 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-28 (noche — reordenadas las columnas del Screener a pedido
-explícito (las 15 "originales" primero en orden fijo, las 6 derivadas al final). Antes en la
-sesión: bug real de filas duplicadas en el Screener (Cash-Secured Put vs Short Put (Naked),
+Última actualización: 2026-07-28 (noche — "check histórico" nuevo en las alertas: de todas las
+ventanas de N días (=DTE) en los últimos ~5 años, cuántas veces el precio se movió tanto como
+necesitaría moverse hoy para llegar al strike, calculado una vez al generar la alerta y guardado
+(no en tiempo real), aplicado a Alertas de candidatos y Operaciones reales. Antes en la sesión:
+reordenadas las columnas del Screener a pedido explícito (las 15 "originales" primero en orden
+fijo, las 6 derivadas al final); bug real de filas duplicadas en el Screener (Cash-Secured Put vs Short Put (Naked),
 mismo contrato exacto) corregido de raíz en el motor + deduplicado a nivel de visualización
 para el historial ya persistido; filtros de earnings/FOMC sumados al Screener; una alarma falsa
 de GDX investigada y confirmada como detección correcta (el scheduler nuevo funcionaba bien, el
@@ -571,6 +574,43 @@ Ninguno.
     Escaneo (mismo `build_scanner_rows` compartido).
     Verificado en navegador en vivo con captura del nuevo orden completo (scroll horizontal).
     1 test nuevo (`test_build_scanner_rows_column_order`) — 510/510 en verde.
+41. **"Check histórico" en las alertas** (pedido 2026-07-28, con evaluación de viabilidad
+    confirmada antes de programar). De todas las ventanas de N días CALENDARIO (=DTE de la
+    alerta) posibles en los últimos ~5 años de precio real, cuántas veces el precio se movió al
+    menos tanto como necesitaría moverse HOY para llegar al strike — usando el % de cobertura
+    aplicado sobre el precio de INICIO de cada ventana histórica (no un strike en dólares fijo
+    contra el pasado), aclaración de alcance del usuario ya cubierta por el diseño original sin
+    cambios de código. Usa el RANGO de cada barra (low para puts, high para calls), no solo el
+    cierre, para capturar si el precio tocó el nivel en algún momento dentro de la ventana.
+    Viabilidad confirmada en vivo: Schwab soporta `period=5` años en `/pricehistory` (1255
+    barras reales para AAPL, 2021-07-27 a 2026-07-27, en 0.42s) — antes el pipeline solo pedía
+    2 años (`period=2`, hardcodeado) recortados a 300 días. Se subió `period` a 5 en
+    `schwab_client.py::get_price_history` (los callers existentes, con `lookback_days=300`,
+    no notan la diferencia — siguen recortando igual).
+    Piezas nuevas: `strategy/backtest.py::historical_move_frequency()` (función pura,
+    ventana O(n) sobre las barras) + `compute_historical_move_check()` (envoltorio: encuentra
+    la pata vendida principal, pide 5 años a Schwab, corre el cálculo — nunca rompe al caller,
+    None si falta cualquier dato). Calculado UNA VEZ al generar la alerta (no en cada vista de
+    página, mismo patrón que payoff/P&L ya establecido) y guardado en 2 columnas nuevas
+    (`historical_move_occurrences`/`historical_move_total_windows`) en `candidate_contracts` y
+    `real_trade_alerts` — `window_days` no se persiste aparte, ya es el `dte` existente.
+    `alerts/engine.py::process_symbol_alerts()` suma un parámetro `broker` opcional (None en
+    tests que no lo necesitan) para poder pedir el historial justo antes de persistir un
+    candidato que ya pasó el umbral — no se pide para TODO el universo escaneado, solo para lo
+    que realmente se alertaría, evitando inflar la carga de la corrida regular.
+    UI: `dashboard/components.py::_historical_move_caveat_html()` — a propósito NO es un simple
+    ✅/❌: 0 ocurrencias muestra un check verde con el total de ventanas evaluadas, ocurrencias
+    >0 muestra "Ocurrió en N de M ventanas de Dd (X.X%)" en ámbar — SIEMPRE con la aclaración
+    "análisis histórico, no garantiza el futuro" en ambos casos. Sin narrador (LLM) por ahora,
+    alcance acotado a pedido explícito. Aplicado tanto a `render_alert_card` (Alertas) como
+    `render_real_trade_card` (Operaciones).
+    Verificado con datos 100% reales de Schwab, no sintéticos: AAPL, put, 45 DTE, 15% de
+    cobertura → ocurrió en 96 de 1,226 ventanas (7.8%) en los últimos 5 años. Retroalimentada y
+    verificada EN NAVEGADOR sobre una alerta real ya persistida hoy (AAPL Cash-Secured Put,
+    strike $305, 31 DTE, ~9.5% de cobertura): "Ocurrió en 260 de 1,235 ventanas de 31d (21.1%)"
+    — coherente con el ejemplo de 45 DTE (menor cobertura exigida = mayor frecuencia histórica,
+    relación matemáticamente esperada). 26 tests nuevos (`test_backtest.py`,
+    `test_repository.py`, `test_real_trades.py`, `test_components.py`) — 541/541 en verde.
 
 ## Cómo se usa este archivo
 

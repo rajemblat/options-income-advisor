@@ -6,6 +6,7 @@ from options_advisor.dashboard.components import (
     GOOD,
     WARNING,
     _capital_at_risk_caveat_html,
+    _historical_move_caveat_html,
     classify_volatility_level,
     split_gainers_losers,
 )
@@ -114,3 +115,38 @@ def test_split_gainers_losers_zero_change_excluded_from_both():
 
 def test_split_gainers_losers_empty_input():
     assert split_gainers_losers([]) == ([], [])
+
+
+# --- _historical_move_caveat_html ("check histórico", pedido 2026-07-28) ---
+
+
+def test_historical_move_caveat_empty_without_data():
+    assert _historical_move_caveat_html(None, None, 45) == ""
+
+
+def test_historical_move_caveat_empty_without_total_windows():
+    assert _historical_move_caveat_html(0, 0, 45) == ""  # total_windows=0 no debería persistirse, pero por las dudas
+
+
+def test_historical_move_caveat_zero_occurrences_shows_green_check():
+    html = _historical_move_caveat_html(0, 1250, 45)
+    assert "Nunca ocurrió" in html
+    assert "1,250" in html
+    assert "45d" in html
+    assert GOOD in html
+
+
+def test_historical_move_caveat_nonzero_occurrences_shows_count_and_percent():
+    html = _historical_move_caveat_html(8, 1250, 45)
+    assert "Ocurrió en 8 de 1,250 ventanas de 45d" in html
+    assert "0.6%" in html
+    assert WARNING in html
+
+
+def test_historical_move_caveat_always_clarifies_its_historical_not_a_guarantee():
+    """Aclaración explícita pedida por el usuario — tiene que aparecer en AMBOS casos (0
+    ocurrencias y con ocurrencias), no solo en uno."""
+    assert "no garantiza el futuro" in _historical_move_caveat_html(0, 1250, 45)
+    assert "no garantiza el futuro" in _historical_move_caveat_html(8, 1250, 45)
+    assert "histórico" in _historical_move_caveat_html(0, 1250, 45)
+    assert "histórico" in _historical_move_caveat_html(8, 1250, 45)

@@ -223,6 +223,23 @@ def test_get_real_trade_alerts_filters_by_symbol(conn):
     assert rows[0]["symbol"] == "AAPL"
 
 
+# --- historical_move_occurrences/total_windows ("check histórico", pedido 2026-07-28) ---
+
+
+def test_insert_real_trade_alert_persists_historical_move_check(conn):
+    repo.insert_real_trade_alert(conn, _real_trade_alert(historical_move_occurrences=8, historical_move_total_windows=1250))
+    rows = repo.get_real_trade_alerts(conn)
+    assert rows[0]["historical_move_occurrences"] == 8
+    assert rows[0]["historical_move_total_windows"] == 1250
+
+
+def test_insert_real_trade_alert_historical_move_check_defaults_to_null(conn):
+    repo.insert_real_trade_alert(conn, _real_trade_alert())
+    rows = repo.get_real_trade_alerts(conn)
+    assert rows[0]["historical_move_occurrences"] is None
+    assert rows[0]["historical_move_total_windows"] is None
+
+
 # --- order_id / get_alerted_order_leg_keys (rediseño de detección vía /orders, 2026-07-28) ---
 
 
@@ -289,6 +306,22 @@ def test_get_recent_single_leg_candidates_includes_single_leg_strategies(conn):
     repo.insert_candidate_contract(conn, _candidate("AAPL", strategy_type="covered_call"))
     rows = repo.get_recent_single_leg_candidates(conn)
     assert {r["symbol"] for r in rows} == {"TSLA", "AAPL"}
+
+
+def test_insert_candidate_contract_persists_historical_move_check(conn):
+    candidate = _candidate("TSLA")
+    candidate = candidate.model_copy(update={"historical_move_occurrences": 3, "historical_move_total_windows": 900})
+    repo.insert_candidate_contract(conn, candidate)
+    rows = repo.get_recent_single_leg_candidates(conn)
+    assert rows[0]["historical_move_occurrences"] == 3
+    assert rows[0]["historical_move_total_windows"] == 900
+
+
+def test_insert_candidate_contract_historical_move_check_defaults_to_null(conn):
+    repo.insert_candidate_contract(conn, _candidate("TSLA"))
+    rows = repo.get_recent_single_leg_candidates(conn)
+    assert rows[0]["historical_move_occurrences"] is None
+    assert rows[0]["historical_move_total_windows"] is None
 
 
 def test_get_recent_single_leg_candidates_excludes_multi_leg_strategies(conn):

@@ -22,6 +22,8 @@ _NEW_COLUMNS_BY_TABLE = {
         "payoff_is_estimate": "INTEGER",
         "annualized_return_pct": "REAL",
         "early_close_projection_json": "TEXT",
+        "historical_move_occurrences": "INTEGER",
+        "historical_move_total_windows": "INTEGER",
     },
     "indicator_snapshots": {
         "next_earnings_date": "TEXT",
@@ -34,6 +36,8 @@ _NEW_COLUMNS_BY_TABLE = {
     },
     "real_trade_alerts": {
         "order_id": "INTEGER",
+        "historical_move_occurrences": "INTEGER",
+        "historical_move_total_windows": "INTEGER",
     },
 }
 

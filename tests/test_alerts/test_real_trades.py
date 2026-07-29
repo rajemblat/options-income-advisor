@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 import pytest
 
 from options_advisor.alerts import real_trades
-from options_advisor.broker.models import FilledOrder, FilledOrderLeg, Greeks, OptionChain, OptionContract, Quote
+from options_advisor.broker.models import FilledOrder, FilledOrderLeg, Greeks, OptionChain, OptionContract, PriceBar, Quote
 from options_advisor.config import load_settings
 from options_advisor.storage import db
 from options_advisor.storage import repository as repo
@@ -52,12 +52,30 @@ def _hood_chain() -> OptionChain:
     return OptionChain(symbol="HOOD", as_of=TODAY, underlying_price=88.93, contracts=[_hood_contract()])
 
 
+def _flat_price_history(days: int = 400, price: float = 88.93) -> list[PriceBar]:
+    from datetime import timedelta
+
+    start = TODAY - timedelta(days=days)
+    return [
+        PriceBar(symbol="TST", trade_date=start + timedelta(days=i), open=price, high=price, low=price, close=price, volume=1000)
+        for i in range(days)
+    ]
+
+
 class _FakeBroker:
-    def __init__(self, orders: list[FilledOrder], chain: OptionChain, quote: Quote, get_orders_raises: bool = False):
+    def __init__(
+        self,
+        orders: list[FilledOrder],
+        chain: OptionChain,
+        quote: Quote,
+        get_orders_raises: bool = False,
+        price_history: list[PriceBar] | None = None,
+    ):
         self._orders = orders
         self._chain = chain
         self._quote = quote
         self._get_orders_raises = get_orders_raises
+        self._price_history = price_history if price_history is not None else _flat_price_history()
 
     def get_recent_filled_orders(self, since: datetime) -> list[FilledOrder]:
         if self._get_orders_raises:
@@ -69,6 +87,9 @@ class _FakeBroker:
 
     def get_option_chain(self, symbol: str, expiration_range_days=(7, 60)) -> OptionChain:
         return self._chain
+
+    def get_price_history(self, symbol: str, lookback_days: int) -> list[PriceBar]:
+        return self._price_history[-lookback_days:]
 
 
 # --- _is_roll ---
@@ -129,6 +150,40 @@ def test_detect_and_alert_real_trades_generates_alert_for_new_opening_order(conn
     assert rows[0]["symbol"] == "HOOD"
     assert rows[0]["strike"] == 75.0
     assert rows[0]["order_id"] == 1007358084142
+
+
+# --- "check histórico" (pedido 2026-07-28, ver strategy/backtest.py) ---
+
+
+def test_detect_and_alert_real_trades_persists_historical_move_check_zero_occurrences(conn, monkeypatch):
+    """Precio históricamente plano (nunca se movió) — 0 ocurrencias, pero SÍ debe calcular un
+    total_windows > 0 (hay historial suficiente, solo que nunca tocó el nivel)."""
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    broker = _FakeBroker(
+        orders=[_hood_order()], chain=_hood_chain(), quote=Quote(symbol="HOOD", as_of=TODAY, last_price=88.93, bid=88.9, ask=89.0),
+        price_history=_flat_price_history(price=88.93),
+    )
+    real_trades.detect_and_alert_real_trades(broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+    rows = repo.get_real_trade_alerts(conn)
+    assert rows[0]["historical_move_occurrences"] == 0
+    assert rows[0]["historical_move_total_windows"] > 0
+
+
+def test_detect_and_alert_real_trades_persists_historical_move_check_with_occurrences(conn, monkeypatch):
+    """Un dip real en el historial que sí toca el nivel del strike — occurrences > 0."""
+    from datetime import timedelta
+
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    bars = _flat_price_history(price=88.93)
+    dip_date = TODAY - timedelta(days=200)
+    bars = [b if b.trade_date != dip_date else b.model_copy(update={"low": 60.0}) for b in bars]
+    broker = _FakeBroker(
+        orders=[_hood_order()], chain=_hood_chain(), quote=Quote(symbol="HOOD", as_of=TODAY, last_price=88.93, bid=88.9, ask=89.0),
+        price_history=bars,
+    )
+    real_trades.detect_and_alert_real_trades(broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+    rows = repo.get_real_trade_alerts(conn)
+    assert rows[0]["historical_move_occurrences"] > 0
 
 
 def test_detect_and_alert_real_trades_uses_exact_order_fill_price_not_mark(conn, monkeypatch):

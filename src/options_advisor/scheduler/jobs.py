@@ -143,6 +143,7 @@ def _run_full_analysis(
                     finnhub_api_key=finnhub_api_key,
                     risk_level=risk_level,
                     recent_news=recent_news,
+                    broker=broker,
                 )
                 symbol_alert_count += len(alerts)
                 new_alerts.extend(alerts)

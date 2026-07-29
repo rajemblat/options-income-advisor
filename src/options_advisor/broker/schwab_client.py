@@ -266,12 +266,17 @@ class SchwabBrokerClient(BrokerClient):
         return [_parse_mover(item) for item in data.get("screeners", [])]
 
     def get_price_history(self, symbol: str, lookback_days: int) -> list[PriceBar]:
+        # period=5 (años) — confirmado en vivo que Schwab lo soporta sin problema (1255 barras
+        # reales para AAPL en 0.4s, ver strategy/backtest.py). `lookback_days` sigue recortando
+        # el resultado como siempre: los callers de siempre (indicadores, 300 días) no notan la
+        # diferencia, y el "check histórico" (pedido 2026-07-28) puede pedir hasta ~5 años sin
+        # necesitar un método de broker nuevo.
         data = self._get(
             "/pricehistory",
             params={
                 "symbol": symbol,
                 "periodType": "year",
-                "period": 2,
+                "period": 5,
                 "frequencyType": "daily",
                 "frequency": 1,
             },

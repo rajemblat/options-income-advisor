@@ -80,7 +80,9 @@ CREATE TABLE IF NOT EXISTS candidate_contracts (
     underlying_price REAL,
     payoff_is_estimate INTEGER,
     annualized_return_pct REAL,
-    early_close_projection_json TEXT
+    early_close_projection_json TEXT,
+    historical_move_occurrences INTEGER,
+    historical_move_total_windows INTEGER
 );
 
 -- Noticias recientes por símbolo (Finnhub /company-news). UNIQUE(symbol, url) para poder
@@ -182,6 +184,8 @@ CREATE TABLE IF NOT EXISTS real_trade_alerts (
     payoff_is_estimate INTEGER,
     annualized_return_pct REAL,
     early_close_projection_json TEXT,
+    historical_move_occurrences INTEGER,
+    historical_move_total_windows INTEGER,
     narrative_text TEXT,
     narrative_source TEXT
 );
