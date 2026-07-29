@@ -179,6 +179,7 @@ def detect_and_alert_real_trades(
     share_positions: dict[str, int],
     anthropic_api_key: str | None,
     finnhub_api_key: str | None,
+    lookback_minutes: int | None = None,
 ) -> list[dict]:
     """Detecta operaciones reales nuevas (venta de opciones) en la cuenta Schwab real y genera
     una alerta con el mismo formato completo que las alertas de candidatos (P&L, breakeven,
@@ -189,8 +190,13 @@ def detect_and_alert_real_trades(
     del mismo contrato en momentos distintos (antes: `position.average_price`, un promedio
     blendeado de TODA la posición acumulada — impreciso al ir sumando contratos incrementales).
     Nunca rompe el resto del job: cualquier fallo puntual (símbolo sin chain, sin contrato
-    encontrado) se loguea y se sigue con el resto — mismo criterio del resto de Sección 6."""
-    since = datetime.now(timezone.utc) - timedelta(minutes=REAL_TRADE_LOOKBACK_MINUTES)
+    encontrado) se loguea y se sigue con el resto — mismo criterio del resto de Sección 6.
+
+    `lookback_minutes` opcional (default `REAL_TRADE_LOOKBACK_MINUTES`) — usado por
+    `scheduler/healthcheck.py` para pedir una ventana más ancha en el catch-up inmediato
+    después de reparar un scheduler colgado (incidente 2026-07-29), cubriendo todo el tiempo
+    que estuvo mudo en vez de solo los últimos 15 minutos."""
+    since = datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes or REAL_TRADE_LOOKBACK_MINUTES)
     try:
         orders = broker.get_recent_filled_orders(since)
     except Exception:

@@ -4,8 +4,14 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-29 (URGENTE resuelto: scheduler colgado de nuevo — 3ra vez, ver
-sección dedicada abajo — dejó pasar operaciones reales de hoy hasta que se detectó y reinició;
+Última actualización: 2026-07-29 (healthcheck automático del scheduler implementado a pedido
+del usuario tras la 3ra recurrencia del cuelgue en 3 días: un LaunchAgent nuevo corre cada 5 min
+todo el día, detecta "colgado mudo" (proceso vivo, log sin actividad durante horario de
+mercado), lo reinicia solo, corre un catch-up de operaciones reales con ventana proporcional al
+tiempo perdido, y notifica con una notificación nativa de macOS inmediata — validado en vivo de
+punta a punta (log fabricado como "viejo", detectó, reinició, catch-up encontró y suprimió
+correctamente un roll real). Antes en la sesión: URGENTE resuelto: scheduler colgado de nuevo —
+esa 3ra vez — dejó pasar operaciones reales de hoy hasta que se detectó y reinició manualmente;
 al investigar en vivo se encontró Y corrigió un bug real de duplicados en la detección de
 Operaciones, causado por una carrera entre 2 procesos corriendo la detección al mismo tiempo,
 con un índice UNIQUE nuevo en la base como fix de raíz. Antes en la sesión: Market Movers ahora
@@ -124,9 +130,56 @@ real, no especulación:
   distinto, sin duplicar), Citigroup CSP, NVDA CSP — cada una aparece exactamente una vez.
   545+5 = 550/550 tests en verde.
 
-**Riesgo pendiente, ahora con más urgencia** (2 recurrencias en 3 días): sigue sin existir un
-healthcheck automático que reinicie el scheduler solo cuando se cuelga. Evaluar seriamente
-antes de que pase una 4ta vez.
+**Riesgo cerrado — ver siguiente sección**: implementado el healthcheck automático pedido
+explícitamente por el usuario tras esta 3ra recurrencia.
+
+## Resuelto — healthcheck automático del scheduler (pedido explícito 2026-07-29, 3ra recurrencia)
+
+El usuario pidió priorizar esto de inmediato: "ya son 3 veces en 3 días, no puedo estar
+revisando manualmente". Diseño con 2 frentes, ambos evaluados:
+
+**Detección + auto-reparación** (implementado por completo):
+`scheduler/healthcheck.py::run_healthcheck()` — módulo separado y testeable (funciones puras
+`is_stale()`/`catchup_lookback_minutes()` + una función de orquestación con
+`get_scheduler_pid`/`restart_scheduler`/`notify` inyectados, mismo patrón de dependencias que
+`broker: BrokerClient` en el resto del motor). Solo actúa durante horario de mercado regular
+("abierto", vía `market_calendar.market_session()`) — fuera de esa ventana un log viejo no
+significa nada. "Colgado mudo" = proceso vivo (`pgrep`) pero el log del scheduler no tuvo
+actividad en `max(6 min, poll_interval × 3)` — con `real_trade_poll_interval_minutes=3` por
+defecto, son 9 min de margen antes de actuar (evita falsos positivos por una llamada lenta
+puntual a Schwab). Al detectarlo: `launchctl kickstart -k` reinicia el scheduler, y corre un
+catch-up de `detect_and_alert_real_trades` con una ventana proporcional al tiempo perdido
+(gap + 5 min de margen, piso de 15, tope de 180 para no repetir el timeout real ya documentado
+pidiendo demasiada historia de órdenes de una sola vez). Notifica con
+`osascript display notification` (inmediata, nativa de macOS, no depende de que Telegram esté
+configurado — confirmado que NO lo está en este entorno) + intento de Telegram si algún día se
+configura (`notifier.send_text`, no-op silencioso si no hay token). Corre cada 5 min todo el
+día vía un LaunchAgent NUEVO y SEPARADO
+(`~/Library/LaunchAgents/com.robertoajemblat.options-income-advisor.healthcheck.plist`,
+`StartInterval=300`, sin `KeepAlive` porque es un script de un solo shot que termina cada vez,
+no un proceso residente — un cuelgue DEL healthcheck mismo no puede repetir el problema que
+está vigilando). `alerts/real_trades.py::detect_and_alert_real_trades` ganó un parámetro
+opcional `lookback_minutes` (default preserva el comportamiento normal del cron) para que el
+catch-up pueda pedir una ventana más ancha que los 15 min de siempre.
+11 tests nuevos (`test_healthcheck.py`) cubren: umbral de "colgado" con piso para intervalos
+chicos, escalado de la ventana de catch-up, no-op fuera de horario de mercado, no-op con log
+fresco, reinicio sin catch-up cuando el proceso ni siquiera está vivo, reinicio + catch-up
+vacío, y reinicio + catch-up que SÍ encuentra una operación perdida (2 notificaciones
+distintas). 561/561 en verde.
+**Validado en vivo de punta a punta** (no solo con tests): corrida manual confirmó el camino
+sano (log fresco → no-op, sin acción); luego se fabricó un log "viejo" (20 min, vía `touch -t`
+sobre el log real) y se corrió de nuevo — detectó el cuelgue, reinició el scheduler real
+(PID nuevo confirmado), y el catch-up real contra Schwab encontró y suprimió correctamente un
+roll genuino de la cuenta (pata OPENING+CLOSING en la misma orden, sin alerta — comportamiento
+esperado de Fase 1). LaunchAgent registrado con `launchctl bootstrap`, corrida de `RunAtLoad`
+confirmada sin acción (sistema ya sano en ese momento).
+
+**Prevención de sueño** (evaluado, NO ejecutado): `sudo pmset -c disablesleep 1` evitaría el
+sueño profundo mientras esté enchufada (root cause de las 3 recurrencias), pero es un cambio de
+configuración del sistema — fuera de lo que puedo ejecutar yo mismo. Se le pasó el comando
+exacto al usuario para que lo corra si quiere (con el healthcheck ya activo, es una mejora
+opcional para reducir la FRECUENCIA de cuelgues, no una dependencia para que el sistema se
+recupere solo).
 
 ## Pendiente, no empezado
 
