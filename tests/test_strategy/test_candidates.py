@@ -8,7 +8,14 @@ from py_vollib.black_scholes_merton import black_scholes_merton
 from options_advisor.broker.models import OptionChain, OptionContract
 from options_advisor.indicators.greeks import calculate_greeks
 from options_advisor.strategy import constants as c
-from options_advisor.strategy.candidates import _coverage_pct, _has_good_support, build_candidate, build_from_contract, find_contract
+from options_advisor.strategy.candidates import (
+    _coverage_pct,
+    _has_good_support,
+    build_candidate,
+    build_from_contract,
+    build_from_real_legs,
+    find_contract,
+)
 
 AS_OF = date(2026, 1, 1)
 UNDERLYING_PRICE = 100.0
@@ -316,3 +323,57 @@ def test_build_from_contract_with_entry_price_sets_override_premium(chain):
     contract = find_contract(chain, "put", _REAL_TRADE_EXPIRATION, _REAL_TRADE_STRIKE)
     build = build_from_contract(c.CASH_SECURED_PUT, contract, quantity=2, entry_price=3.15)
     assert build.legs[0].override_premium == 3.15
+
+
+# --- build_from_real_legs (bug real 2026-07-29: Iron Condor de 4 patas detectado como
+# Cash-Secured Put de 1 sola pata en Pestaña Operaciones — ver alerts/real_trades.py) ---
+
+
+def test_build_from_real_legs_iron_condor_has_four_legs_and_all_strikes(chain):
+    put_short = find_contract(chain, "put", _REAL_TRADE_EXPIRATION, 95.0)
+    put_long = find_contract(chain, "put", _REAL_TRADE_EXPIRATION, 90.0)
+    call_short = find_contract(chain, "call", _REAL_TRADE_EXPIRATION, 105.0)
+    call_long = find_contract(chain, "call", _REAL_TRADE_EXPIRATION, 110.0)
+    legs = [
+        ("sell", put_short, 1, 3.20),
+        ("buy", put_long, 1, 2.10),
+        ("sell", call_short, 1, 3.05),
+        ("buy", call_long, 1, 1.95),
+    ]
+    strikes = {"put_short_strike": 95.0, "put_long_strike": 90.0, "call_short_strike": 105.0, "call_long_strike": 110.0}
+
+    build = build_from_real_legs(c.IRON_CONDOR, strikes, legs)
+
+    assert build.strategy_type == c.IRON_CONDOR
+    assert build.expiration_date == _REAL_TRADE_EXPIRATION
+    assert build.strikes == strikes
+    assert len(build.legs) == 4
+    assert [(leg.side, leg.contract.strike, leg.override_premium) for leg in build.legs] == [
+        ("sell", 95.0, 3.20),
+        ("buy", 90.0, 2.10),
+        ("sell", 105.0, 3.05),
+        ("buy", 110.0, 1.95),
+    ]
+
+
+def test_build_from_real_legs_net_greeks_sums_all_legs_with_correct_sign(chain):
+    put_short = find_contract(chain, "put", _REAL_TRADE_EXPIRATION, 95.0)
+    put_long = find_contract(chain, "put", _REAL_TRADE_EXPIRATION, 90.0)
+    legs = [("sell", put_short, 1, 3.20), ("buy", put_long, 1, 2.10)]
+
+    build = build_from_real_legs(c.BULL_PUT_SPREAD, {"short_strike": 95.0, "long_strike": 90.0}, legs)
+
+    expected_delta = -put_short.greeks.delta + put_long.greeks.delta
+    assert build.net_greeks["delta"] == pytest.approx(expected_delta, abs=1e-6)
+
+
+def test_build_from_real_legs_two_leg_credit_spread(chain):
+    call_short = find_contract(chain, "call", _REAL_TRADE_EXPIRATION, 105.0)
+    call_long = find_contract(chain, "call", _REAL_TRADE_EXPIRATION, 110.0)
+    legs = [("sell", call_short, 2, 3.05), ("buy", call_long, 2, 1.95)]
+
+    build = build_from_real_legs(c.BEAR_CALL_SPREAD, {"short_strike": 105.0, "long_strike": 110.0}, legs)
+
+    assert len(build.legs) == 2
+    assert build.legs[0].quantity == 2
+    assert build.legs[1].quantity == 2

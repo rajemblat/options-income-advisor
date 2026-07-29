@@ -365,3 +365,168 @@ def test_detect_and_alert_real_trades_does_not_suppress_separate_close_and_open_
 
     assert len(generated) == 1
     assert generated[0]["symbol"] == "SOFI"
+
+
+# --- _classify_opening_legs / detección de estrategias de varias patas (bug real 2026-07-29:
+# un Iron Condor de 4 patas de AMD se detectaba como Cash-Secured Put de 1 sola pata) ---
+
+
+def _amd_iron_condor_legs() -> list[FilledOrderLeg]:
+    return [
+        FilledOrderLeg(occ_symbol="AMD   260904P00180000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=1.0, price=3.20),
+        FilledOrderLeg(occ_symbol="AMD   260904P00175000", instruction="BUY_TO_OPEN", position_effect="OPENING", quantity=1.0, price=2.10),
+        FilledOrderLeg(occ_symbol="AMD   260904C00220000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=1.0, price=3.05),
+        FilledOrderLeg(occ_symbol="AMD   260904C00225000", instruction="BUY_TO_OPEN", position_effect="OPENING", quantity=1.0, price=1.95),
+    ]
+
+
+def _amd_iron_condor_order(order_id: int = 5001) -> FilledOrder:
+    return FilledOrder(
+        order_id=order_id, account_number="74257810", fill_time=datetime(2026, 7, 29, 15, 0, tzinfo=timezone.utc),
+        legs=_amd_iron_condor_legs(),
+    )
+
+
+def _amd_iron_condor_chain() -> OptionChain:
+    strikes_types = [(180.0, "put"), (175.0, "put"), (220.0, "call"), (225.0, "call")]
+    contracts = [
+        OptionContract(
+            symbol=f"AMD   260904{'P' if opt == 'put' else 'C'}{int(strike * 1000):08d}",
+            option_type=opt, strike=strike, expiration=date(2026, 9, 4),
+            bid=strike * 0.01, ask=strike * 0.012, last_price=strike * 0.011,
+            implied_volatility=0.45, open_interest=100, volume=10, greeks=_greeks(),
+        )
+        for strike, opt in strikes_types
+    ]
+    return OptionChain(symbol="AMD", as_of=TODAY, underlying_price=200.0, contracts=contracts)
+
+
+def test_classify_opening_legs_recognizes_iron_condor():
+    result = real_trades._classify_opening_legs(_amd_iron_condor_legs())
+    assert result is not None
+    strategy_type, legs = result
+    assert strategy_type == "iron_condor"
+    assert [leg.occ_symbol for leg in legs] == [
+        "AMD   260904P00180000",  # sell put
+        "AMD   260904P00175000",  # buy put
+        "AMD   260904C00220000",  # sell call
+        "AMD   260904C00225000",  # buy call
+    ]
+
+
+def test_classify_opening_legs_recognizes_bull_put_spread_credit():
+    legs = [
+        FilledOrderLeg(occ_symbol="AMD   260904P00180000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=1.0, price=3.20),
+        FilledOrderLeg(occ_symbol="AMD   260904P00175000", instruction="BUY_TO_OPEN", position_effect="OPENING", quantity=1.0, price=2.10),
+    ]
+    strategy_type, group = real_trades._classify_opening_legs(legs)
+    assert strategy_type == "bull_put_spread"
+    assert group == legs
+
+
+def test_classify_opening_legs_recognizes_bear_call_spread_credit():
+    legs = [
+        FilledOrderLeg(occ_symbol="AMD   260904C00220000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=1.0, price=3.05),
+        FilledOrderLeg(occ_symbol="AMD   260904C00225000", instruction="BUY_TO_OPEN", position_effect="OPENING", quantity=1.0, price=1.95),
+    ]
+    strategy_type, group = real_trades._classify_opening_legs(legs)
+    assert strategy_type == "bear_call_spread"
+    assert group == legs
+
+
+def test_classify_opening_legs_none_for_debit_spread():
+    """La pata comprada cuesta MÁS que la vendida (débito neto) — no es una venta de prima,
+    fuera de alcance de este detector (mismo criterio que el resto de la app: motor de
+    INGRESO)."""
+    legs = [
+        FilledOrderLeg(occ_symbol="AMD   260904P00180000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=1.0, price=1.00),
+        FilledOrderLeg(occ_symbol="AMD   260904P00175000", instruction="BUY_TO_OPEN", position_effect="OPENING", quantity=1.0, price=2.10),
+    ]
+    assert real_trades._classify_opening_legs(legs) is None
+
+
+def test_classify_opening_legs_none_for_single_naked_leg():
+    """1 sola pata vendida sin nada comprado — no matchea ningún patrón de varias patas, el
+    caller degrada al camino de 1 pata (comportamiento anterior sin cambios)."""
+    assert real_trades._classify_opening_legs([_hood_leg()]) is None
+
+
+def test_classify_opening_legs_none_for_unrecognized_composition():
+    """3 patas (ni naked, ni spread de 2, ni iron condor de 4) — no forzar una clasificación
+    inventada."""
+    legs = [
+        FilledOrderLeg(occ_symbol="AMD   260904P00180000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=1.0, price=3.20),
+        FilledOrderLeg(occ_symbol="AMD   260904P00175000", instruction="BUY_TO_OPEN", position_effect="OPENING", quantity=1.0, price=2.10),
+        FilledOrderLeg(occ_symbol="AMD   260904C00220000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=1.0, price=3.05),
+    ]
+    assert real_trades._classify_opening_legs(legs) is None
+
+
+def test_detect_and_alert_real_trades_recognizes_iron_condor_not_single_leg_put(conn, monkeypatch):
+    """El caso real reportado 2026-07-29: un Iron Condor de 4 patas de AMD se detectaba como
+    Cash-Secured Put de 1 sola pata. Acá se verifica el fix end-to-end contra el broker/cadena
+    fake: 1 sola alerta (no 2 sueltas), clasificada iron_condor, con las 4 patas completas en
+    legs_json (no solo la pata corta del put)."""
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    broker = _FakeBroker(
+        orders=[_amd_iron_condor_order()], chain=_amd_iron_condor_chain(),
+        quote=Quote(symbol="AMD", as_of=TODAY, last_price=200.0, bid=199.9, ask=200.1),
+    )
+
+    generated = real_trades.detect_and_alert_real_trades(
+        broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
+    )
+
+    assert len(generated) == 1
+    assert generated[0]["strategy_type"] == "iron_condor"
+
+    rows = repo.get_real_trade_alerts(conn)
+    assert len(rows) == 1
+    assert rows[0]["strategy_type"] == "iron_condor"
+    assert rows[0]["symbol"] == "AMD"
+    legs = json.loads(rows[0]["legs_json"])
+    assert len(legs) == 4
+    assert {(leg["side"], leg["option_type"], leg["strike"]) for leg in legs} == {
+        ("sell", "put", 180.0),
+        ("buy", "put", 175.0),
+        ("sell", "call", 220.0),
+        ("buy", "call", 225.0),
+    }
+
+
+def test_detect_and_alert_real_trades_iron_condor_dedups_across_runs(conn, monkeypatch):
+    """Misma protección de dedup que ya existía para 1 pata (ventana de detección solapada) —
+    correr la detección 2 veces sobre la misma orden Iron Condor no debe duplicar la alerta."""
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    broker = _FakeBroker(
+        orders=[_amd_iron_condor_order()], chain=_amd_iron_condor_chain(),
+        quote=Quote(symbol="AMD", as_of=TODAY, last_price=200.0, bid=199.9, ask=200.1),
+    )
+
+    first = real_trades.detect_and_alert_real_trades(broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+    second = real_trades.detect_and_alert_real_trades(broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+
+    assert len(first) == 1
+    assert second == []
+    assert len(repo.get_real_trade_alerts(conn)) == 1
+
+
+def test_detect_and_alert_real_trades_recognizes_bull_put_spread(conn, monkeypatch):
+    """Credit spread de 2 patas (sin las patas de calls del Iron Condor) — misma orden real,
+    subset de 2 patas."""
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    legs = _amd_iron_condor_legs()[:2]  # sell put 180 + buy put 175
+    order = FilledOrder(order_id=5002, account_number="74257810", fill_time=datetime(2026, 7, 29, 15, 0, tzinfo=timezone.utc), legs=legs)
+    broker = _FakeBroker(
+        orders=[order], chain=_amd_iron_condor_chain(),
+        quote=Quote(symbol="AMD", as_of=TODAY, last_price=200.0, bid=199.9, ask=200.1),
+    )
+
+    generated = real_trades.detect_and_alert_real_trades(
+        broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
+    )
+
+    assert len(generated) == 1
+    assert generated[0]["strategy_type"] == "bull_put_spread"
+    rows = repo.get_real_trade_alerts(conn)
+    assert len(json.loads(rows[0]["legs_json"])) == 2

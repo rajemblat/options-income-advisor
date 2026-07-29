@@ -53,23 +53,97 @@ def _is_roll(order: FilledOrder) -> bool:
     return "OPENING" in effects and "CLOSING" in effects
 
 
+def _classify_opening_legs(legs: list[FilledOrderLeg]) -> tuple[str, list[FilledOrderLeg]] | None:
+    """Clasifica las patas de APERTURA de una orden según su composición REAL — no una elegida
+    por el motor — para reconocer estrategias de varias patas armadas en una sola orden
+    combinada de Schwab (Iron Condor, credit spreads). Bug real 2026-07-29: un Iron Condor de 4
+    patas (AMD) se detectaba como Cash-Secured Put de 1 sola pata porque el caller procesaba
+    cada pata VENDIDA por separado, ignorando las patas COMPRADAS que definen el riesgo
+    acotado. None si la composición no matchea ninguna de las estrategias reconocidas acá — el
+    caller degrada al camino de 1 pata vendida por vez (comportamiento anterior, sigue correcto
+    para posiciones genuinamente desnudas). Alcance deliberadamente acotado a estrategias de
+    INGRESO (crédito neto: la pata vendida cobra más que lo que cuesta la comprada) — un debit
+    spread no es una venta de prima, queda fuera de este detector igual que antes."""
+    opening = [leg for leg in legs if leg.position_effect == "OPENING"]
+    parsed: dict[str, tuple] = {}
+    for leg in opening:
+        p = parse_occ_option_symbol(leg.occ_symbol)
+        if p is None:
+            return None
+        parsed[leg.occ_symbol] = p
+
+    sells = [leg for leg in opening if leg.instruction == "SELL_TO_OPEN"]
+    buys = [leg for leg in opening if leg.instruction == "BUY_TO_OPEN"]
+    if len(sells) + len(buys) != len(opening):
+        return None  # alguna pata con otra instrucción — no forzar una clasificación a medias
+
+    sell_puts = [leg for leg in sells if parsed[leg.occ_symbol][2] == "put"]
+    sell_calls = [leg for leg in sells if parsed[leg.occ_symbol][2] == "call"]
+    buy_puts = [leg for leg in buys if parsed[leg.occ_symbol][2] == "put"]
+    buy_calls = [leg for leg in buys if parsed[leg.occ_symbol][2] == "call"]
+
+    if len(opening) == 4 and len(sell_puts) == 1 and len(buy_puts) == 1 and len(sell_calls) == 1 and len(buy_calls) == 1:
+        return c.IRON_CONDOR, [sell_puts[0], buy_puts[0], sell_calls[0], buy_calls[0]]
+
+    if len(opening) == 2 and len(sell_puts) == 1 and len(buy_puts) == 1:
+        sell_leg, buy_leg = sell_puts[0], buy_puts[0]
+        return (c.BULL_PUT_SPREAD, [sell_leg, buy_leg]) if sell_leg.price > buy_leg.price else None
+
+    if len(opening) == 2 and len(sell_calls) == 1 and len(buy_calls) == 1:
+        sell_leg, buy_leg = sell_calls[0], buy_calls[0]
+        return (c.BEAR_CALL_SPREAD, [sell_leg, buy_leg]) if sell_leg.price > buy_leg.price else None
+
+    return None
+
+
+def _strikes_dict(strategy_type: str, legs: list[FilledOrderLeg], parsed: dict[str, tuple]) -> dict:
+    """Mismas convenciones de nombre que `strategy/candidates.py::_build_iron_condor`/
+    `_build_vertical_spread` — informativo (solo lo lee el narrador), sin esquema estricto."""
+    if strategy_type == c.IRON_CONDOR:
+        sell_put, buy_put, sell_call, buy_call = legs
+        return {
+            "put_short_strike": parsed[sell_put.occ_symbol][3],
+            "put_long_strike": parsed[buy_put.occ_symbol][3],
+            "call_short_strike": parsed[sell_call.occ_symbol][3],
+            "call_long_strike": parsed[buy_call.occ_symbol][3],
+        }
+    if strategy_type in (c.BULL_PUT_SPREAD, c.BEAR_CALL_SPREAD):
+        sell_leg, buy_leg = legs
+        return {"short_strike": parsed[sell_leg.occ_symbol][3], "long_strike": parsed[buy_leg.occ_symbol][3]}
+    return {}
+
+
 def _build_and_persist_real_trade_alert(
     broker: BrokerClient,
     conn: sqlite3.Connection,
     settings: Settings,
     today: date,
     order: FilledOrder,
-    leg: FilledOrderLeg,
+    legs: list[FilledOrderLeg],
+    strategy_type_override: str | None,
     share_positions: dict[str, int],
     anthropic_api_key: str | None,
     finnhub_api_key: str | None,
 ) -> dict | None:
-    parsed = parse_occ_option_symbol(leg.occ_symbol)
-    if parsed is None:
-        logger.warning("%s: símbolo OCC no reconocido; se omite la alerta de operación real", leg.occ_symbol)
-        return None
-    underlying_symbol, expiration, option_type, strike = parsed
-    contracts_added = int(round(leg.quantity))
+    """`legs`: 1 pata (posición desnuda, `strategy_type_override=None` — se resuelve por
+    option_type/acciones en cartera como siempre) o varias patas YA CLASIFICADAS por
+    `_classify_opening_legs` (Iron Condor, credit spread — `strategy_type_override` fijo, no se
+    re-resuelve). La primera pata de la lista es la "principal" (siempre la vendida ancla —
+    mismo criterio que `compute_coverage`/`compute_historical_move_check`): sus datos van en las
+    columnas singulares de `real_trade_alerts` (occ_symbol/option_type/strike/entry_price), el
+    resto de la composición completa vive en `legs_json` (ver `payoff.legs`, ya genérico a N
+    patas)."""
+    parsed: dict[str, tuple] = {}
+    for leg in legs:
+        p = parse_occ_option_symbol(leg.occ_symbol)
+        if p is None:
+            logger.warning("%s: símbolo OCC no reconocido; se omite la alerta de operación real", leg.occ_symbol)
+            return None
+        parsed[leg.occ_symbol] = p
+
+    primary_leg = legs[0]
+    underlying_symbol, expiration, primary_option_type, primary_strike = parsed[primary_leg.occ_symbol]
+    contracts_added = int(round(primary_leg.quantity))
     if contracts_added <= 0:
         return None
 
@@ -81,20 +155,29 @@ def _build_and_persist_real_trade_alert(
     except Exception:
         logger.exception(
             "Fallo al pedir cotización/cadena en vivo de %s; se omite la alerta de operación real de %s",
-            quote_symbol, leg.occ_symbol,
+            quote_symbol, primary_leg.occ_symbol,
         )
         return None
 
-    contract = candidate_builder.find_contract(chain, option_type, expiration, strike)
-    if contract is None:
-        logger.warning(
-            "%s: no se encontró el contrato %s $%.2f %s en la cadena en vivo; se omite el cálculo de P&L de la operación real",
-            underlying_symbol, expiration, strike, option_type,
-        )
-        return None
+    build_legs: list[tuple[str, object, int, float | None]] = []
+    for leg in legs:
+        _, leg_expiration, leg_option_type, leg_strike = parsed[leg.occ_symbol]
+        contract = candidate_builder.find_contract(chain, leg_option_type, leg_expiration, leg_strike)
+        if contract is None:
+            logger.warning(
+                "%s: no se encontró el contrato %s $%.2f %s en la cadena en vivo; se omite el cálculo de P&L de la operación real",
+                underlying_symbol, leg_expiration, leg_strike, leg_option_type,
+            )
+            return None
+        side = "sell" if leg.instruction == "SELL_TO_OPEN" else "buy"
+        build_legs.append((side, contract, int(round(leg.quantity)), leg.price))
 
-    strategy_type = _resolve_strategy_type(option_type, share_positions, underlying_symbol, contracts_added)
-    build = candidate_builder.build_from_contract(strategy_type, contract, contracts_added, entry_price=leg.price)
+    if strategy_type_override is not None:
+        strategy_type = strategy_type_override
+        build = candidate_builder.build_from_real_legs(strategy_type, _strikes_dict(strategy_type, legs, parsed), build_legs)
+    else:
+        strategy_type = _resolve_strategy_type(primary_option_type, share_positions, underlying_symbol, contracts_added)
+        build = candidate_builder.build_from_contract(strategy_type, build_legs[0][1], contracts_added, entry_price=primary_leg.price)
     payoff = payoff_calc.compute_payoff(build, quote.last_price, today, settings.market.risk_free_rate)
 
     recent_news = finnhub_client.get_recent_news(underlying_symbol, today, finnhub_api_key)
@@ -106,7 +189,7 @@ def _build_and_persist_real_trade_alert(
         symbol=underlying_symbol,
         strategy_type=strategy_type,
         quantity=contracts_added,
-        entry_price=leg.price,
+        entry_price=primary_leg.price,
         strikes=build.strikes,
         expiration_date=expiration,
         underlying_price=payoff.underlying_price,
@@ -131,16 +214,16 @@ def _build_and_persist_real_trade_alert(
 
     trade = RealTradeAlert(
         account_number=order.account_number,
-        occ_symbol=leg.occ_symbol,
+        occ_symbol=primary_leg.occ_symbol,
         symbol=underlying_symbol,
         trade_date=today,
         trade_ts=datetime.now(),
         strategy_type=strategy_type,
-        option_type=option_type,
-        strike=strike,
+        option_type=primary_option_type,
+        strike=primary_strike,
         expiration_date=expiration,
         quantity=contracts_added,
-        entry_price=leg.price,
+        entry_price=primary_leg.price,
         order_id=order.order_id,
         legs=payoff.legs,
         net_premium=payoff.net_premium,
@@ -164,7 +247,7 @@ def _build_and_persist_real_trade_alert(
         # misma (order_id, occ_symbol) primero. No es un error: se omite en silencio, sin
         # notificar de nuevo la misma operación.
         logger.info(
-            "%s (orden %s) ya fue detectada por otra corrida concurrente; se omite duplicado", leg.occ_symbol, order.order_id
+            "%s (orden %s) ya fue detectada por otra corrida concurrente; se omite duplicado", primary_leg.occ_symbol, order.order_id
         )
         return None
     notifier.notify_real_trade(underlying_symbol, strategy_type, narrative_text)
@@ -210,6 +293,28 @@ def detect_and_alert_real_trades(
         if _is_roll(order):
             logger.info("Orden %s: pata OPENING + CLOSING en la misma orden — tratada como ROLL, sin alerta", order.order_id)
             continue
+
+        # Primero intenta reconocer la composición REAL de la orden completa (Iron Condor,
+        # credit spread) — bug real 2026-07-29: procesar cada pata vendida suelta hacía que un
+        # Iron Condor de 4 patas se detectara como Cash-Secured Put de 1 sola. Si la orden no
+        # matchea ninguna estrategia de varias patas reconocida, degrada al camino de 1 pata
+        # vendida por vez (comportamiento anterior, sigue correcto para posiciones desnudas).
+        classified = _classify_opening_legs(order.legs)
+        if classified is not None:
+            strategy_type, group_legs = classified
+            primary_leg = group_legs[0]
+            key = (order.order_id, primary_leg.occ_symbol)
+            if key not in already_alerted:
+                try:
+                    result = _build_and_persist_real_trade_alert(
+                        broker, conn, settings, today, order, group_legs, strategy_type, share_positions, anthropic_api_key, finnhub_api_key
+                    )
+                    if result:
+                        generated.append(result)
+                except Exception:
+                    logger.exception("Fallo al generar alerta de operación real multi-pata para la orden %s; se sigue con el resto", order.order_id)
+            continue  # ya se cubrieron todas las patas relevantes de esta orden
+
         for leg in order.legs:
             if leg.instruction != "SELL_TO_OPEN":
                 continue  # solo ventas nuevas de prima — comprar opciones queda fuera (motor de INGRESO)
@@ -218,7 +323,7 @@ def detect_and_alert_real_trades(
                 continue
             try:
                 result = _build_and_persist_real_trade_alert(
-                    broker, conn, settings, today, order, leg, share_positions, anthropic_api_key, finnhub_api_key
+                    broker, conn, settings, today, order, [leg], None, share_positions, anthropic_api_key, finnhub_api_key
                 )
                 if result:
                     generated.append(result)

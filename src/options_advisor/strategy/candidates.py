@@ -466,6 +466,30 @@ def build_from_contract(strategy_type: str, contract: OptionContract, quantity: 
     )
 
 
+def build_from_real_legs(strategy_type: str, strikes: dict, legs: list[tuple[str, OptionContract, int, float | None]]) -> CandidateBuild:
+    """Generalización de `build_from_contract` a VARIAS patas YA CONOCIDAS — una operación real
+    ya ejecutada con una estructura de varias patas (Iron Condor, credit spread) armada en una
+    sola orden combinada de Schwab, en vez de una pata desnuda suelta. Bug real 2026-07-29: un
+    Iron Condor de 4 patas se detectaba/mostraba como Cash-Secured Put de 1 sola pata porque
+    `alerts/real_trades.py` procesaba cada pata VENDIDA de la orden por separado — ver
+    `alerts/real_trades.py::_classify_opening_legs`, que arma la composición real de la orden
+    ANTES de llegar acá. `legs`: (side, contract, quantity, entry_price) en el orden en que
+    deben aparecer en la tarjeta; todas las patas deben compartir vencimiento (lo garantiza el
+    caller). `strikes`: dict ya armado por el caller con las mismas convenciones de nombre que
+    `_build_iron_condor`/`_build_vertical_spread` (`put_short_strike`/`call_short_strike`/etc.,
+    o `short_strike`/`long_strike` para un spread de 2 patas) — informativo, solo lo lee el
+    narrador, sin esquema estricto."""
+    build_legs = [Leg(side, contract, quantity, override_premium=entry_price) for side, contract, quantity, entry_price in legs]
+    return CandidateBuild(
+        strategy_type=strategy_type,
+        expiration_date=legs[0][1].expiration,
+        strikes=strikes,
+        net_greeks=_sum_greeks(*(_position_greeks(contract, side == "sell", quantity) for side, contract, quantity, _ in legs)),
+        greeks_source=_greeks_source(*(contract for _, contract, _, _ in legs)),
+        legs=build_legs,
+    )
+
+
 def build_candidate(
     strategy_type: str,
     chain: OptionChain,

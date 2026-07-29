@@ -4,8 +4,18 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-29 (Pestaña Alertas: mismo filtro de rango de fechas que
-Operaciones, con agrupamiento visual por fecha nuevo ahí también — default "Hoy" a pedido
+Última actualización: 2026-07-29 (bug real URGENTE corregido: la detección de Operaciones
+procesaba cada pata VENDIDA de una orden combinada por separado, así que un Iron Condor de 4
+patas de AMD se guardaba como 2 alertas sueltas de 1 pata desnuda cada una (Cash-Secured Put +
+Short Call Naked), ignorando las 2 patas COMPRADAS que definen el riesgo acotado. Fix: la orden
+completa se clasifica según su composición REAL antes de procesar nada — reconoce Iron Condor
+(4 patas) y credit spreads (2 patas, Bull Put/Bear Call) — y arma UNA sola alerta multi-pata en
+vez de varias sueltas. Corregido en vivo contra la posición real de AMD del usuario (verificado
+con el order log crudo de Schwab: `complexOrderStrategyType: "IRON_CONDOR"`, 4 patas reales) —
+la tarjeta ahora muestra "AMD — Iron Condor" con las 4 patas y pérdida máxima ACOTADA ($81) en
+vez de "Cash-Secured Put"/"Short Call Naked" sueltos con riesgo mal representado. 17 tests
+nuevos — 581/581 en verde. Antes en la sesión: Pestaña Alertas: mismo filtro de rango de fechas
+que Operaciones, con agrupamiento visual por fecha nuevo ahí también — default "Hoy" a pedido
 explícito del usuario, sin borrar nada del historial. `filter_by_date_range` generalizado
 (antes `filter_trades_by_date_range`, específico de Operaciones) con un parámetro `date_field`
 para reusarse en ambas páginas. Verificado en vivo: "Hoy" sin alertas hoy (mensaje distinto de
@@ -816,6 +826,32 @@ Ninguno.
     generadas hoy todavía — mensaje correcto de "sin resultados para el filtro" (no confundido
     con "nunca hubo alertas"); con "Todo" se ve el historial completo agrupado, ej. "🕐
     28/07/2026 · 200 alertas".
+
+45. **Bug real URGENTE corregido: Iron Condor de 4 patas detectado como pata desnuda suelta en
+    Pestaña Operaciones** (reportado 2026-07-29, posición real de AMD). `detect_and_alert_real_
+    trades` procesaba cada pata SELL_TO_OPEN de una orden por separado — nunca miraba las patas
+    BUY_TO_OPEN, así que un Iron Condor (2 vendidas + 2 compradas, riesgo acotado por diseño) se
+    guardaba como 2 alertas de posición DESNUDA sueltas (riesgo NO acotado, mal representado —
+    grave con plata real). `alerts/real_trades.py::_classify_opening_legs` clasifica TODAS las
+    patas OPENING de la orden por su composición real antes de procesar nada: reconoce Iron
+    Condor (1 sell put + 1 buy put + 1 sell call + 1 buy call) y credit spreads de 2 patas
+    (Bull Put / Bear Call, solo si son crédito neto — prima vendida > prima comprada, un debit
+    spread no es venta de prima y queda fuera de este detector de INGRESO). Si la orden no
+    matchea ninguna composición reconocida, degrada al camino de 1 pata por vez de siempre
+    (sigue correcto para posiciones genuinamente desnudas). `strategy/candidates.py::
+    build_from_real_legs` generaliza `build_from_contract` (1 pata) a N patas ya conocidas
+    (strikes/precios reales de la orden, no elegidos por delta) — el resto del pipeline (payoff,
+    cobertura, liquidez, riesgo de dividendo, check histórico) ya era genérico a N patas, el bug
+    estaba puramente en cómo se armaba el `CandidateBuild`. Corregido en vivo contra la posición
+    real: confirmado con el order log crudo de Schwab (`complexOrderStrategyType: "IRON_CONDOR"`,
+    sell call $440/buy call $442.5/sell put $440/buy put $435) que la orden es un Iron Condor
+    genuino; se limpiaron las 2 filas rotas y se regeneró con el código corregido — la tarjeta
+    ahora muestra "AMD — Iron Condor", las 4 patas completas, y pérdida máxima ACOTADA ($81) en
+    vez de "Cash-Secured Put"/"Short Call Naked" sueltos con riesgo no acotado mal representado.
+    17 tests nuevos (`test_real_trades.py`: clasificación de Iron Condor/credit spread/debit
+    spread rechazado/composición no reconocida + integración end-to-end con dedup;
+    `test_candidates.py`: `build_from_real_legs` con 4 y 2 patas, greeks netos) — 581/581 en
+    verde.
 
 ## Cómo se usa este archivo
 
