@@ -297,3 +297,35 @@ def test_build_scanner_rows_fomc_false_when_after_expiration():
 def test_build_scanner_rows_fomc_none_without_fed_meeting_date():
     row = build_scanner_rows([_candidate_row(symbol="TSLA")])[0]
     assert row["FOMC antes del vencimiento"] is None
+
+
+# --- Orden de columnas (pedido explícito 2026-07-28): las 15 "originales" primero en este
+# orden exacto, las derivadas (Instrumento/Estrategia/Probabilidad OTM/DTE/Earnings/FOMC) al
+# final — pd.DataFrame(list_of_dicts) respeta el orden de inserción de las keys del dict.
+
+
+def test_build_scanner_rows_column_order():
+    row = build_scanner_rows([_candidate_row()])[0]
+    assert list(row.keys()) == [
+        "Symbol",
+        "Price",
+        "Exp Date",
+        "Strike",
+        "Moneyness (%)",
+        "Bid",
+        "Breakeven",
+        "%BE",
+        "Volume",
+        "Open Interest",
+        "IV Rank",
+        "Delta",
+        "Return (%)",
+        "Rendimiento Anualizado (%)",
+        "POP (%)",
+        "Instrumento",
+        "Estrategia",
+        "Probabilidad OTM (%)",
+        "DTE",
+        "Earnings antes del vencimiento",
+        "FOMC antes del vencimiento",
+    ]

@@ -101,11 +101,13 @@ def build_scanner_rows(
         if risk_free_rate is not None and sigma is not None and dte is not None:
             prob_otm = round(probability_otm(option_type, underlying_price, strike, dte, risk_free_rate, sigma) * 100, 1)
 
+        # Orden de columnas pedido explícitamente 2026-07-28: las 15 columnas "originales"
+        # primero en este orden exacto, las derivadas más recientes (Instrumento/Estrategia/
+        # Probabilidad OTM/DTE/Earnings/FOMC) al final — dict preserva orden de inserción,
+        # pd.DataFrame(list_of_dicts) lo respeta como orden de columnas.
         rows.append(
             {
                 "Symbol": c["symbol"],
-                "Instrumento": (instrument_types or {}).get(c["symbol"]),
-                "Estrategia": strategy_label(c["strategy_type"]),
                 "Price": underlying_price,
                 "Exp Date": c["expiration_date"],
                 "Strike": strike,
@@ -122,6 +124,8 @@ def build_scanner_rows(
                 "Return (%)": round(net_premium / max_loss * 100, 2) if net_premium is not None and max_loss else None,
                 "Rendimiento Anualizado (%)": c["annualized_return_pct"],
                 "POP (%)": round(c["probability_of_profit"] * 100, 1) if c["probability_of_profit"] is not None else None,
+                "Instrumento": (instrument_types or {}).get(c["symbol"]),
+                "Estrategia": strategy_label(c["strategy_type"]),
                 "Probabilidad OTM (%)": prob_otm,
                 "DTE": dte,
                 "Earnings antes del vencimiento": _before_expiration(

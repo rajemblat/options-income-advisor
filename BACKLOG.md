@@ -4,17 +4,18 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-28 (noche — bug real de filas duplicadas en el Screener
-(Cash-Secured Put vs Short Put (Naked), mismo contrato exacto) corregido de raíz en el motor +
-deduplicado a nivel de visualización para el historial ya persistido. Antes en la sesión:
-filtros de earnings/FOMC sumados al Screener; una alarma falsa de GDX investigada y confirmada
-como detección correcta (el scheduler nuevo funcionaba bien, el usuario chequeó justo antes del
-ciclo); selector de estrategia Naked Put/Covered Call/Ambas en el Screener; rediseño completo de
-detección de Operaciones vía `/orders` de Schwab reemplazando el diff de posiciones y
-resolviendo de raíz el bug de mark price, con un incidente real durante el despliegue (60
-notificaciones de WhatsApp falsas ya enviadas, documentado íntegro); scheduler colgado
-diagnosticado y arreglado; bug de Market Movers corregido; BTC intentado y pausado a pedido del
-usuario — ver secciones dedicadas abajo).
+Última actualización: 2026-07-28 (noche — reordenadas las columnas del Screener a pedido
+explícito (las 15 "originales" primero en orden fijo, las 6 derivadas al final). Antes en la
+sesión: bug real de filas duplicadas en el Screener (Cash-Secured Put vs Short Put (Naked),
+mismo contrato exacto) corregido de raíz en el motor + deduplicado a nivel de visualización
+para el historial ya persistido; filtros de earnings/FOMC sumados al Screener; una alarma falsa
+de GDX investigada y confirmada como detección correcta (el scheduler nuevo funcionaba bien, el
+usuario chequeó justo antes del ciclo); selector de estrategia Naked Put/Covered Call/Ambas en
+el Screener; rediseño completo de detección de Operaciones vía `/orders` de Schwab reemplazando
+el diff de posiciones y resolviendo de raíz el bug de mark price, con un incidente real durante
+el despliegue (60 notificaciones de WhatsApp falsas ya enviadas, documentado íntegro);
+scheduler colgado diagnosticado y arreglado; bug de Market Movers corregido; BTC intentado y
+pausado a pedido del usuario — ver secciones dedicadas abajo).
 
 ## En progreso ahora
 
@@ -558,6 +559,18 @@ Ninguno.
     filas restantes (legítimamente distintas entre sí — strikes o días de escaneo distintos, no
     duplicados). 12 tests nuevos (`test_scanner_table.py`, `test_selector.py`) — 509/509 en
     verde.
+40. **Reordenadas las columnas de la tabla del Screener** (pedido explícito 2026-07-28, tras
+    confirmar con captura antes de tocar nada). Las 15 columnas "originales" que el usuario
+    quería primero, en este orden exacto: Symbol, Price, Exp Date, Strike, Moneyness (%), Bid,
+    Breakeven, %BE, Volume, Open Interest, IV Rank, Delta, Return (%), Rendimiento Anualizado
+    (%), POP (%) — las 6 derivadas más recientes (Instrumento, Estrategia, Probabilidad OTM
+    (%), DTE, Earnings antes del vencimiento, FOMC antes del vencimiento) al final, sin
+    quitarlas (el usuario las quiere, solo pidió reordenar). Cambio puramente de orden de
+    inserción del dict en `scanner_table.py::build_scanner_rows()` — `pd.DataFrame` respeta ese
+    orden como orden de columnas, sin tocar nombres/valores. Afecta también a la Vista tabla de
+    Escaneo (mismo `build_scanner_rows` compartido).
+    Verificado en navegador en vivo con captura del nuevo orden completo (scroll horizontal).
+    1 test nuevo (`test_build_scanner_rows_column_order`) — 510/510 en verde.
 
 ## Cómo se usa este archivo
 
