@@ -158,7 +158,15 @@ def _build_and_persist_real_trade_alert(
         narrative_text=narrative_text,
         narrative_source=narrative_source,
     )
-    repo.insert_real_trade_alert(conn, trade)
+    if repo.insert_real_trade_alert(conn, trade) is None:
+        # Carrera real entre 2 procesos de detección (incidente 2026-07-29, ver
+        # repository.py::insert_real_trade_alert) — otra corrida concurrente ya insertó esta
+        # misma (order_id, occ_symbol) primero. No es un error: se omite en silencio, sin
+        # notificar de nuevo la misma operación.
+        logger.info(
+            "%s (orden %s) ya fue detectada por otra corrida concurrente; se omite duplicado", leg.occ_symbol, order.order_id
+        )
+        return None
     notifier.notify_real_trade(underlying_symbol, strategy_type, narrative_text)
     return {"symbol": underlying_symbol, "strategy_type": strategy_type, "quantity": contracts_added, "narrative": narrative_text}
 

@@ -275,6 +275,46 @@ def test_get_alerted_order_leg_keys_excludes_rows_without_order_id(conn):
     assert repo.get_alerted_order_leg_keys(conn) == set()
 
 
+# --- protección contra carrera entre 2 procesos de detección (incidente real 2026-07-29) ---
+
+
+def test_insert_real_trade_alert_returns_id_on_first_insert(conn):
+    assert repo.insert_real_trade_alert(conn, _real_trade_alert(order_id=555, occ_symbol="TSLA  260821P00320000")) is not None
+
+
+def test_insert_real_trade_alert_returns_none_on_duplicate_order_and_leg(conn):
+    """Simula la carrera real 2026-07-29 (scheduler recién reiniciado + corrida manual
+    detectando la misma orden a la vez): el segundo insert con el mismo (order_id, occ_symbol)
+    debe fallar en silencio (None), no crear una segunda fila ni lanzar una excepción sin
+    manejar hacia el caller."""
+    first = repo.insert_real_trade_alert(conn, _real_trade_alert(order_id=555, occ_symbol="TSLA  260821P00320000"))
+    second = repo.insert_real_trade_alert(conn, _real_trade_alert(order_id=555, occ_symbol="TSLA  260821P00320000"))
+    assert first is not None
+    assert second is None
+    rows = repo.get_real_trade_alerts(conn)
+    assert len(rows) == 1
+
+
+def test_insert_real_trade_alert_allows_same_order_different_legs(conn):
+    """El índice único es sobre (order_id, occ_symbol) junto, no order_id solo — una orden
+    combinada con 2 patas distintas (ej. un roll, o un iron condor) debe poder insertar ambas."""
+    first = repo.insert_real_trade_alert(conn, _real_trade_alert(order_id=555, occ_symbol="TSLA  260821P00320000"))
+    second = repo.insert_real_trade_alert(conn, _real_trade_alert(order_id=555, occ_symbol="TSLA  260821P00340000"))
+    assert first is not None
+    assert second is not None
+    assert len(repo.get_real_trade_alerts(conn)) == 2
+
+
+def test_insert_real_trade_alert_allows_multiple_rows_without_order_id(conn):
+    """Filas de antes del rediseño vía /orders (order_id NULL) no deben chocar entre sí — NULL
+    no es igual a NULL en una restricción UNIQUE de SQLite."""
+    first = repo.insert_real_trade_alert(conn, _real_trade_alert(occ_symbol="TSLA  260821P00320000"))
+    second = repo.insert_real_trade_alert(conn, _real_trade_alert(occ_symbol="TSLA  260821P00320000"))
+    assert first is not None
+    assert second is not None
+    assert len(repo.get_real_trade_alerts(conn)) == 2
+
+
 # --- get_recent_single_leg_candidates (vista tabla en Escaneo) ---
 
 

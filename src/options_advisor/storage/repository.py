@@ -402,48 +402,59 @@ def get_alerted_order_leg_keys(conn: sqlite3.Connection) -> set[tuple[int, str]]
     return {(r["order_id"], r["occ_symbol"]) for r in rows}
 
 
-def insert_real_trade_alert(conn: sqlite3.Connection, trade: RealTradeAlert) -> int:
-    cur = conn.execute(
-        """
-        INSERT INTO real_trade_alerts
-            (account_number, occ_symbol, symbol, trade_date, trade_ts, strategy_type, option_type,
-             strike, expiration_date, quantity, entry_price, order_id, legs_json, net_premium,
-             max_profit, max_loss, breakevens_json, probability_of_profit, dte, underlying_price,
-             payoff_is_estimate, annualized_return_pct, early_close_projection_json,
-             historical_move_occurrences, historical_move_total_windows,
-             narrative_text, narrative_source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            trade.account_number,
-            trade.occ_symbol,
-            trade.symbol,
-            trade.trade_date.isoformat(),
-            trade.trade_ts.isoformat(),
-            trade.strategy_type,
-            trade.option_type,
-            trade.strike,
-            trade.expiration_date.isoformat(),
-            trade.quantity,
-            trade.entry_price,
-            trade.order_id,
-            json.dumps(trade.legs),
-            trade.net_premium,
-            trade.max_profit,
-            trade.max_loss,
-            json.dumps(trade.breakevens),
-            trade.probability_of_profit,
-            trade.dte,
-            trade.underlying_price,
-            int(trade.payoff_is_estimate),
-            trade.annualized_return_pct,
-            json.dumps(trade.early_close_projection),
-            trade.historical_move_occurrences,
-            trade.historical_move_total_windows,
-            trade.narrative_text,
-            trade.narrative_source,
-        ),
-    )
+def insert_real_trade_alert(conn: sqlite3.Connection, trade: RealTradeAlert) -> int | None:
+    """None si ya existe una alerta para el mismo (order_id, occ_symbol) — golpea el índice
+    UNIQUE de `schema.sql::idx_real_trade_alerts_order_leg`. Incidente real 2026-07-29: dos
+    procesos de detección corriendo a la vez (scheduler recién reiniciado + una corrida manual)
+    leyeron el mismo set de "ya alertadas" antes de que ninguno insertara, y ambos intentaron
+    grabar la misma orden — el chequeo en Python (`get_alerted_order_leg_keys`) no alcanza
+    contra una carrera real entre procesos, hace falta la garantía a nivel de base. El caller
+    (`alerts/real_trades.py`) debe tratar `None` como "ya la detectó otra corrida" y NO enviar
+    la notificación de nuevo."""
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO real_trade_alerts
+                (account_number, occ_symbol, symbol, trade_date, trade_ts, strategy_type, option_type,
+                 strike, expiration_date, quantity, entry_price, order_id, legs_json, net_premium,
+                 max_profit, max_loss, breakevens_json, probability_of_profit, dte, underlying_price,
+                 payoff_is_estimate, annualized_return_pct, early_close_projection_json,
+                 historical_move_occurrences, historical_move_total_windows,
+                 narrative_text, narrative_source)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trade.account_number,
+                trade.occ_symbol,
+                trade.symbol,
+                trade.trade_date.isoformat(),
+                trade.trade_ts.isoformat(),
+                trade.strategy_type,
+                trade.option_type,
+                trade.strike,
+                trade.expiration_date.isoformat(),
+                trade.quantity,
+                trade.entry_price,
+                trade.order_id,
+                json.dumps(trade.legs),
+                trade.net_premium,
+                trade.max_profit,
+                trade.max_loss,
+                json.dumps(trade.breakevens),
+                trade.probability_of_profit,
+                trade.dte,
+                trade.underlying_price,
+                int(trade.payoff_is_estimate),
+                trade.annualized_return_pct,
+                json.dumps(trade.early_close_projection),
+                trade.historical_move_occurrences,
+                trade.historical_move_total_windows,
+                trade.narrative_text,
+                trade.narrative_source,
+            ),
+        )
+    except sqlite3.IntegrityError:
+        return None
     conn.commit()
     return cur.lastrowid
 

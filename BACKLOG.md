@@ -4,9 +4,14 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-29 (Market Movers ahora cubre Nasdaq y Dow Jones además de
-S&P 500, con pestañas para elegir cuál ver — confirmado en vivo que `/movers/$COMPX` y
-`/movers/$DJI` de Schwab funcionan igual que `/movers/$SPX`. Antes en la sesión: refinado el
+Última actualización: 2026-07-29 (URGENTE resuelto: scheduler colgado de nuevo — 3ra vez, ver
+sección dedicada abajo — dejó pasar operaciones reales de hoy hasta que se detectó y reinició;
+al investigar en vivo se encontró Y corrigió un bug real de duplicados en la detección de
+Operaciones, causado por una carrera entre 2 procesos corriendo la detección al mismo tiempo,
+con un índice UNIQUE nuevo en la base como fix de raíz. Antes en la sesión: Market Movers ahora
+cubre Nasdaq y Dow Jones además de S&P 500, con pestañas para elegir cuál ver — confirmado en
+vivo que `/movers/$COMPX` y `/movers/$DJI` de Schwab funcionan igual que `/movers/$SPX`. Antes
+en la sesión: refinado el
 "check histórico" de las alertas a pedido del usuario: el texto ya no muestra "N de M ventanas
 (X.X%)" — ahora agrupa rachas de ventanas solapadas que ven la misma caída/suba sostenida en un
 solo evento real, y el badge dice simplemente "el precio tocó este nivel N veces" en los
@@ -70,7 +75,58 @@ implementadas: un healthcheck externo (ej. cron separado que verifique que
 `scheduler.err.log` tuvo actividad reciente y mate+reinicie si no) o timeouts más agresivos en
 los clientes `httpx` de `schwab_client.py` (hoy 15s, pero el proceso entero parece quedar
 suspendido por el sistema operativo, no solo la llamada de red, así que un timeout más corto no
-lo hubiera arreglado esta vez). Evaluar si vuelve a pasar.
+lo hubiera arreglado esta vez). **El riesgo se concretó de nuevo al día siguiente — ver sección
+siguiente.** Sigue sin implementarse un healthcheck automático; queda como riesgo abierto.
+
+## Resuelto — 3ra recurrencia del scheduler colgado + bug de duplicados descubierto al investigar (2026-07-29, URGENTE)
+
+**Reporte del usuario**: operaciones reales de hoy (NVDA y Citigroup, vendidas ~10:39 ET) no
+aparecían en la Pestaña Operaciones — la última visible era de ayer. Investigado con evidencia
+real, no especulación:
+
+- **Scheduler otra vez colgado** (3ra vez, mismo patrón que 2026-07-27 y 2026-07-28): el
+  proceso (PID vivo desde las 20:43 de anoche) no escribió NINGUNA línea al log desde que
+  arrancó, pese a que el cron de `real_trade_detection` (cada 3 min, 9-16 ET) ya debería haber
+  corrido ~32 veces desde la apertura. `pmset -g log` confirmó que la laptop entró en sueño
+  profundo (`Clamshell Sleep`) a las 23:31 de anoche y pasó por múltiples ciclos de
+  mantenimiento/dark-wake durante toda la noche — mismo mecanismo que rompe la conexión TCP sin
+  matar el proceso, documentado en el incidente anterior. **Fix inmediato**: reiniciado vía
+  `launchctl kickstart -k`, corrida manual de `job_detect_real_trades` inmediatamente después
+  para cubrir el gap.
+- **Bug real descubierto al investigar** (no estaba buscándolo, apareció en la corrida manual):
+  la primera corrida manual falló con `ReadTimeout` pidiendo órdenes de la cuenta 74257810
+  (típico justo después de que la laptop despierta de un sueño profundo — DNS/conexión aún no
+  totalmente restablecida). El reintento inmediato tuvo éxito, PERO coincidió en el tiempo (el
+  scheduler recién reiniciado disparó su propio ciclo automático al mismo minuto) — **2
+  procesos de detección corriendo a la vez**. Ambos leyeron `get_alerted_order_leg_keys` ANTES
+  de que ninguno insertara, ambos concluyeron "esta orden es nueva", y ambos insertaron: NVDA y
+  Citigroup quedaron duplicados (2 filas idénticas cada uno, mismo `order_id`).
+  **Confirmado con Telegram**: `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` no están configurados en
+  este entorno, así que no se llegó a enviar ninguna notificación duplicada — pero el bug de
+  fondo (2 filas en la tabla, 2 tarjetas en la UI) era real y se hubiera notificado 2 veces con
+  Telegram activo.
+  **Fix de raíz** (no solo limpiar los datos): índice `UNIQUE` nuevo sobre
+  `(order_id, occ_symbol)` en `real_trade_alerts` (`db.py::_migrate`, con una limpieza previa de
+  duplicados existentes vía `DELETE ... WHERE id NOT IN (SELECT MIN(id) ...)` para no romper la
+  creación del índice contra una base ya existente) — el chequeo en Python nunca iba a alcanzar
+  contra una carrera real entre 2 procesos, hacía falta la garantía a nivel de base.
+  `repository.py::insert_real_trade_alert` ahora atrapa el `IntegrityError` y devuelve `None`;
+  `alerts/real_trades.py::_build_and_persist_real_trade_alert` trata `None` como "ya la detectó
+  otra corrida" y NO reenvía la notificación. 7 tests nuevos (`test_repository.py`,
+  `test_real_trades.py`) verifican explícitamente: 2do insert de la misma orden/pata devuelve
+  `None` sin romper; una orden con 2 patas DISTINTAS (rolls, iron condors) sigue insertando
+  ambas sin problema; filas viejas sin `order_id` (NULL) no chocan entre sí.
+  Migración aplicada en vivo contra `data/app.db`: 2 pares duplicados limpiados (NVDA y
+  Citigroup, de 11 filas a 9), índice creado, verificado sin duplicados.
+- **Verificado en vivo en el navegador** (Pestaña Operaciones, sin filtro): "Hoy · 4
+  operaciones" — SPXW Put + SPXW Call (straddle 0DTE detectado automáticamente por el
+  scheduler ya reiniciado, con las 2 patas correctamente separadas por tener `occ_symbol`
+  distinto, sin duplicar), Citigroup CSP, NVDA CSP — cada una aparece exactamente una vez.
+  545+5 = 550/550 tests en verde.
+
+**Riesgo pendiente, ahora con más urgencia** (2 recurrencias en 3 días): sigue sin existir un
+healthcheck automático que reinicie el scheduler solo cuando se cuelga. Evaluar seriamente
+antes de que pase una 4ta vez.
 
 ## Pendiente, no empezado
 

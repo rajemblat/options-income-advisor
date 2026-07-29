@@ -218,6 +218,29 @@ def test_detect_and_alert_real_trades_dedups_same_order_leg_across_runs(conn, mo
     assert len(repo.get_real_trade_alerts(conn)) == 1
 
 
+def test_detect_and_alert_real_trades_skips_silently_when_another_process_won_the_race(conn, monkeypatch):
+    """Incidente real 2026-07-29: el scheduler recién reiniciado y una corrida manual leyeron
+    `already_alerted` al mismo tiempo (antes de que cualquiera insertara), y ambos intentaron
+    grabar la misma orden — acá se simula forzando que la fila YA exista en la base (otro
+    proceso "ganó" la carrera) mientras el chequeo en memoria de esta corrida sigue creyendo que
+    es nueva (monkeypatch de `get_alerted_order_leg_keys` a vacío). El índice UNIQUE de la base
+    debe rechazar el segundo insert y `detect_and_alert_real_trades` debe devolver `generated`
+    vacío en vez de romper o duplicar la notificación."""
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    broker = _FakeBroker(orders=[_hood_order()], chain=_hood_chain(), quote=Quote(symbol="HOOD", as_of=TODAY, last_price=88.93, bid=88.9, ask=89.0))
+
+    # "Otro proceso" ya insertó esta misma orden/pata.
+    real_trades.detect_and_alert_real_trades(broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+    assert len(repo.get_real_trade_alerts(conn)) == 1
+
+    # Esta corrida no sabe (todavía) que ya se insertó — simula la lectura stale de la carrera.
+    monkeypatch.setattr(repo, "get_alerted_order_leg_keys", lambda conn: set())
+    generated = real_trades.detect_and_alert_real_trades(broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+
+    assert generated == []
+    assert len(repo.get_real_trade_alerts(conn)) == 1  # sigue habiendo 1 sola fila, no 2
+
+
 def test_detect_and_alert_real_trades_ignores_buy_to_open():
     """Comprar opciones (protección, debit spreads) no es una venta de prima — fuera de este
     detector, el resto del motor es un asesor de INGRESO."""

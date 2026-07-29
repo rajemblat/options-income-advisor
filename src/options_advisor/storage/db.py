@@ -60,6 +60,29 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # arriba fallaría si corriera ANTES de la migración contra una base ya existente sin esa
     # columna todavía (bug real encontrado 2026-07-28 armando este mismo índice).
     conn.execute("CREATE INDEX IF NOT EXISTS idx_real_trade_alerts_order_id ON real_trade_alerts(order_id)")
+    # Incidente real 2026-07-29: dos procesos de detección corriendo a la vez (el scheduler
+    # recién reiniciado + una corrida manual) leyeron el mismo set de "ya alertadas" ANTES de
+    # que cualquiera insertara, y ambos insertaron la misma orden — el chequeo en Python
+    # (`repository.py::get_alerted_order_leg_keys`) no alcanza para prevenir una carrera entre
+    # procesos, hace falta un índice UNIQUE a nivel de base (protegido también en
+    # `repository.py::insert_real_trade_alert`, que atrapa el IntegrityError). NULLs no chocan
+    # entre sí en SQLite, así que las filas de antes del rediseño vía /orders (order_id NULL)
+    # quedan afuera de esta restricción sin problema. Al igual que el índice de arriba, va acá
+    # (no en schema.sql) porque antes de crearlo hace falta limpiar los duplicados que ya
+    # puedan existir en una base existente, o el CREATE UNIQUE INDEX fallaría — se conserva la
+    # fila más vieja (MIN(id)) de cada (order_id, occ_symbol) duplicado y se borra el resto (no
+    # hay forma de saber cuál insert "ganó" la carrera, elección arbitraria pero estable: el
+    # contenido de ambas filas es idéntico).
+    conn.execute(
+        """
+        DELETE FROM real_trade_alerts
+        WHERE order_id IS NOT NULL
+          AND id NOT IN (
+              SELECT MIN(id) FROM real_trade_alerts WHERE order_id IS NOT NULL GROUP BY order_id, occ_symbol
+          )
+        """
+    )
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_real_trade_alerts_order_leg ON real_trade_alerts(order_id, occ_symbol)")
     conn.commit()
 
 
