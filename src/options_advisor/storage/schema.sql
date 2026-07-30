@@ -191,7 +191,14 @@ CREATE TABLE IF NOT EXISTS real_trade_alerts (
     similar_move_occurrences INTEGER,
     similar_move_bigger_occurrences INTEGER,
     narrative_text TEXT,
-    narrative_source TEXT
+    narrative_source TEXT,
+    -- NULL = apertura normal (todo el comportamiento de siempre) | 'roll_closed' = pata que se
+    -- CERRÓ como parte de un roll (registro liviano, sin P&L propio) | 'roll_opened' = pata
+    -- NUEVA que reemplazó a la cerrada (cálculo completo, igual que una apertura normal) —
+    -- pedido 2026-07-30. Ambas filas de un mismo roll comparten `order_id`, cada una con su
+    -- propio `occ_symbol` (strike/vencimiento distintos), así que el índice UNIQUE existente
+    -- (order_id, occ_symbol) no choca entre ellas.
+    leg_role TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_real_trade_alerts_symbol_date ON real_trade_alerts(symbol, trade_date);

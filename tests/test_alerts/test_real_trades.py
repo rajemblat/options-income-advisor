@@ -313,28 +313,94 @@ def test_detect_and_alert_real_trades_multiple_opening_legs_generate_separate_al
     assert strikes == [70.0, 75.0]
 
 
-# --- Alcance: rolls NO deben generar alerta (una orden con pata OPENING + CLOSING) ---
+# --- Alcance: rolls (pedido 2026-07-30, cambio sobre la Fase 1 anterior donde se saltaban
+# del todo — ver detect_and_alert_real_trades) — una orden con pata OPENING + CLOSING genera
+# AHORA 2 registros que comparten order_id: la pata cerrada (liviana, sin P&L) y la pata nueva
+# (cálculo completo, leg_role="roll_opened") ---
 
 
-def test_detect_and_alert_real_trades_suppresses_roll_same_order(conn, monkeypatch):
-    """El caso real que motivó esta aclaración de alcance: un roll de SOFI (Aug21->Sep18 $21P)
-    llega como UNA orden con una pata SELL_TO_OPEN + una pata BUY_TO_CLOSE — no debe alertar."""
-    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
-    order = FilledOrder(
-        order_id=1007347459242, account_number="74257810", fill_time=datetime(2026, 7, 27, 17, 4, tzinfo=timezone.utc),
+def _sofi_roll_order(order_id: int = 1007347459242) -> FilledOrder:
+    return FilledOrder(
+        order_id=order_id, account_number="74257810", fill_time=datetime(2026, 7, 27, 17, 4, tzinfo=timezone.utc),
         legs=[
             FilledOrderLeg(occ_symbol="SOFI  260918P00021000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=2.0, price=4.38),
             FilledOrderLeg(occ_symbol="SOFI  260821P00021000", instruction="BUY_TO_CLOSE", position_effect="CLOSING", quantity=2.0, price=4.15),
         ],
     )
+
+
+def _sofi_roll_chain() -> OptionChain:
+    return OptionChain(
+        symbol="SOFI", as_of=TODAY, underlying_price=17.0,
+        contracts=[OptionContract(
+            symbol="SOFI  260918P00021000", option_type="put", strike=21.0, expiration=date(2026, 9, 18),
+            bid=4.3, ask=4.46, last_price=4.38, implied_volatility=0.55, open_interest=500, volume=50, greeks=_greeks(),
+        )],
+    )
+
+
+def test_detect_and_alert_real_trades_roll_generates_closed_and_opened_records(conn, monkeypatch):
+    """El caso real que motivó la aclaración de alcance original: un roll de SOFI
+    (Aug21->Sep18 $21P) llega como UNA orden con una pata SELL_TO_OPEN + una pata BUY_TO_CLOSE.
+    Ahora debe generar 2 registros: la pata vieja cerrada (leg_role="roll_closed", sin P&L) y
+    la pata nueva abierta (leg_role="roll_opened", cálculo completo) — ambos comparten
+    order_id."""
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    order = _sofi_roll_order()
+    broker = _FakeBroker(orders=[order], chain=_sofi_roll_chain(), quote=Quote(symbol="SOFI", as_of=TODAY, last_price=17.0, bid=16.9, ask=17.1))
+
+    generated = real_trades.detect_and_alert_real_trades(
+        broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
+    )
+
+    assert len(generated) == 2
+    rows = repo.get_real_trade_alerts(conn)
+    assert len(rows) == 2
+    assert {r["order_id"] for r in rows} == {order.order_id}
+
+    closed = next(r for r in rows if r["leg_role"] == "roll_closed")
+    assert closed["occ_symbol"] == "SOFI  260821P00021000"
+    assert closed["strike"] == 21.0
+    assert closed["entry_price"] == 4.15  # precio REAL de cierre
+    assert closed["strategy_type"] == "roll_closed_leg"
+    assert closed["net_premium"] is None  # sin P&L propio, es historial liviano
+
+    opened = next(r for r in rows if r["leg_role"] == "roll_opened")
+    assert opened["occ_symbol"] == "SOFI  260918P00021000"
+    assert opened["strike"] == 21.0
+    assert opened["entry_price"] == 4.38
+    assert opened["strategy_type"] == "cash_secured_put"
+    assert opened["net_premium"] is not None  # cálculo completo, igual que una apertura común
+
+
+def test_detect_and_alert_real_trades_roll_dedups_across_runs(conn, monkeypatch):
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    order = _sofi_roll_order()
+    broker = _FakeBroker(orders=[order], chain=_sofi_roll_chain(), quote=Quote(symbol="SOFI", as_of=TODAY, last_price=17.0, bid=16.9, ask=17.1))
+
+    first = real_trades.detect_and_alert_real_trades(broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+    second = real_trades.detect_and_alert_real_trades(broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None)
+
+    assert len(first) == 2
+    assert second == []
+    assert len(repo.get_real_trade_alerts(conn)) == 2
+
+
+def test_detect_and_alert_real_trades_roll_still_persists_closed_leg_when_new_contract_not_found(conn, monkeypatch):
+    """Si la cadena en vivo ya no tiene el contrato nuevo (vencimiento muy próximo/pasado), la
+    pata CERRADA igual debe quedar registrada — no depende de la cadena en vivo para nada."""
+    monkeypatch.setattr(real_trades.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    order = _sofi_roll_order()
     broker = _FakeBroker(orders=[order], chain=_hood_chain(), quote=Quote(symbol="SOFI", as_of=TODAY, last_price=17.0, bid=16.9, ask=17.1))
 
     generated = real_trades.detect_and_alert_real_trades(
         broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
     )
 
-    assert generated == []
-    assert repo.get_real_trade_alerts(conn) == []
+    assert len(generated) == 1
+    rows = repo.get_real_trade_alerts(conn)
+    assert len(rows) == 1
+    assert rows[0]["leg_role"] == "roll_closed"
 
 
 def test_detect_and_alert_real_trades_does_not_suppress_separate_close_and_open_orders(conn, monkeypatch):

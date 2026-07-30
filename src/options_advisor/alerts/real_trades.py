@@ -113,6 +113,55 @@ def _strikes_dict(strategy_type: str, legs: list[FilledOrderLeg], parsed: dict[s
     return {}
 
 
+def _build_and_persist_roll_closed_leg(conn: sqlite3.Connection, order: FilledOrder, leg: FilledOrderLeg, today: date) -> dict | None:
+    """Registro LIVIANO de la pata que se CERRÓ como parte de un roll (pedido 2026-07-30, ver
+    `_is_roll`) — a propósito sin cotización en vivo, sin cadena de opciones, sin cálculo de
+    P&L: ya no es una posición activa, es historial de qué se cerró y a qué precio. Alcanza con
+    lo que ya trae la propia orden. `entry_price` en este registro es el precio REAL de CIERRE
+    (no de entrada — el nombre del campo se reusa tal cual está en `RealTradeAlert`, el
+    `leg_role="roll_closed"` es lo que le avisa a la UI que lo interprete distinto)."""
+    parsed = parse_occ_option_symbol(leg.occ_symbol)
+    if parsed is None:
+        logger.warning("%s: símbolo OCC no reconocido; se omite el registro de pata cerrada del roll", leg.occ_symbol)
+        return None
+    underlying_symbol, expiration, option_type, strike = parsed
+    quantity = int(round(leg.quantity))
+    if quantity <= 0:
+        return None
+    side = "sell" if leg.instruction == "SELL_TO_CLOSE" else "buy"
+    trade = RealTradeAlert(
+        account_number=order.account_number,
+        occ_symbol=leg.occ_symbol,
+        symbol=underlying_symbol,
+        trade_date=today,
+        trade_ts=datetime.now(),
+        strategy_type=c.ROLL_CLOSED_LEG,
+        option_type=option_type,
+        strike=strike,
+        expiration_date=expiration,
+        quantity=quantity,
+        entry_price=leg.price,
+        order_id=order.order_id,
+        legs=[
+            {
+                "side": side,
+                "quantity": quantity,
+                "option_type": option_type,
+                "strike": strike,
+                "expiration": expiration.isoformat(),
+                "premium": leg.price,
+            }
+        ],
+        leg_role="roll_closed",
+    )
+    if repo.insert_real_trade_alert(conn, trade) is None:
+        logger.info(
+            "%s (orden %s) ya fue registrada por otra corrida concurrente; se omite duplicado", leg.occ_symbol, order.order_id
+        )
+        return None
+    return {"symbol": underlying_symbol, "strategy_type": c.ROLL_CLOSED_LEG, "quantity": quantity, "narrative": None}
+
+
 def _build_and_persist_real_trade_alert(
     broker: BrokerClient,
     conn: sqlite3.Connection,
@@ -124,6 +173,7 @@ def _build_and_persist_real_trade_alert(
     share_positions: dict[str, int],
     anthropic_api_key: str | None,
     finnhub_api_key: str | None,
+    leg_role: str | None = None,
 ) -> dict | None:
     """`legs`: 1 pata (posición desnuda, `strategy_type_override=None` — se resuelve por
     option_type/acciones en cartera como siempre) o varias patas YA CLASIFICADAS por
@@ -132,7 +182,9 @@ def _build_and_persist_real_trade_alert(
     mismo criterio que `compute_coverage`/`compute_historical_checks`): sus datos van en las
     columnas singulares de `real_trade_alerts` (occ_symbol/option_type/strike/entry_price), el
     resto de la composición completa vive en `legs_json` (ver `payoff.legs`, ya genérico a N
-    patas)."""
+    patas). `leg_role="roll_opened"` (pedido 2026-07-30) cuando esta apertura es el lado NUEVO
+    de un roll — mismo cálculo completo que una apertura común, solo cambia cómo la UI la
+    agrupa/colorea junto a la pata cerrada correspondiente (mismo `order_id`)."""
     parsed: dict[str, tuple] = {}
     for leg in legs:
         p = parse_occ_option_symbol(leg.occ_symbol)
@@ -242,6 +294,7 @@ def _build_and_persist_real_trade_alert(
         similar_move_bigger_occurrences=similar_check.bigger_occurrences if similar_check else None,
         narrative_text=narrative_text,
         narrative_source=narrative_source,
+        leg_role=leg_role,
     )
     if repo.insert_real_trade_alert(conn, trade) is None:
         # Carrera real entre 2 procesos de detección (incidente 2026-07-29, ver
@@ -254,6 +307,59 @@ def _build_and_persist_real_trade_alert(
         return None
     notifier.notify_real_trade(underlying_symbol, strategy_type, narrative_text)
     return {"symbol": underlying_symbol, "strategy_type": strategy_type, "quantity": contracts_added, "narrative": narrative_text}
+
+
+def _process_opening_legs(
+    broker: BrokerClient,
+    conn: sqlite3.Connection,
+    settings: Settings,
+    today: date,
+    order: FilledOrder,
+    share_positions: dict[str, int],
+    anthropic_api_key: str | None,
+    finnhub_api_key: str | None,
+    already_alerted: set[tuple[int, str]],
+    leg_role: str | None,
+) -> list[dict]:
+    """Arma la(s) alerta(s) de apertura de una orden — apertura común (`leg_role=None`) o el
+    lado NUEVO de un roll (`leg_role="roll_opened"`, pedido 2026-07-30): mismo cálculo completo
+    en ambos casos, la única diferencia es cómo la UI la agrupa/colorea después. Primero intenta
+    reconocer la composición completa (Iron Condor, credit spread); si no matchea, degrada a 1
+    alerta por cada pata vendida suelta (comportamiento de siempre)."""
+    generated: list[dict] = []
+    classified = _classify_opening_legs(order.legs)
+    if classified is not None:
+        strategy_type, group_legs = classified
+        primary_leg = group_legs[0]
+        key = (order.order_id, primary_leg.occ_symbol)
+        if key not in already_alerted:
+            try:
+                result = _build_and_persist_real_trade_alert(
+                    broker, conn, settings, today, order, group_legs, strategy_type,
+                    share_positions, anthropic_api_key, finnhub_api_key, leg_role=leg_role,
+                )
+                if result:
+                    generated.append(result)
+            except Exception:
+                logger.exception("Fallo al generar alerta de operación real multi-pata para la orden %s; se sigue con el resto", order.order_id)
+        return generated
+
+    for leg in order.legs:
+        if leg.instruction != "SELL_TO_OPEN":
+            continue  # solo ventas nuevas de prima — comprar opciones queda fuera (motor de INGRESO)
+        key = (order.order_id, leg.occ_symbol)
+        if key in already_alerted:
+            continue
+        try:
+            result = _build_and_persist_real_trade_alert(
+                broker, conn, settings, today, order, [leg], None,
+                share_positions, anthropic_api_key, finnhub_api_key, leg_role=leg_role,
+            )
+            if result:
+                generated.append(result)
+        except Exception:
+            logger.exception("Fallo al generar alerta de operación real para %s; se sigue con el resto", leg.occ_symbol)
+    return generated
 
 
 def detect_and_alert_real_trades(
@@ -277,6 +383,14 @@ def detect_and_alert_real_trades(
     Nunca rompe el resto del job: cualquier fallo puntual (símbolo sin chain, sin contrato
     encontrado) se loguea y se sigue con el resto — mismo criterio del resto de Sección 6.
 
+    Rolls (pedido 2026-07-30, cambio de alcance sobre la Fase 1 — antes se saltaban del todo):
+    una orden con pata(s) OPENING + pata(s) CLOSING (`_is_roll`) ahora genera DOS tipos de
+    registro que comparten `order_id` — la(s) pata(s) CERRADAS como registro liviano
+    (`_build_and_persist_roll_closed_leg`, sin P&L propio) y la(s) pata(s) NUEVAS con el mismo
+    cálculo completo que una apertura común (`_process_opening_legs(..., leg_role="roll_opened")`).
+    La UI (`dashboard/components.py`) las agrupa visualmente por `order_id` para mostrar "lo que
+    cerraste" y "lo que abriste en su lugar" juntos.
+
     `lookback_minutes` opcional (default `REAL_TRADE_LOOKBACK_MINUTES`) — usado por
     `scheduler/healthcheck.py` para pedir una ventana más ancha en el catch-up inmediato
     después de reparar un scheduler colgado (incidente 2026-07-29), cubriendo todo el tiempo
@@ -293,43 +407,28 @@ def detect_and_alert_real_trades(
     generated: list[dict] = []
     for order in orders:
         if _is_roll(order):
-            logger.info("Orden %s: pata OPENING + CLOSING en la misma orden — tratada como ROLL, sin alerta", order.order_id)
-            continue
-
-        # Primero intenta reconocer la composición REAL de la orden completa (Iron Condor,
-        # credit spread) — bug real 2026-07-29: procesar cada pata vendida suelta hacía que un
-        # Iron Condor de 4 patas se detectara como Cash-Secured Put de 1 sola. Si la orden no
-        # matchea ninguna estrategia de varias patas reconocida, degrada al camino de 1 pata
-        # vendida por vez (comportamiento anterior, sigue correcto para posiciones desnudas).
-        classified = _classify_opening_legs(order.legs)
-        if classified is not None:
-            strategy_type, group_legs = classified
-            primary_leg = group_legs[0]
-            key = (order.order_id, primary_leg.occ_symbol)
-            if key not in already_alerted:
+            for leg in order.legs:
+                if leg.position_effect != "CLOSING":
+                    continue
+                key = (order.order_id, leg.occ_symbol)
+                if key in already_alerted:
+                    continue
                 try:
-                    result = _build_and_persist_real_trade_alert(
-                        broker, conn, settings, today, order, group_legs, strategy_type, share_positions, anthropic_api_key, finnhub_api_key
-                    )
+                    result = _build_and_persist_roll_closed_leg(conn, order, leg, today)
                     if result:
                         generated.append(result)
                 except Exception:
-                    logger.exception("Fallo al generar alerta de operación real multi-pata para la orden %s; se sigue con el resto", order.order_id)
-            continue  # ya se cubrieron todas las patas relevantes de esta orden
+                    logger.exception("Fallo al registrar la pata cerrada del roll para %s; se sigue con el resto", leg.occ_symbol)
 
-        for leg in order.legs:
-            if leg.instruction != "SELL_TO_OPEN":
-                continue  # solo ventas nuevas de prima — comprar opciones queda fuera (motor de INGRESO)
-            key = (order.order_id, leg.occ_symbol)
-            if key in already_alerted:
-                continue
-            try:
-                result = _build_and_persist_real_trade_alert(
-                    broker, conn, settings, today, order, [leg], None, share_positions, anthropic_api_key, finnhub_api_key
-                )
-                if result:
-                    generated.append(result)
-            except Exception:
-                logger.exception("Fallo al generar alerta de operación real para %s; se sigue con el resto", leg.occ_symbol)
+            generated.extend(_process_opening_legs(
+                broker, conn, settings, today, order, share_positions, anthropic_api_key, finnhub_api_key,
+                already_alerted, leg_role="roll_opened",
+            ))
+            continue
+
+        generated.extend(_process_opening_legs(
+            broker, conn, settings, today, order, share_positions, anthropic_api_key, finnhub_api_key,
+            already_alerted, leg_role=None,
+        ))
 
     return generated

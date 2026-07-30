@@ -169,6 +169,12 @@ class RealTradeAlert(BaseModel):
     similar_move_bigger_occurrences: int | None = None
     narrative_text: str | None = None
     narrative_source: NarrativeSource | None = None
+    # Rolls (pedido 2026-07-30): None = apertura normal (comportamiento de siempre) |
+    # "roll_closed" = pata que se CERRÓ como parte de un roll (registro liviano, sin P&L propio
+    # — ver alerts/real_trades.py::_build_and_persist_roll_closed_leg) | "roll_opened" = pata
+    # NUEVA que la reemplazó (cálculo completo, igual que una apertura normal). Ambas filas de
+    # un mismo roll comparten `order_id`.
+    leg_role: str | None = None
 
 
 class InvestorProfile(BaseModel):

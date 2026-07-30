@@ -42,6 +42,7 @@ _NEW_COLUMNS_BY_TABLE = {
         "historical_move_total_windows": "INTEGER",
         "similar_move_occurrences": "INTEGER",
         "similar_move_bigger_occurrences": "INTEGER",
+        "leg_role": "TEXT",
     },
 }
 

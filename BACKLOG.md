@@ -4,7 +4,19 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-30 (Market Movers: top 10 REAL por % en vez del ranking por
+Última actualización: 2026-07-30 (Pestaña Operaciones: cambio de alcance sobre la Fase 1 —
+ahora SÍ se muestran los ROLLS (antes se saltaban del todo), agrupados visualmente como
+"Operación anterior" (amarillo) + "Operación nueva" (verde) en un mismo bloque; además, vista
+de tabla plana nueva (toggle Tarjetas/Tabla) tipo feed de operaciones, con precio EN VIVO y
+Tipo (Apertura/Roll). Confirmado antes de implementar cómo mostrar el roll (2 filas conectadas
+dentro de un bloque, no 1 fila con columnas dobles — evita amontonar 2 strikes/2 vencimientos
+en las mismas celdas) y que `_is_roll()` ya distingue con certeza vía /orders. Verificado en
+vivo con un roll real de TSLA (mismo strike $350, vencimiento 08/07→09/04): el bloque muestra
+"Operación anterior (cerrada) · 1 Put $350.00 · Cerrado a $44.68" en amarillo y "Operación
+nueva (abierta) · 1 Put $350.00 · Entrada $48.08 · $4,808.00 crédito" en verde, contado como 1
+sola "operación" (no 2) en el encabezado de fecha; la vista de tabla muestra el precio en vivo
+($44.75 vs. $48.08, verde por ser favorable) y las etiquetas "Roll · Nuevo"/"Roll · Cerrado"
+correctamente. Antes en la sesión: Market Movers: top 10 REAL por % en vez del ranking por
 volumen de `/movers` de Schwab. Investigado a fondo antes de programar: confirmado en vivo,
 probando los 3 índices × 4 valores de `sort` × 6 valores de `frequency`, que ese endpoint
 SIEMPRE devuelve las mismas 10 acciones de mayor volumen — nunca 10 ganadoras + 10 perdedoras
@@ -951,6 +963,52 @@ Ninguno.
     nombres genuinamente distinto (ARM -13.38%, NBIS -11.11%), y Dow Jones mostró exactamente
     lo que predecía la limitación real: 7 ganadoras / 9 perdedoras (no 10), confirmando que
     filtrar en vez de forzar el número era la decisión correcta.
+
+48. **Pestaña Operaciones: rolls visibles (cambio de alcance) + vista de tabla plana** (pedido
+    2026-07-30). Dos pedidos relacionados, implementados juntos porque la tabla necesita una
+    columna "Tipo" que solo tiene sentido si los rolls ya se detectan.
+
+    **Rolls** (antes se saltaban del todo, ver Fase 1 original): `_is_roll(order)` seguía
+    identificándolos con certeza (pata OPENING + CLOSING en la misma orden, vía /orders) — el
+    cambio fue dejar de saltear y en cambio generar 2 registros que comparten `order_id`:
+    `alerts/real_trades.py::_build_and_persist_roll_closed_leg` arma un registro LIVIANO de la
+    pata cerrada (símbolo/strike/vencimiento/precio de cierre real, sin cotización en vivo ni
+    P&L propio — ya no es una posición activa) con `leg_role="roll_closed"`;
+    `_process_opening_legs(..., leg_role="roll_opened")` reusa el pipeline COMPLETO de apertura
+    de siempre (incluye la clasificación de Iron Condor/credit spread ya construida) para la
+    pata nueva. Columna nueva `leg_role` en `real_trade_alerts` (NULL/roll_closed/roll_opened).
+    Confirmado con el usuario ANTES de programar cómo mostrarlo: 2 filas conectadas dentro de
+    un mismo bloque "🔄 Roll" (no 1 fila con columnas dobles — un roll casi siempre cambia
+    strike Y vencimiento a la vez, cramear 2 de cada uno en la misma celda sería ilegible) —
+    `dashboard/components.py::group_roll_pairs()` (agrupa por `order_id`, generaliza sin
+    cambios a rolls de varias patas) + `render_roll_group()` ("Operación anterior (cerrada)" en
+    amarillo, "Operación nueva (abierta)" en verde, la tarjeta completa de la pata nueva debajo
+    para quien quiera el detalle a fondo). Contado como 1 sola "operación" en el encabezado de
+    fecha, no 2.
+
+    **Tabla plana** (ADEMÁS de las tarjetas, no en su reemplazo — decisión confirmada con el
+    usuario: las tarjetas tienen avisos/P&L/comentario que la tabla no muestra a propósito, son
+    2 casos de uso distintos). Toggle "Tarjetas"/"Tabla" arriba de los filtros existentes.
+    Columnas: Symbol, Fecha/Hora, Precio actual (EN VIVO, confirmado con el usuario — no el
+    valor guardado al detectar la operación) vs. entrada, IV Rank (más reciente, hoy si hay
+    snapshot), Estrategia, Precio (crédito/débito), Tipo (Apertura/Roll·Nuevo/Roll·Cerrado).
+    `cached_option_quotes()` — mismo endpoint batch `/quotes` de Schwab que ya usa
+    `cached_quotes`, confirmado en vivo que también acepta símbolos OCC de opciones sin cambios.
+    `Quote` ganó `description`/`total_volume` en la sesión anterior (Market Movers), reusados
+    acá también. Color de precio actual: para una posición VENDIDA (el caso normal), bajar
+    desde la entrada es favorable (verde), subir es desfavorable (rojo) — mismo criterio que el
+    resto de la app.
+    18 tests nuevos (`test_real_trades.py`: roll genera 2 registros con datos correctos, dedup
+    entre corridas, pata cerrada persiste aunque la cadena no tenga el contrato nuevo;
+    `test_components.py`: agrupamiento de rolls con casos límite incluyendo multi-pata, filas de
+    la tabla con/sin quote en vivo, pata cerrada sin datos en vivo) — 628/628 en verde.
+    Verificado en vivo con un roll REAL de la cuenta (encontrado en los logs del scheduler,
+    3 órdenes de roll que se habían saltado antes del fix — reprocesadas con el código nuevo):
+    TSLA, mismo strike $350, vencimiento 07/08→04/09. Tarjetas: bloque amarillo/verde correcto,
+    "Hoy · 2 operaciones" (no 3). Tabla: precio en vivo $44.75 vs. entrada $48.08 en verde,
+    etiquetas "Roll · Nuevo"/"Roll · Cerrado" correctas. IV Rank verificado por separado
+    (AAPL con snapshot de hoy mostró 61.64 real) para confirmar que "N/D" en TSLA/TLT es
+    porque genuinamente no tienen snapshot hoy, no un bug.
 
 ## Cómo se usa este archivo
 

@@ -32,6 +32,12 @@ PUT_RATIO_SPREAD = "put_ratio_spread"
 SHORT_CALL_CONDOR = "short_call_condor"
 SHORT_PUT_CONDOR = "short_put_condor"
 
+# Pata CERRADA de un roll detectado vía /orders (pedido 2026-07-30, ver alerts/real_trades.py::
+# _build_and_persist_roll_closed_leg) — NO es una estrategia de ingreso real, es un registro
+# liviano de historial (qué se cerró, a qué precio), por eso queda deliberadamente FUERA de
+# ALL_INCOME_STRATEGIES: nunca pasa por strategy/payoff.py::compute_payoff, no tiene P&L propio.
+ROLL_CLOSED_LEG = "roll_closed_leg"
+
 ALL_INCOME_STRATEGIES = {
     CASH_SECURED_PUT,
     COVERED_CALL,

@@ -15,6 +15,8 @@ from options_advisor.dashboard.components import (
     classify_volatility_level,
     filter_by_date_range,
     filter_significant_movers,
+    build_trade_table_rows,
+    group_roll_pairs,
     split_gainers_losers,
 )
 
@@ -338,3 +340,108 @@ def test_filter_significant_movers_can_return_fewer_than_all_when_universe_is_qu
     día tranquilo — debe devolver MENOS, no rellenar con ruido para forzar un número."""
     movers = [_mover("A", 0.1), _mover("B", -0.2), _mover("C", 0.3)]
     assert filter_significant_movers(movers) == []
+
+
+# --- group_roll_pairs (rolls en Pestaña Operaciones, pedido 2026-07-30 — cambio de alcance
+# sobre la Fase 1 anterior, ahora SÍ se muestran) ---
+
+
+def _trade_row(id_: int, order_id: int | None, leg_role: str | None, symbol: str = "SOFI") -> dict:
+    return {"id": id_, "order_id": order_id, "leg_role": leg_role, "symbol": symbol, "trade_date": "2026-07-30"}
+
+
+def test_group_roll_pairs_normal_openings_stay_as_singletons():
+    """Comportamiento de siempre para aperturas comunes (leg_role=None) — cada una su propio
+    grupo de 1 sola fila, sin cambios."""
+    trades = [_trade_row(1, 100, None), _trade_row(2, 101, None)]
+    groups = group_roll_pairs(trades)
+    assert groups == [[trades[0]], [trades[1]]]
+
+
+def test_group_roll_pairs_combines_closed_and_opened_same_order():
+    trades = [_trade_row(1, 500, "roll_opened"), _trade_row(2, 500, "roll_closed")]
+    groups = group_roll_pairs(trades)
+    assert len(groups) == 1
+    assert {t["id"] for t in groups[0]} == {1, 2}
+
+
+def test_group_roll_pairs_does_not_mix_different_orders():
+    trades = [_trade_row(1, 500, "roll_opened"), _trade_row(2, 500, "roll_closed"), _trade_row(3, 600, "roll_opened"), _trade_row(4, 600, "roll_closed")]
+    groups = group_roll_pairs(trades)
+    assert len(groups) == 2
+    assert {t["id"] for t in groups[0]} == {1, 2}
+    assert {t["id"] for t in groups[1]} == {3, 4}
+
+
+def test_group_roll_pairs_preserves_order_of_first_appearance():
+    trades = [_trade_row(1, 100, None), _trade_row(2, 500, "roll_opened"), _trade_row(3, 500, "roll_closed"), _trade_row(4, 101, None)]
+    groups = group_roll_pairs(trades)
+    assert [g[0]["id"] for g in groups] == [1, 2, 4]  # el roll aparece en la posición de su 1er elemento
+
+
+def test_group_roll_pairs_generalizes_to_multi_leg_roll():
+    """Un roll de varias patas (ej. rolar un Iron Condor completo) — todas comparten order_id,
+    todas caen en el mismo grupo, sin lógica especial nueva."""
+    trades = [
+        _trade_row(1, 700, "roll_closed"), _trade_row(2, 700, "roll_closed"),
+        _trade_row(3, 700, "roll_opened"), _trade_row(4, 700, "roll_opened"),
+    ]
+    groups = group_roll_pairs(trades)
+    assert len(groups) == 1
+    assert len(groups[0]) == 4
+
+
+# --- build_trade_table_rows (vista de tabla plana de Operaciones, pedido 2026-07-30) ---
+
+
+def _table_trade(
+    id_: int, occ_symbol: str, leg_role: str | None, symbol: str = "SOFI",
+    entry_price: float | None = 4.38, net_premium: float | None = 876.0, strategy_type: str = "cash_secured_put",
+) -> dict:
+    return {
+        "id": id_, "occ_symbol": occ_symbol, "leg_role": leg_role, "symbol": symbol,
+        "trade_ts": "2026-07-30T10:39:20", "entry_price": entry_price, "strategy_type": strategy_type,
+        "net_premium": net_premium,
+    }
+
+
+def _table_quote(occ_symbol: str, last_price: float) -> Quote:
+    return Quote(symbol=occ_symbol, as_of=date(2026, 7, 30), last_price=last_price, bid=last_price, ask=last_price)
+
+
+def test_build_trade_table_rows_uses_live_quote_for_open_position():
+    trade = _table_trade(1, "SOFI  260918P00021000", None)
+    quotes = {"SOFI  260918P00021000": _table_quote("SOFI  260918P00021000", 3.10)}
+    rows = build_trade_table_rows([trade], quotes, {"SOFI": 45.0})
+    assert rows[0]["current_price"] == 3.10
+    assert rows[0]["entry_price"] == 4.38
+    assert rows[0]["iv_rank"] == 45.0
+    assert rows[0]["type_label"] == "Apertura"
+    assert rows[0]["strategy_label"] == "Cash-Secured Put"
+
+
+def test_build_trade_table_rows_missing_quote_is_none_not_a_crash():
+    trade = _table_trade(1, "SOFI  260918P00021000", None)
+    rows = build_trade_table_rows([trade], {}, {})
+    assert rows[0]["current_price"] is None
+    assert rows[0]["iv_rank"] is None
+
+
+def test_build_trade_table_rows_closed_roll_leg_has_no_live_data():
+    """Pata cerrada de un roll: sin cotización en vivo, sin IV Rank, sin P&L propio — ya no es
+    una posición activa (ver alerts/real_trades.py::_build_and_persist_roll_closed_leg)."""
+    trade = _table_trade(1, "SOFI  260821P00021000", "roll_closed", entry_price=4.15, net_premium=None, strategy_type="roll_closed_leg")
+    quotes = {"SOFI  260821P00021000": _table_quote("SOFI  260821P00021000", 0.02)}  # aunque haya quote, se ignora
+    rows = build_trade_table_rows([trade], quotes, {"SOFI": 45.0})
+    assert rows[0]["current_price"] is None
+    assert rows[0]["iv_rank"] is None
+    assert rows[0]["net_premium"] is None
+    assert rows[0]["type_label"] == "Roll · Cerrado"
+    assert rows[0]["entry_price"] == 4.15  # precio de CIERRE real, conservado
+
+
+def test_build_trade_table_rows_opened_roll_leg_labeled_correctly():
+    trade = _table_trade(1, "SOFI  260918P00021000", "roll_opened")
+    rows = build_trade_table_rows([trade], {}, {})
+    assert rows[0]["type_label"] == "Roll · Nuevo"
+    assert rows[0]["net_premium"] == 876.0  # SÍ tiene P&L propio, cálculo completo

@@ -23,6 +23,7 @@ STRATEGY_LABELS = {
     "put_ratio_spread": "Put Ratio Spread",
     "short_call_condor": "Short Call Condor",
     "short_put_condor": "Short Put Condor",
+    "roll_closed_leg": "Pata cerrada (roll)",
 }
 
 # Cuando no se conoce la fecha de earnings (símbolo sin fixture en modo mock, o modo Schwab —

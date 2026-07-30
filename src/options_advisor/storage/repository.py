@@ -424,8 +424,8 @@ def insert_real_trade_alert(conn: sqlite3.Connection, trade: RealTradeAlert) -> 
                  payoff_is_estimate, annualized_return_pct, early_close_projection_json,
                  historical_move_occurrences, historical_move_total_windows,
                  similar_move_occurrences, similar_move_bigger_occurrences,
-                 narrative_text, narrative_source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 narrative_text, narrative_source, leg_role)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 trade.account_number,
@@ -457,6 +457,7 @@ def insert_real_trade_alert(conn: sqlite3.Connection, trade: RealTradeAlert) -> 
                 trade.similar_move_bigger_occurrences,
                 trade.narrative_text,
                 trade.narrative_source,
+                trade.leg_role,
             ),
         )
     except sqlite3.IntegrityError:
