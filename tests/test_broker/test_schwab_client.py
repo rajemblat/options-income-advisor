@@ -57,6 +57,29 @@ def test_get_quote_parses_real_fields(client, monkeypatch):
     assert quote.ask == 321.48
 
 
+def test_get_quote_parses_description_and_total_volume(client, monkeypatch):
+    """Sumado 2026-07-29 para Market Movers (top 10 real por %, ver dashboard/components.py::
+    cached_movers) — ya venían en la respuesta de /quotes sin costo extra."""
+    payload = {
+        "AAPL": {
+            "quote": {"lastPrice": 321.1, "bidPrice": 321.1, "askPrice": 321.48, "totalVolume": 56_090_840},
+            "reference": {"description": "APPLE INC"},
+        }
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quote = client.get_quote("AAPL")
+    assert quote.description == "APPLE INC"
+    assert quote.total_volume == 56_090_840
+
+
+def test_get_quote_description_and_total_volume_none_when_missing(client, monkeypatch):
+    payload = {"AAPL": {"quote": {"lastPrice": 321.1, "bidPrice": 321.1, "askPrice": 321.48}}}
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quote = client.get_quote("AAPL")
+    assert quote.description is None
+    assert quote.total_volume is None
+
+
 def test_get_quote_parses_next_ex_dividend_date_when_div_ex_date_is_future(client, monkeypatch):
     future = (TODAY + timedelta(days=30)).isoformat()
     further = (TODAY + timedelta(days=120)).isoformat()
@@ -466,6 +489,21 @@ def test_get_quotes_batch_returns_all_symbols(client, monkeypatch):
     quotes = client.get_quotes(["AAPL", "NVDA"])
     assert set(quotes.keys()) == {"AAPL", "NVDA"}
     assert quotes["AAPL"].last_price == 321.1
+
+
+def test_get_quotes_batch_parses_description_and_total_volume(client, monkeypatch):
+    payload = {
+        "AAPL": {
+            "quote": {"lastPrice": 321.1, "bidPrice": 321.0, "askPrice": 321.2, "totalVolume": 56_090_840},
+            "reference": {"description": "APPLE INC"},
+        },
+        "NVDA": {"quote": {"lastPrice": 180.5, "bidPrice": 180.4, "askPrice": 180.6}},
+    }
+    monkeypatch.setattr(httpx.Client, "get", _mock_get(payload))
+    quotes = client.get_quotes(["AAPL", "NVDA"])
+    assert quotes["AAPL"].description == "APPLE INC"
+    assert quotes["AAPL"].total_volume == 56_090_840
+    assert quotes["NVDA"].description is None
 
 
 def test_get_quotes_batch_parses_next_ex_dividend_date(client, monkeypatch):

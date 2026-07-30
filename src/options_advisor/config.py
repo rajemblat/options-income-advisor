@@ -158,6 +158,28 @@ def load_universe_symbols(path: Path | None = None) -> list[str]:
     return SymbolsConfig.model_validate(raw).symbols
 
 
+# Componentes REALES de cada índice para Market Movers (pedido 2026-07-29: "top 10 real por %",
+# no el ranking por volumen que da /movers de Schwab — confirmado en vivo que ese endpoint
+# siempre devuelve las mismas 10 acciones de mayor volumen sin importar sort/frequency, nunca
+# 10 ganadoras + 10 perdedoras reales). Distinto de universe_sp500.yaml (386 símbolos, lista
+# "de referencia" aproximada para Escaneo) — acá la exactitud importa (es la base del ranking
+# real), así que son listas completas obtenidas de Wikipedia el 2026-07-29 (ver comentario de
+# cada archivo). $COMPX usa Nasdaq-100 (103 símbolos), no el Nasdaq Composite completo
+# (~3000+, impracticable de cotizar en batch).
+_MOVERS_UNIVERSE_FILES = {
+    "$SPX": "sp500.yaml",
+    "$COMPX": "nasdaq100.yaml",
+    "$DJI": "dow30.yaml",
+}
+
+
+def load_movers_universe(index: str) -> list[str]:
+    path = PROJECT_ROOT / "config" / "movers_universe" / _MOVERS_UNIVERSE_FILES[index]
+    with open(path) as f:
+        raw = yaml.safe_load(f)
+    return SymbolsConfig.model_validate(raw).symbols
+
+
 def load_priority_watchlist_symbols(path: Path | None = None) -> list[str]:
     """Watchlist real del usuario (thinkorswim, ~95 símbolos) — universo PRIORITARIO para el
     escaneo, unido en dashboard/pages/8_escaneo.py con load_symbols() (13 fijos) y

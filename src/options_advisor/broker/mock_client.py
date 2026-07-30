@@ -149,10 +149,21 @@ class MockBrokerClient(BrokerClient):
             # Sin sesión extendida simulada en las fixtures — el modo mock no tiene datos de
             # pre/after-market, a diferencia del cierre regular (arriba, sí calculado).
             post_market_change_pct=None,
+            total_volume=bar.volume,
         )
 
     def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
-        return {symbol: self.get_quote(symbol) for symbol in symbols}
+        # Market Movers (pedido 2026-07-29) cotiza en batch universos grandes (S&P 500/Nasdaq-
+        # 100/Dow 30 completos) que en modo mock casi seguro no tienen fixture propia — a
+        # diferencia de la watchlist chica de siempre, folerar símbolos sin datos acá (se
+        # omiten) en vez de que uno solo tire abajo todo el batch.
+        quotes: dict[str, Quote] = {}
+        for symbol in symbols:
+            try:
+                quotes[symbol] = self.get_quote(symbol)
+            except Exception:
+                continue
+        return quotes
 
     def get_movers(self, index: str, sort: str, frequency: int = 0) -> list[Mover]:
         """Sin datos reales de mercado en modo mock — un puñado de filas representativas fijas

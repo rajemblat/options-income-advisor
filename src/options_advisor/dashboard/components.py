@@ -21,7 +21,7 @@ from options_advisor.alerts.formatting import (
 from options_advisor.broker import get_broker_client
 from options_advisor.broker.base import BrokerClient
 from options_advisor.broker.models import Mover, Quote
-from options_advisor.config import PROJECT_ROOT, Settings, load_settings, load_symbols
+from options_advisor.config import PROJECT_ROOT, Settings, load_movers_universe, load_settings, load_symbols
 from options_advisor.dashboard.portfolio_summary import summarize_portfolio
 from options_advisor.scheduler.market_calendar import MarketSession, market_session
 from options_advisor.storage import db
@@ -118,10 +118,61 @@ def cached_quotes(symbols: tuple[str, ...]) -> dict[str, Quote]:
     return get_broker().get_quotes(list(symbols))
 
 
+# Mismo tamaño de lote ya probado en vivo sin problema (screen_universe en schwab_client.py).
+_MOVERS_QUOTE_BATCH_SIZE = 200
+
+# Cuántas ganadoras/perdedoras mostrar como máximo (pedido 2026-07-29: "top 10", no el top 8
+# anterior).
+MOVERS_TOP_N = 10
+
+# Umbral mínimo de magnitud para calificar como "mover" real (pedido 2026-07-29): sin esto, un
+# blue-chip de altísimo volumen que apenas se movió (ej. AAPL +0.02%) ocuparía un lugar en el
+# ranking solo por existir en el universo, no por ser relevante. Con universos grandes (S&P 500,
+# Nasdaq-100) casi nunca hace falta filtrar nada — siempre hay de sobra genuinamente
+# significativo. Con el Dow (30 nombres), un día tranquilo puede no tener 10 movimientos por
+# encima de este umbral — en ese caso se muestran MENOS de 10 en esa columna, nunca se rellena
+# con ruido para forzar el número.
+MOVERS_MIN_SIGNIFICANT_PCT = 0.5
+
+
+def _movers_from_quotes(quotes: dict[str, Quote]) -> list[Mover]:
+    """Convierte quotes en batch a `Mover` — pedido 2026-07-29: ranking real por % en vez del
+    ranking por VOLUMEN que da `/movers` de Schwab (ver `cached_movers`)."""
+    return [
+        Mover(
+            symbol=symbol,
+            description=q.description or symbol,
+            last_price=q.last_price,
+            change_pct=q.net_change_pct,
+            direction="up" if q.net_change_pct >= 0 else "down",
+            total_volume=q.total_volume or 0,
+        )
+        for symbol, q in quotes.items()
+    ]
+
+
 @st.cache_data(ttl=60, show_spinner=False)
-def cached_movers(index: str, sort: str) -> list[Mover]:
-    """Top movers para la sección Market Movers — mismo motivo de cache que `cached_quotes`."""
-    return get_broker().get_movers(index, sort)
+def cached_movers(index: str) -> list[Mover]:
+    """Top movers REALES por % (pedido 2026-07-29) — reemplaza `broker.get_movers()`: ese
+    endpoint de Schwab siempre devuelve las MISMAS 10 acciones de mayor VOLUMEN sin importar
+    `sort`/`frequency` (confirmado en vivo probando los 3 índices × 4 sorts × 6 frequencies —
+    nunca da un top 10 real de ganadoras Y otro de perdedoras, solo 10 combinadas repartidas
+    como caiga). Acá se cotizan en batch TODOS los componentes reales del índice
+    (`config/movers_universe/`, ver `config.py::load_movers_universe`) y se arma el ranking real
+    localmente — mismo motivo de cache (60s) que `cached_quotes`."""
+    symbols = load_movers_universe(index)
+    broker = get_broker()
+    quotes: dict[str, Quote] = {}
+    for i in range(0, len(symbols), _MOVERS_QUOTE_BATCH_SIZE):
+        quotes.update(broker.get_quotes(symbols[i : i + _MOVERS_QUOTE_BATCH_SIZE]))
+    return filter_significant_movers(_movers_from_quotes(quotes))
+
+
+def filter_significant_movers(movers: list[Mover]) -> list[Mover]:
+    """Descarta movimientos por debajo de `MOVERS_MIN_SIGNIFICANT_PCT` — sin esto, un blue-chip
+    de altísimo volumen que apenas se movió (ej. AAPL +0.02%) ocuparía un lugar en el ranking
+    solo por existir en el universo, no por ser relevante (pedido 2026-07-29)."""
+    return [m for m in movers if abs(m.change_pct) >= MOVERS_MIN_SIGNIFICANT_PCT]
 
 
 
@@ -480,12 +531,14 @@ MARKET_MOVERS_INDICES = {"$SPX": "S&P 500", "$COMPX": "Nasdaq", "$DJI": "Dow Jon
 
 
 def render_market_movers_panel(index: str = "$SPX") -> None:
-    """Ganadoras/perdedoras del índice de referencia, estilo CNBC — endpoint `/movers`
-    confirmado en vivo 2026-07-25 (ver NOTES.md). Vacío fuera de horario de mercado (el
-    endpoint real no tiene datos que devolver) o en modo mock sin fixture cargada. Un solo
-    pedido (`sort="VOLUME"`, universo de más actividad) — ver `split_gainers_losers` para por
-    qué no se piden ambas direcciones por separado."""
-    gainers, losers = split_gainers_losers(cached_movers(index, "VOLUME"))
+    """Top {MOVERS_TOP_N} ganadoras/perdedoras REALES por % del índice de referencia, estilo
+    CNBC (pedido 2026-07-29, reemplaza el ranking por volumen de `/movers` de Schwab — ver
+    `cached_movers`). Vacío fuera de horario de mercado (las quotes en batch no tienen
+    movimiento real que reportar) o en modo mock sin fixtures para el universo completo. Con
+    índices chicos (Dow, 30 componentes) puede haber MENOS de {MOVERS_TOP_N} en una columna un
+    día tranquilo — `cached_movers` ya filtra por `MOVERS_MIN_SIGNIFICANT_PCT`, así que eso es
+    correcto (no hay suficientes movimientos genuinamente significativos), no un error."""
+    gainers, losers = split_gainers_losers(cached_movers(index))
 
     label = MARKET_MOVERS_INDICES.get(index, index)
     html = ["<div class='oia-card'>", f"<div style='font-size:1.1rem; font-weight:700;'>{icon('bar-chart', size=18, color=ACCENT)} Market Movers · {label}</div>"]
@@ -498,13 +551,13 @@ def render_market_movers_panel(index: str = "$SPX") -> None:
 
     def _rows(movers: list[Mover], color: str) -> str:
         if not movers:
-            return f"<div style='color:{TEXT_MUTED}; font-size:0.85rem;'>Sin datos.</div>"
+            return f"<div style='color:{TEXT_MUTED}; font-size:0.85rem;'>Sin movimientos significativos ahora mismo.</div>"
         return "".join(
             "<div class='oia-leg-row'>"
             f"<span><b>{m.symbol}</b> · {m.description}</span>"
             f"<span style='color:{color}; font-weight:700;'>{m.change_pct:+.2f}% · ${m.last_price:,.2f}</span>"
             "</div>"
-            for m in movers[:8]
+            for m in movers[:MOVERS_TOP_N]
         )
 
     html.append("<div style='display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:1.5rem; margin-top:0.8rem;'>")

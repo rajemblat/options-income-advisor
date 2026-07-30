@@ -47,6 +47,15 @@ def test_get_quote_no_post_market_data_in_mock_mode(mock_fixtures_dir):
     assert quote.post_market_change_pct is None
 
 
+def test_get_quotes_skips_symbols_without_fixtures(mock_fixtures_dir):
+    """Market Movers (pedido 2026-07-29) cotiza en batch universos grandes (S&P 500 completo)
+    que en modo mock casi seguro no tienen fixture propia — un símbolo sin datos no debe tirar
+    abajo todo el batch, solo se omite."""
+    client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
+    quotes = client.get_quotes(["TST", "SYMBOL_WITHOUT_ANY_FIXTURE"])
+    assert set(quotes.keys()) == {"TST"}
+
+
 def test_get_movers_up_returns_only_positive_direction_sorted_desc(mock_fixtures_dir):
     client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
     movers = client.get_movers("$SPX", "PERCENT_CHANGE_UP")

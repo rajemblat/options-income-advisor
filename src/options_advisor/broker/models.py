@@ -57,6 +57,12 @@ class Quote(BaseModel):
     # modo mock (las fixtures no tienen esta clasificación) o si Schwab no la expone para ese
     # símbolo puntual.
     instrument_type: str | None = None
+    # Nombre de la empresa y volumen total del día — sumados 2026-07-29 para armar Market
+    # Movers a partir de quotes en batch (`reference.description`/`quote.totalVolume` de
+    # Schwab, ya venían en la respuesta de /quotes sin costo extra). None/0 en modo mock (las
+    # fixtures no tienen nombre de empresa ni volumen real de mercado).
+    description: str | None = None
+    total_volume: int | None = None
 
 
 class PriceBar(BaseModel):

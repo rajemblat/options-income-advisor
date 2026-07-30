@@ -2,16 +2,19 @@ from __future__ import annotations
 
 from datetime import date
 
-from options_advisor.broker.models import Mover
+from options_advisor.broker.models import Mover, Quote
 from options_advisor.dashboard.components import (
     CRITICAL,
     GOOD,
+    MOVERS_MIN_SIGNIFICANT_PCT,
     WARNING,
     _capital_at_risk_caveat_html,
     _historical_move_caveat_html,
+    _movers_from_quotes,
     _similar_move_caveat_html,
     classify_volatility_level,
     filter_by_date_range,
+    filter_significant_movers,
     split_gainers_losers,
 )
 
@@ -274,3 +277,64 @@ def test_filter_by_date_range_supports_a_different_date_field():
     alerts = [{"alert_date": "2026-07-29", "symbol": "A"}, {"alert_date": "2026-07-28", "symbol": "B"}]
     result = filter_by_date_range(alerts, "Hoy", TODAY, date_field="alert_date")
     assert result == [{"alert_date": "2026-07-29", "symbol": "A"}]
+
+
+# --- _movers_from_quotes / filter_significant_movers (Market Movers "top 10 real por %",
+# pedido 2026-07-29 — reemplaza el ranking por volumen de /movers de Schwab, que siempre
+# devuelve las mismas 10 acciones sin importar sort/frequency, confirmado en vivo) ---
+
+
+def _quote(symbol: str, change_pct: float, description: str | None = "SOME COMPANY", volume: int | None = 1000) -> Quote:
+    return Quote(
+        symbol=symbol, as_of=date(2026, 7, 29), last_price=100.0, bid=99.9, ask=100.1,
+        net_change_pct=change_pct, description=description, total_volume=volume,
+    )
+
+
+def test_movers_from_quotes_converts_each_quote():
+    quotes = {"AAPL": _quote("AAPL", 1.5, description="APPLE INC", volume=5_000_000)}
+    movers = _movers_from_quotes(quotes)
+    assert len(movers) == 1
+    assert movers[0].symbol == "AAPL"
+    assert movers[0].description == "APPLE INC"
+    assert movers[0].change_pct == 1.5
+    assert movers[0].direction == "up"
+    assert movers[0].total_volume == 5_000_000
+
+
+def test_movers_from_quotes_direction_down_for_negative_change():
+    quotes = {"XYZ": _quote("XYZ", -0.5)}
+    assert _movers_from_quotes(quotes)[0].direction == "down"
+
+
+def test_movers_from_quotes_falls_back_to_symbol_without_description():
+    """El batch de /quotes puede no traer reference.description para algún símbolo puntual —
+    no debe dejar la fila sin nombre para mostrar."""
+    quotes = {"XYZ": _quote("XYZ", 1.0, description=None)}
+    assert _movers_from_quotes(quotes)[0].description == "XYZ"
+
+
+def test_movers_from_quotes_zero_volume_when_missing():
+    quotes = {"XYZ": _quote("XYZ", 1.0, volume=None)}
+    assert _movers_from_quotes(quotes)[0].total_volume == 0
+
+
+def test_filter_significant_movers_excludes_below_threshold():
+    """Bug real reportado 2026-07-29: un blue-chip de alto volumen que apenas se movió (ej.
+    AAPL +0.02%) no debería calificar como "mover" real solo por existir en el universo."""
+    movers = [_mover("AAPL", 0.02), _mover("TSLA", -0.01), _mover("NVDA", 3.5)]
+    result = filter_significant_movers(movers)
+    assert [m.symbol for m in result] == ["NVDA"]
+
+
+def test_filter_significant_movers_boundary_is_inclusive():
+    movers = [_mover("X", MOVERS_MIN_SIGNIFICANT_PCT), _mover("Y", -MOVERS_MIN_SIGNIFICANT_PCT)]
+    result = filter_significant_movers(movers)
+    assert {m.symbol for m in result} == {"X", "Y"}
+
+
+def test_filter_significant_movers_can_return_fewer_than_all_when_universe_is_quiet():
+    """Índices chicos (Dow, 30 componentes) pueden no tener 10 movimientos significativos un
+    día tranquilo — debe devolver MENOS, no rellenar con ruido para forzar un número."""
+    movers = [_mover("A", 0.1), _mover("B", -0.2), _mover("C", 0.3)]
+    assert filter_significant_movers(movers) == []

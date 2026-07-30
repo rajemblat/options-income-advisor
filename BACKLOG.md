@@ -4,7 +4,21 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-29 (check histórico refinado con una banda de tolerancia de
+Última actualización: 2026-07-30 (Market Movers: top 10 REAL por % en vez del ranking por
+volumen de `/movers` de Schwab. Investigado a fondo antes de programar: confirmado en vivo,
+probando los 3 índices × 4 valores de `sort` × 6 valores de `frequency`, que ese endpoint
+SIEMPRE devuelve las mismas 10 acciones de mayor volumen — nunca 10 ganadoras + 10 perdedoras
+reales, y la sospecha del usuario de que era "solo un problema del Dow (30 empresas)" no era la
+causa raíz (pasaba igual en S&P 500 y Nasdaq). El usuario eligió la opción de más esfuerzo:
+traer los componentes REALES de cada índice (S&P 500/Nasdaq-100/Dow 30, de Wikipedia, wikitext
+crudo parseado con regex — NO resumen de IA, que inventó tickers incorrectos en un intento
+previo) y calcular el ranking real localmente con quotes en batch, en vez de depender del
+ranking de Schwab. Con esto, la sospecha original del usuario SÍ se confirmó como limitación
+matemática real pero solo para Dow (30 nombres): un umbral mínimo de magnitud (±0.5%) filtra
+movimientos insignificantes, mostrando MENOS de 10 en vez de rellenar con ruido cuando no hay
+suficientes — verificado en vivo, Dow mostró 7 ganadoras/9 perdedoras un día con pocos
+movimientos grandes, mientras S&P 500 y Nasdaq mostraron el top 10 completo sin problema.
+Antes en la sesión: check histórico refinado con una banda de tolerancia de
 plazo (±1 semana) Y magnitud (±3 puntos porcentuales) — pedido explícito del usuario para
 buscar "movimientos SIMILARES" en vez de solo "movimientos de al menos este tamaño". Confirmado
 con el usuario ANTES de programar (ejemplo concreto con números reales, aclarando que es una
@@ -897,6 +911,46 @@ Ninguno.
     verde. Verificado en vivo con datos reales de Citigroup (CSP, strike $115, 37 DTE): badge
     original "tocó este nivel 32 veces", badge nuevo "pasó 76 veces — y hubo 22 veces una caída
     AÚN MÁS GRANDE en un plazo similar" — ambos badges visibles a la vez en la misma tarjeta.
+
+47. **Market Movers: top 10 REAL por %, no el ranking por volumen de Schwab** (pedido
+    2026-07-30, 2 problemas reportados: solo mostraba 5 en vez de 10, y aparecían "movers"
+    insignificantes como +0.65%/-0.02% en Dow Jones). Investigado a fondo ANTES de programar:
+    confirmado en vivo (los 3 índices × 4 `sort` × 6 `frequency`) que `/movers` de Schwab
+    SIEMPRE devuelve las mismas 10 acciones de mayor VOLUMEN — nunca 10 ganadoras + 10
+    perdedoras reales, y la sospecha del usuario ("es que Dow solo tiene 30 empresas") NO era
+    la causa raíz: pasaba igual en S&P 500 y Nasdaq, ambos con universos mucho más grandes. Se
+    le presentaron 2 opciones (filtrar y aceptar el techo de 10 vs. construir un top 10 real) y
+    eligió la segunda, más trabajo pero datos genuinamente útiles.
+    `config/movers_universe/{sp500,nasdaq100,dow30}.yaml` — componentes REALES de cada índice
+    (503/103/30 tickers), obtenidos de Wikipedia el 2026-07-29 con **wikitext crudo parseado
+    con regex, no un resumen de IA** (un intento inicial vía `WebFetch` inventó tickers
+    incorrectos — CDN en vez de CDNS, FORTW en vez de FTNT, SDSK en vez de SNDK — inaceptable
+    para símbolos financieros donde un carácter mal puesto muestra la empresa equivocada).
+    Nasdaq usa el Nasdaq-100 (no el Composite completo, ~3000+ símbolos, impracticable de
+    cotizar). `config.py::load_movers_universe(index)` carga la lista correspondiente.
+    `Quote` ganó 2 campos (`description`/`total_volume`, ya venían en la respuesta de
+    `/quotes` de Schwab sin costo extra) — `dashboard/components.py::cached_movers(index)`
+    ahora cotiza en batch TODO el universo del índice (chunks de 200, mismo tamaño ya probado
+    en `screen_universe`) y arma el ranking real localmente con `_movers_from_quotes()` +
+    `split_gainers_losers()` (reusada sin cambios) en vez de llamar a `broker.get_movers()`.
+    Límite de la tabla subido de 8 a `MOVERS_TOP_N=10`. `filter_significant_movers()` — umbral
+    `MOVERS_MIN_SIGNIFICANT_PCT=0.5` (±0.5 puntos porcentuales): confirma la sospecha original
+    del usuario, pero acotada correctamente a índices chicos — con S&P 500/Nasdaq-100 casi
+    nunca filtra nada (siempre hay de sobra genuinamente significativo), con el Dow (30
+    nombres) puede mostrar MENOS de 10 en una columna un día tranquilo, en vez de rellenar con
+    ruido para forzar el número.
+    `MockBrokerClient.get_quotes()` ahora tolera símbolos sin fixture (se omiten, no tiran
+    abajo todo el batch) — necesario porque el universo de Market Movers en modo mock
+    casi seguro no tiene fixture propia para cada ticker.
+    17 tests nuevos (`test_config.py`: tamaños de cada universo, sin duplicados;
+    `test_components.py`: conversión quote→mover, filtro de significancia con casos límite;
+    `test_schwab_client.py`: parseo de description/total_volume; `test_mock_client.py`:
+    tolerancia a símbolos sin fixture) — 617/617 en verde.
+    Verificado en vivo con datos 100% reales: S&P 500 mostró el top 10 completo en ambas
+    columnas (ganadora más chica +6.39% GEHC — nada de ruido), Nasdaq-100 igual con un set de
+    nombres genuinamente distinto (ARM -13.38%, NBIS -11.11%), y Dow Jones mostró exactamente
+    lo que predecía la limitación real: 7 ganadoras / 9 perdedoras (no 10), confirmando que
+    filtrar en vez de forzar el número era la decisión correcta.
 
 ## Cómo se usa este archivo
 

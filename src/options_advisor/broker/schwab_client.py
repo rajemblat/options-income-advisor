@@ -225,6 +225,8 @@ class SchwabBrokerClient(BrokerClient):
             ask=quote.get("askPrice", last_price),
             next_ex_dividend_date=_parse_next_ex_dividend_date(entry.get("fundamental") or {}),
             instrument_type=_classify_instrument_type(entry),
+            description=(entry.get("reference") or {}).get("description"),
+            total_volume=quote.get("totalVolume"),
             **_parse_quote_change_fields(quote),
         )
 
@@ -253,6 +255,8 @@ class SchwabBrokerClient(BrokerClient):
                 ask=quote.get("askPrice", last_price),
                 next_ex_dividend_date=_parse_next_ex_dividend_date(entry.get("fundamental") or {}),
                 instrument_type=_classify_instrument_type(entry),
+                description=(entry.get("reference") or {}).get("description"),
+                total_volume=quote.get("totalVolume"),
                 **_parse_quote_change_fields(quote),
             )
         return quotes
