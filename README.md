@@ -1,4 +1,4 @@
-# Options Income Advisor — Fase 1
+# OptionsUp — Fase 1
 
 Motor de análisis y alertas de opciones para el escenario **Ingreso a Largo Plazo** (venta de
 prima), según la hoja de ruta funcional del producto. Ver el plan completo en

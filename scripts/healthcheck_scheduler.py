@@ -57,7 +57,7 @@ def _notify(message: str) -> None:
             [
                 "osascript",
                 "-e",
-                f'display notification "{message}" with title "Options Income Advisor" subtitle "Scheduler" sound name "Basso"',
+                f'display notification "{message}" with title "OptionsUp" subtitle "Scheduler" sound name "Basso"',
             ],
             timeout=5,
             check=False,

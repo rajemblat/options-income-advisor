@@ -78,7 +78,7 @@ def run_healthcheck(
         # esto es un respaldo por si algo le impide hacerlo. Sin log de referencia no hay forma
         # de saber cuánto estuvo caído, así que no se intenta un catch-up con ventana calculada
         # acá — el próximo ciclo normal del cron ya reiniciado cubre los últimos 15 min.
-        notify("Scheduler de Options Income Advisor no está corriendo — reiniciando")
+        notify("Scheduler de OptionsUp no está corriendo — reiniciando")
         restart_scheduler()
         return []
 
