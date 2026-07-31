@@ -4,7 +4,10 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-31 (Pestaña Operaciones: corrección de layout sobre la vista de
+Última actualización: 2026-07-31 (Rebranding a "OptionsUp" completado — ver ítem #49. 3 tareas
+confirmadas quedan pendientes, no empezadas: modelo de barra intradía, página de gráfico de
+velas con VWAP, y conectar el gráfico con alertas — ver sección "Pendiente, no empezado".
+Antes en la sesión: Pestaña Operaciones: corrección de layout sobre la vista de
 tabla del día anterior — aclaración del usuario: lo pedido no era un cambio de lógica sino
 ESTÉTICO. La vista de Tabla ahora es 1 fila compacta por operación, apertura o roll por igual
 (Symbol, Time/Date, Now, Orig, IVR, Description, Action, Price) — ya no se arma 1 bloque
@@ -118,6 +121,18 @@ pausado a pedido del usuario — ver secciones dedicadas abajo).
 ## En progreso ahora
 
 Ninguno.
+
+## Pendiente, no empezado
+
+- **Modelo de barra intradía** (confirmado 2026-07-31): base de datos/indicadores de barras
+  OHLCV intradía (por minuto o intervalo corto), pensado como fundamento para el gráfico de
+  velas + VWAP de abajo. Alcance de fuente de datos (Schwab)/intervalo/retención a definir al
+  arrancar.
+- **Página de gráfico de velas con VWAP** (confirmado 2026-07-31): nueva página del dashboard,
+  candlestick intradía por símbolo + línea de VWAP, sobre el modelo de barra intradía de arriba.
+- **Conectar el gráfico de velas con alertas** (confirmado 2026-07-31): mostrar en el gráfico
+  los niveles/strikes de las alertas activas (candidatos y operaciones reales) del símbolo, para
+  ver el precio en contexto de la posición.
 
 ## Resuelto — scheduler colgado ~15h, incluyendo horario de mercado (2026-07-28)
 
@@ -257,10 +272,6 @@ soporta prompts interactivos). Se le pasó el comando exacto al usuario varias v
 aplicarlo por ahora y confiar en el healthcheck (2026-07-29). Queda documentado acá por si se
 quiere retomar más adelante — no es una dependencia para que el sistema se recupere solo, el
 healthcheck ya cubre el caso real.
-
-## Pendiente, no empezado
-
-Ninguno.
 
 ## Alcance confirmado — Pestaña Operaciones, Fase 1 (aclarado por el usuario 2026-07-28)
 
@@ -1029,6 +1040,16 @@ Ninguno.
     etiquetas "Roll · Nuevo"/"Roll · Cerrado" correctas. IV Rank verificado por separado
     (AAPL con snapshot de hoy mostró 61.64 real) para confirmar que "N/D" en TSLA/TLT es
     porque genuinamente no tienen snapshot hoy, no un bug.
+
+49. **Rebranding a "OptionsUp"** (pedido 2026-07-31, alcance confirmado con el usuario: solo
+    texto visible en UI + README/docs, sin tocar nombre de repo/paquete ni identidad visual).
+    Barrida completa del nombre viejo "Options Income Advisor": la UI del dashboard ya no lo
+    mostraba en ningún lado desde un cambio estético anterior (ítem #30, título de General pasó
+    a "Stock Market Overview") — quedaban 3 lugares reales: título de `README.md`, la
+    notificación nativa de macOS del healthcheck (`scripts/healthcheck_scheduler.py`) y el
+    mensaje de log/notify del scheduler colgado (`src/options_advisor/scheduler/healthcheck.py`).
+    Los 3 actualizados a "OptionsUp". Verificado en navegador en vivo (screenshot de la página
+    General, sin restos del nombre viejo) y 631/631 tests en verde.
 
 ## Cómo se usa este archivo
 
