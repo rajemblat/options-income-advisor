@@ -17,6 +17,7 @@ from options_advisor.dashboard.components import (
     filter_significant_movers,
     build_trade_table_rows,
     group_roll_pairs,
+    primary_trade_for_group,
     split_gainers_losers,
 )
 
@@ -391,6 +392,21 @@ def test_group_roll_pairs_generalizes_to_multi_leg_roll():
     assert len(groups[0]) == 4
 
 
+# --- primary_trade_for_group (pedido 2026-07-30) ---
+
+
+def test_primary_trade_for_group_single_trade_is_itself():
+    trade = _trade_row(1, 100, None)
+    assert primary_trade_for_group([trade]) is trade
+
+
+def test_primary_trade_for_group_roll_picks_the_opened_leg():
+    closed = _trade_row(1, 500, "roll_closed")
+    opened = _trade_row(2, 500, "roll_opened")
+    assert primary_trade_for_group([closed, opened]) is opened
+    assert primary_trade_for_group([opened, closed]) is opened  # sin importar el orden
+
+
 # --- build_trade_table_rows (vista de tabla plana de Operaciones, pedido 2026-07-30) ---
 
 
@@ -409,39 +425,58 @@ def _table_quote(occ_symbol: str, last_price: float) -> Quote:
     return Quote(symbol=occ_symbol, as_of=date(2026, 7, 30), last_price=last_price, bid=last_price, ask=last_price)
 
 
-def test_build_trade_table_rows_uses_live_quote_for_open_position():
+def test_build_trade_table_rows_normal_opening_is_one_compact_row():
     trade = _table_trade(1, "SOFI  260918P00021000", None)
     quotes = {"SOFI  260918P00021000": _table_quote("SOFI  260918P00021000", 3.10)}
-    rows = build_trade_table_rows([trade], quotes, {"SOFI": 45.0})
-    assert rows[0]["current_price"] == 3.10
-    assert rows[0]["entry_price"] == 4.38
-    assert rows[0]["iv_rank"] == 45.0
-    assert rows[0]["type_label"] == "Apertura"
-    assert rows[0]["strategy_label"] == "Cash-Secured Put"
+    rows = build_trade_table_rows([[trade]], quotes, {"SOFI": 45.0})
+    assert len(rows) == 1
+    assert rows[0]["Now"] == "$3.10"
+    assert rows[0]["Orig"] == "$4.38"
+    assert rows[0]["IVR"] == "45"
+    assert rows[0]["Action"] == "Apertura"
+    assert rows[0]["Description"] == "Cash-Secured Put"
 
 
-def test_build_trade_table_rows_missing_quote_is_none_not_a_crash():
+def test_build_trade_table_rows_missing_quote_is_blank_not_a_crash():
+    """String vacío, no None ni NaN: en esta versión de Streamlit, st.dataframe muestra el
+    texto literal "None" tanto para None como para NaN en una columna numérica (con o sin
+    `format` en column_config, confirmado con una repro mínima) — bug real encontrado
+    2026-07-31 verificando en vivo. La única forma de que se vea en blanco es no usar una
+    columna numérica para estos valores."""
     trade = _table_trade(1, "SOFI  260918P00021000", None)
-    rows = build_trade_table_rows([trade], {}, {})
-    assert rows[0]["current_price"] is None
-    assert rows[0]["iv_rank"] is None
+    rows = build_trade_table_rows([[trade]], {}, {})
+    assert rows[0]["Now"] == ""
+    assert rows[0]["IVR"] == ""
 
 
-def test_build_trade_table_rows_closed_roll_leg_has_no_live_data():
-    """Pata cerrada de un roll: sin cotización en vivo, sin IV Rank, sin P&L propio — ya no es
-    una posición activa (ver alerts/real_trades.py::_build_and_persist_roll_closed_leg)."""
-    trade = _table_trade(1, "SOFI  260821P00021000", "roll_closed", entry_price=4.15, net_premium=None, strategy_type="roll_closed_leg")
-    quotes = {"SOFI  260821P00021000": _table_quote("SOFI  260821P00021000", 0.02)}  # aunque haya quote, se ignora
-    rows = build_trade_table_rows([trade], quotes, {"SOFI": 45.0})
-    assert rows[0]["current_price"] is None
-    assert rows[0]["iv_rank"] is None
-    assert rows[0]["net_premium"] is None
-    assert rows[0]["type_label"] == "Roll · Cerrado"
-    assert rows[0]["entry_price"] == 4.15  # precio de CIERRE real, conservado
+def test_build_trade_table_rows_roll_is_a_single_compact_row_using_the_opened_leg():
+    """Corrección de diseño 2026-07-30: un roll (2 filas en la base, cerrada + nueva) es UNA
+    sola fila compacta en la tabla — misma fila simple que una apertura común, usando los datos
+    de la pata NUEVA (la posición activa). La pata cerrada no aporta nada a esta fila; solo se
+    ve en el detalle expandido al hacer clic (render_roll_group)."""
+    closed = _table_trade(1, "SOFI  260821P00021000", "roll_closed", entry_price=4.15, net_premium=None, strategy_type="roll_closed_leg")
+    opened = _table_trade(2, "SOFI  260918P00021000", "roll_opened", entry_price=4.38, net_premium=876.0, strategy_type="cash_secured_put")
+    quotes = {"SOFI  260918P00021000": _table_quote("SOFI  260918P00021000", 3.10)}
+    rows = build_trade_table_rows([[closed, opened]], quotes, {"SOFI": 45.0})
+    assert len(rows) == 1  # NO 2 filas
+    assert rows[0]["Now"] == "$3.10"
+    assert rows[0]["Orig"] == "$4.38"
+    assert rows[0]["Price"] == "$876.00"
+    assert rows[0]["Action"] == "Roll"
+    assert rows[0]["Description"] == "Cash-Secured Put"
 
 
-def test_build_trade_table_rows_opened_roll_leg_labeled_correctly():
-    trade = _table_trade(1, "SOFI  260918P00021000", "roll_opened")
-    rows = build_trade_table_rows([trade], {}, {})
-    assert rows[0]["type_label"] == "Roll · Nuevo"
-    assert rows[0]["net_premium"] == 876.0  # SÍ tiene P&L propio, cálculo completo
+def test_build_trade_table_rows_action_is_roll_even_if_closed_leg_missing():
+    """Caso borde: si la pata cerrada no llegó a persistirse (ej. símbolo OCC no reconocido),
+    la fila igual debe decir "Roll" — se basa en el leg_role de la pata representativa, no en
+    cuántas filas tiene el grupo."""
+    opened = _table_trade(1, "SOFI  260918P00021000", "roll_opened")
+    rows = build_trade_table_rows([[opened]], {}, {})
+    assert rows[0]["Action"] == "Roll"
+
+
+def test_build_trade_table_rows_multiple_groups_produce_multiple_rows():
+    trade_a = _table_trade(1, "SOFI  260918P00021000", None, symbol="SOFI")
+    trade_b = _table_trade(2, "AAPL  260918P00200000", None, symbol="AAPL")
+    rows = build_trade_table_rows([[trade_a], [trade_b]], {}, {})
+    assert [r["Symbol"] for r in rows] == ["SOFI", "AAPL"]

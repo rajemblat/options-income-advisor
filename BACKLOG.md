@@ -4,7 +4,27 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-30 (Pestaña Operaciones: cambio de alcance sobre la Fase 1 —
+Última actualización: 2026-07-31 (Pestaña Operaciones: corrección de layout sobre la vista de
+tabla del día anterior — aclaración del usuario: lo pedido no era un cambio de lógica sino
+ESTÉTICO. La vista de Tabla ahora es 1 fila compacta por operación, apertura o roll por igual
+(Symbol, Time/Date, Now, Orig, IVR, Description, Action, Price) — ya no se arma 1 bloque
+amarillo/verde ahí mismo. Clic en una fila (`st.dataframe(..., on_select="rerun",
+selection_mode="single-row")`) abre el detalle completo debajo (P&L, breakeven, POP, cobertura,
+noticias, comentario, check histórico), mostrando el bloque amarillo/verde de roll solo ahí.
+Filtros Symbol/Rango de fechas/Estrategia/Tipo siempre visibles arriba. Tabla pasa a ser la
+vista default (antes Tarjetas). Verificado en vivo con capturas: tabla compacta y detalle
+abierto al clickear la fila TSLA — Roll (bloque amarillo "Operación anterior (cerrada)" +
+verde "Operación nueva (abierta)", seguido de la tarjeta completa de P&L/POP/cobertura/riesgo).
+Bug real encontrado y corregido en el camino: st.dataframe en esta versión de Streamlit
+muestra el texto literal "None" para valores faltantes en una columna numérica (con NaN
+Y con None, con o sin `format` en column_config — confirmado con una repro mínima aislada) —
+la única forma de que se vea en blanco es pre-formatear esos valores como strings ("" en vez
+de None/NaN) en vez de dejarlos como columna numérica. 631/631 tests en verde. Interrupción
+en medio de la sesión: el refresh_token de Schwab expiró (límite documentado de ~7 días, no
+un bug) rompiendo TODOS los datos en vivo del dashboard; resuelto con el usuario re-logueándose
+manualmente vía `scripts/schwab_login.py` en su propia Terminal — todas las páginas
+re-verificadas después (General, Alertas, Watchlist, Portafolio, Operaciones, Escaneo).
+Antes en la sesión: Pestaña Operaciones: cambio de alcance sobre la Fase 1 —
 ahora SÍ se muestran los ROLLS (antes se saltaban del todo), agrupados visualmente como
 "Operación anterior" (amarillo) + "Operación nueva" (verde) en un mismo bloque; además, vista
 de tabla plana nueva (toggle Tarjetas/Tabla) tipo feed de operaciones, con precio EN VIVO y

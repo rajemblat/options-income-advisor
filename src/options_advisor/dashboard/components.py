@@ -6,6 +6,7 @@ import os
 import sqlite3
 from datetime import date, datetime, timedelta
 
+import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
@@ -1189,11 +1190,20 @@ def render_real_trade_card(
         st.code(shorten_for_sharing(trade["narrative_text"]) if trade["narrative_text"] else "Sin texto disponible.", language=None)
 
 
-# --- Vista de tabla plana de Operaciones (pedido 2026-07-30: formato tipo feed compacto,
-# alternativa — no reemplazo — a las tarjetas expandidas de arriba, vía toggle en la página) ---
+# --- Vista de tabla plana de Operaciones (pedido 2026-07-30, corregido el mismo día tras
+# aclaración del usuario: NO es un cambio de lógica de detección — eso ya estaba bien resuelto
+# — es un cambio de layout. Una fila COMPACTA por operación (apertura o roll, misma fila
+# simple para ambos casos), clic en la fila abre el detalle completo debajo. Esta vista pasa a
+# ser la default de la página, Tarjetas queda como alternativa vía el toggle.) ---
 
 
-_TRADE_TYPE_LABELS = {"roll_closed": "Roll · Cerrado", "roll_opened": "Roll · Nuevo"}
+def primary_trade_for_group(group: list[sqlite3.Row]) -> sqlite3.Row:
+    """La fila "representativa" de un grupo para la fila compacta — la posición ACTIVA hoy: la
+    pata NUEVA de un roll (`leg_role="roll_opened"`) si el grupo es un roll, o la única fila si
+    es una apertura común. La pata cerrada de un roll nunca es la representativa (no es una
+    posición activa) — sigue visible igual en el detalle expandido (`render_roll_group`)."""
+    opened = next((t for t in group if t["leg_role"] == "roll_opened"), None)
+    return opened if opened is not None else group[0]
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -1208,120 +1218,111 @@ def cached_option_quotes(occ_symbols: tuple[str, ...]) -> dict[str, Quote]:
     return get_broker().get_quotes(list(occ_symbols))
 
 
+def _fmt_table_datetime(trade_ts: str) -> str:
+    try:
+        return datetime.fromisoformat(trade_ts).strftime("%d/%m %H:%M")
+    except (ValueError, TypeError):
+        return "N/D"
+
+
 def build_trade_table_rows(
-    trades: list[sqlite3.Row], quotes: dict[str, Quote], iv_ranks: dict[str, float | None]
+    groups: list[list[sqlite3.Row]], quotes: dict[str, Quote], iv_ranks: dict[str, float | None]
 ) -> list[dict]:
-    """Arma las filas de la tabla plana — pura, sin llamadas a Schwab/Streamlit (esas ya las
-    hizo el caller: `quotes` es `occ_symbol -> Quote` EN VIVO, `iv_ranks` es
-    `symbol subyacente -> IV Rank más reciente o None`). Una pata CERRADA de un roll
-    (`leg_role="roll_closed"`) no tiene cotización en vivo ni IV Rank ni P&L propio — ya no es
-    una posición activa, es historial de qué se cerró (ver alerts/real_trades.py::
-    _build_and_persist_roll_closed_leg)."""
+    """Arma UNA fila compacta por grupo (apertura común = 1 fila, roll = 1 fila igual, no 2) —
+    pura, sin llamadas a Schwab/Streamlit (esas ya las hizo el caller: `quotes` es
+    `occ_symbol -> Quote` EN VIVO de la pata representativa, `iv_ranks` es `symbol subyacente ->
+    IV Rank más reciente o None`). Columnas alineadas con el ejemplo pedido: Symbol, Time/Date,
+    Now, Orig, IVR, Description, Action, Price."""
     rows = []
-    for trade in trades:
-        leg_role = trade["leg_role"]
-        is_closed = leg_role == "roll_closed"
+    for group in groups:
+        trade = primary_trade_for_group(group)
         quote = quotes.get(trade["occ_symbol"])
+        now_price = quote.last_price if quote else None
+        iv_rank = iv_ranks.get(trade["symbol"])
         rows.append(
             {
-                "id": trade["id"],
-                "symbol": trade["symbol"],
-                "trade_ts": trade["trade_ts"],
-                "entry_price": trade["entry_price"],
-                "current_price": None if is_closed else (quote.last_price if quote else None),
-                "iv_rank": None if is_closed else iv_ranks.get(trade["symbol"]),
-                "strategy_label": strategy_label(trade["strategy_type"]),
-                "net_premium": None if is_closed else trade["net_premium"],
-                "type_label": _TRADE_TYPE_LABELS.get(leg_role, "Apertura"),
-                "leg_role": leg_role,
+                "Symbol": trade["symbol"],
+                "Time/Date": _fmt_table_datetime(trade["trade_ts"]),
+                # String pre-formateado, no un valor numérico: en esta versión de Streamlit,
+                # st.dataframe muestra el texto literal "None" para NaN en una columna numérica
+                # (con o sin `format` en column_config — confirmado con una repro mínima el
+                # 2026-07-31), así que la única forma de que una opción sin cotización en vivo
+                # (ej. vencida) se vea en blanco es no usar una columna numérica para esto.
+                "Now": f"${now_price:.2f}" if now_price is not None else "",
+                "Orig": f"${trade['entry_price']:.2f}" if trade["entry_price"] is not None else "",
+                "IVR": f"{iv_rank:.0f}" if iv_rank is not None else "",
+                "Description": strategy_label(trade["strategy_type"]),
+                # Se basa en el leg_role de la pata representativa, no en len(group) — más
+                # robusto: sigue etiquetando "Roll" incluso si la pata cerrada no llegó a
+                # persistirse por algún caso borde (ej. símbolo OCC no reconocido).
+                "Action": "Roll" if trade["leg_role"] == "roll_opened" else "Apertura",
+                "Price": f"${trade['net_premium']:.2f}" if trade["net_premium"] is not None else "",
             }
         )
     return rows
 
 
-def _trade_table_row_html(row: dict) -> str:
-    time_bit = ""
-    try:
-        time_bit = datetime.fromisoformat(row["trade_ts"]).strftime("%d/%m %H:%M")
-    except (ValueError, TypeError):
-        time_bit = "N/D"
-
-    is_closed = row["leg_role"] == "roll_closed"
-    entry_price = row["entry_price"]
-    current_price = row["current_price"]
-    if is_closed:
-        price_cell = f"Cerrado a {_fmt_money(entry_price)}" if entry_price is not None else "N/D"
-    elif current_price is not None and entry_price is not None:
-        # Posición VENDIDA (venta de prima, el caso normal acá): el precio de la opción
-        # BAJANDO desde la entrada es favorable (se podría recomprar más barato), SUBIENDO es
-        # desfavorable — mismo criterio de color que el resto de la app (GOOD/CRITICAL).
-        move_color = GOOD if current_price <= entry_price else CRITICAL
-        price_cell = f"<span style='color:{move_color}; font-weight:600;'>{_fmt_money(current_price)}</span> vs {_fmt_money(entry_price)}"
-    elif entry_price is not None:
-        price_cell = f"{_fmt_money(entry_price)} <span style='color:{TEXT_MUTED};'>(actual N/D)</span>"
-    else:
-        price_cell = "N/D"
-
-    iv_rank = row["iv_rank"]
-    iv_cell = f"{iv_rank:.0f}" if iv_rank is not None else "N/D"
-
-    net_premium = row["net_premium"]
-    if net_premium is None:
-        premium_cell = "—"
-    else:
-        premium_kind = "crédito" if net_premium >= 0 else "débito"
-        premium_cell = f"{_fmt_money(abs(net_premium))} {premium_kind}"
-
-    type_color = WARNING if row["leg_role"] == "roll_closed" else (ACCENT if row["leg_role"] == "roll_opened" else GOOD)
-    type_cell = (
-        f"<span class='oia-pill' style='color:{type_color}; border-color:{type_color}44; background:{type_color}1a; "
-        f"font-size:0.75rem; padding:0.1rem 0.55rem;'>{row['type_label']}</span>"
-    )
-
-    cells = [f"<b>{row['symbol']}</b>", time_bit, price_cell, iv_cell, row["strategy_label"], premium_cell, type_cell]
-    return "<tr style='border-bottom:1px solid " + BORDER + ";'>" + "".join(
-        f"<td style='padding:0.55rem 0.7rem; color:{TEXT_SECONDARY};'>{cell}</td>" for cell in cells
-    ) + "</tr>"
-
-
-def render_real_trades_table(trades: list[sqlite3.Row], conn: sqlite3.Connection) -> None:
-    """Vista de tabla plana y compacta de Operaciones (pedido 2026-07-30, alternativa a las
-    tarjetas expandidas — inspirada en un feed de operaciones estilo tastylive). Columnas:
-    Symbol, Fecha/Hora, Precio actual (EN VIVO) vs. entrada, IV Rank (más reciente), Estrategia,
-    Precio (crédito/débito), Tipo (Apertura/Roll). Mantiene el alcance de Fase 1 (solo
-    aperturas) + rolls agregados 2026-07-30 — nunca agrega cierres sueltos sin roll."""
-    if not trades:
+def render_real_trades_table(
+    groups: list[list[sqlite3.Row]],
+    conn: sqlite3.Connection,
+    fed_meeting_date: str | None,
+    capital_available: float | None,
+) -> None:
+    """Vista de tabla plana y compacta de Operaciones (pedido 2026-07-30, corregida el mismo
+    día: 1 fila por operación — apertura o roll, sin distinción de layout entre las dos — y
+    clic en la fila abre el detalle completo (P&L, breakeven, POP, cobertura, noticias,
+    comentario, check histórico; para un roll, el bloque amarillo/verde de `render_roll_group`)
+    debajo de la tabla. `groups` ya viene agrupado por roll Y filtrado por el caller (Símbolo/
+    Rango de fechas/Estrategia/Tipo) — esta función no filtra nada por su cuenta."""
+    if not groups:
         return
 
-    open_trades = [t for t in trades if t["leg_role"] != "roll_closed"]
+    open_trades = [primary_trade_for_group(g) for g in groups]
     occ_symbols = tuple(sorted({t["occ_symbol"] for t in open_trades}))
     quotes = cached_option_quotes(occ_symbols)
 
     today = date.today()
     iv_ranks: dict[str, float | None] = {}
-    for symbol in {t["symbol"] for t in trades}:
+    for symbol in {t["symbol"] for t in open_trades}:
         snapshot = repo.get_indicator_snapshot(conn, symbol, today)
         iv_ranks[symbol] = snapshot["iv_rank"] if snapshot else None
 
-    rows = build_trade_table_rows(trades, quotes, iv_ranks)
+    rows = build_trade_table_rows(groups, quotes, iv_ranks)
+    df = pd.DataFrame(rows)
 
-    html = [
-        "<div class='oia-card' style='padding:0.75rem 0;'>",
-        "<div style='overflow-x:auto;'>",
-        "<table style='width:100%; border-collapse:collapse; font-size:0.88rem; white-space:nowrap;'>",
-        f"<thead><tr style='text-align:left; color:{TEXT_MUTED}; border-bottom:1px solid {BORDER};'>",
-        "<th style='padding:0.5rem 0.7rem;'>Symbol</th>",
-        "<th style='padding:0.5rem 0.7rem;'>Fecha/Hora</th>",
-        "<th style='padding:0.5rem 0.7rem;'>Precio actual vs. entrada</th>",
-        "<th style='padding:0.5rem 0.7rem;'>IV Rank</th>",
-        "<th style='padding:0.5rem 0.7rem;'>Estrategia</th>",
-        "<th style='padding:0.5rem 0.7rem;'>Precio</th>",
-        "<th style='padding:0.5rem 0.7rem;'>Tipo</th>",
-        "</tr></thead><tbody>",
-    ]
-    html.extend(_trade_table_row_html(row) for row in rows)
-    html.append("</tbody></table></div></div>")
-    st.markdown("".join(html), unsafe_allow_html=True)
+    event = st.dataframe(
+        df,
+        hide_index=True,
+        width="stretch",
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"real_trades_table_{len(groups)}_{rows[0]['Symbol'] if rows else ''}",
+    )
+    st.caption("Hacé clic en una fila para ver el detalle completo (P&L, breakeven, cobertura, noticias, comentario).")
+
+    selected = event.selection.rows if event and event.selection else []
+    if not selected:
+        return
+    group = groups[selected[0]]
+    symbol = primary_trade_for_group(group)["symbol"]
+    trade_date = date.fromisoformat(primary_trade_for_group(group)["trade_date"])
+    snapshot = repo.get_indicator_snapshot(conn, symbol, trade_date)
+    if snapshot is not None:
+        next_earnings_date = snapshot["next_earnings_date"]
+        next_ex_dividend_date = snapshot["next_ex_dividend_date"]
+    else:
+        latest_earnings = repo.get_latest_next_earnings_date(conn, symbol)
+        next_earnings_date = latest_earnings.isoformat() if latest_earnings else None
+        next_ex_dividend_date = None
+
+    st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
+    render_roll_group(
+        group,
+        next_earnings_date=next_earnings_date,
+        fed_meeting_date=fed_meeting_date,
+        next_ex_dividend_date=next_ex_dividend_date,
+        capital_available=capital_available,
+    )
 
 
 def render_news_card(item: sqlite3.Row | dict, badge: str | None = None) -> None:
