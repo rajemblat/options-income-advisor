@@ -315,6 +315,22 @@ def get_alerts_for_date(conn: sqlite3.Connection, alert_date: date) -> list[sqli
     ).fetchall()
 
 
+def get_active_candidate_alerts_with_legs(conn: sqlite3.Connection, symbol: str, as_of: date) -> list[sqlite3.Row]:
+    """Alertas de candidatos de `symbol` que todavía no vencieron (`expiration_date >= as_of`),
+    con `legs_json`/`strategy_type` ya unidos desde `candidate_contracts` — usado por el gráfico
+    de velas (pedido 2026-07-31, "conectar el gráfico con alertas") para dibujar los strikes en
+    contexto de precio."""
+    return conn.execute(
+        """
+        SELECT a.symbol, c.strategy_type, c.expiration_date, c.legs_json
+        FROM alerts a
+        JOIN candidate_contracts c ON c.id = a.candidate_contract_id
+        WHERE a.symbol = ? AND c.expiration_date >= ?
+        """,
+        (symbol, as_of.isoformat()),
+    ).fetchall()
+
+
 def notification_exists(conn: sqlite3.Connection, kind: str, title: str) -> bool:
     """Dedup para notificaciones que no deben repetirse (ej. aviso proactivo de un evento de
     riesgo — Sección Fed/FRED, ver `alerts/digest.py`): el título ya incluye la fecha/distancia

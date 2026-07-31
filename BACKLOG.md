@@ -4,10 +4,12 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-31 (Página "Gráfico de velas" con VWAP completada — ver ítem
-#51. Queda 1 tarea confirmada pendiente, no empezada: conectar el gráfico con alertas — ver
-sección "Pendiente, no empezado". Antes en la sesión: Modelo de barra intradía + VWAP
-completado — ver ítem #50. Antes: Rebranding a "OptionsUp" completado — ver ítem #49.
+Última actualización: 2026-07-31 (Conectar el gráfico de velas con alertas completado — ver
+ítem #52. Con esto, las 4 tareas confirmadas al arrancar la sesión (rebranding, modelo de barra
+intradía, página de gráfico con VWAP, conectar con alertas) quedan terminadas y verificadas —
+"Pendiente, no empezado" vacío. Antes en la sesión: página "Gráfico de velas" con VWAP — ver
+ítem #51. Antes: Modelo de barra intradía + VWAP — ver ítem #50. Antes: Rebranding a
+"OptionsUp" — ver ítem #49.
 Antes en la sesión: Pestaña Operaciones: corrección de layout sobre la vista de
 tabla del día anterior — aclaración del usuario: lo pedido no era un cambio de lógica sino
 ESTÉTICO. La vista de Tabla ahora es 1 fila compacta por operación, apertura o roll por igual
@@ -125,9 +127,9 @@ Ninguno.
 
 ## Pendiente, no empezado
 
-- **Conectar el gráfico de velas con alertas** (confirmado 2026-07-31): mostrar en el gráfico
-  los niveles/strikes de las alertas activas (candidatos y operaciones reales) del símbolo, para
-  ver el precio en contexto de la posición.
+Ninguno. Las 4 tareas confirmadas el 2026-07-31 (rebranding a OptionsUp, modelo de barra
+intradía, página de gráfico de velas con VWAP, conectar el gráfico con alertas) están
+terminadas y verificadas — ver ítems #49-52.
 
 ## Resuelto — scheduler colgado ~15h, incluyendo horario de mercado (2026-07-28)
 
@@ -1083,6 +1085,41 @@ healthcheck ya cubre el caso real.
     cambio de símbolo recalcula el gráfico y el VWAP correctamente). 651/651 tests en verde
     (sin tests nuevos — la página es cableado de `get_intraday_bars`/`compute_vwap`, ya
     testeados en el ítem #50; verificación en vivo en el navegador en su lugar).
+
+52. **Conectar el gráfico de velas con alertas** (confirmado 2026-07-31, sobre la página del
+    ítem #51). Líneas horizontales punteadas sobre las velas por cada strike de una alerta
+    ACTIVA del símbolo (candidatos sugeridos + operaciones reales abiertas), etiquetadas con
+    estrategia/tipo/lado/precio/origen — para ver el precio de hoy en contexto de la posición.
+    `storage/repository.py::get_active_candidate_alerts_with_legs()` (candidatos con
+    `expiration_date >= as_of`, unidos a `alerts` vía `candidate_contract_id`) +
+    `dashboard/chart_overlays.py::build_alert_strike_levels()` (función pura: junta candidatos
+    + `real_trade_alerts`, excluye la pata `roll_closed` de un roll — ya no es una posición
+    activa, mismo criterio que la Pestaña Operaciones — y deduplica niveles idénticos). Reusa
+    `legs_json` (ya persistido por ambas tablas desde el rediseño de Iron Condor/credit spreads,
+    ítem #45) como fuente única de strikes, sin importar candidato vs. operación real ni cuántas
+    patas tenga. Un solo color (mismo violeta de RSI en Indicadores) para todos los niveles en
+    vez de sumar más hues — la identidad de cada línea la lleva la etiqueta de texto, no el
+    color (ver skill de dataviz). Símbolo del selector ampliado a la unión de la watchlist
+    configurada + la watchlist real de thinkorswim + los símbolos con operaciones reales
+    detectadas — mismo bug de raíz ya encontrado antes en Eventos de riesgo (2026-07-27) y el
+    filtro de Operaciones (2026-07-27): la cuenta real opera símbolos (EWY, HOOD, GDX, etc.)
+    fuera de la watchlist corta de 15 del motor de sugerencias.
+    2 bugs reales encontrados y corregidos en la verificación en vivo (no en tests, que usaban
+    datos de fixture ya con la convención correcta):
+    1. Las etiquetas quedaban cortadas fuera del área de ploteo (`annotation_position="right"`
+       las ubica FUERA del gráfico, recortadas por el contenedor responsive de
+       `use_container_width`) — fix: `annotation_position="top left"` (dentro del área) +
+       fondo semitransparente para que se lea encima de las velas.
+    2. Toda pata vendida se mostraba como "comprada" — `Leg.side` es `"sell"/"buy"`
+       (`strategy/candidates.py`), no `"short"/"long"` como se asumió al escribir el mapeo a
+       español en la página; encontrado recién al verificar en vivo con un Cash-Secured Put
+       real (por definición una put VENDIDA) que decía "PUT comprado $350.00".
+    Verificado en navegador en vivo contra datos reales: TSLA muestra 2 líneas ("Cash-Secured
+    Put · PUT vendido $350.00 (operación real)" y "... $340.00 ...", coincide con el roll real
+    de TSLA ya documentado en el ítem #48) con las etiquetas legibles y el lado correcto;
+    $NDX confirmado con 20 niveles genuinos (10 candidatos activos × 2 patas, Iron Condor) — no
+    una duplicación, verificado contando strikes distintos. 12 tests nuevos (`test_repository.py`,
+    `test_chart_overlays.py`) — 662/662 en verde.
 
 ## Cómo se usa este archivo
 

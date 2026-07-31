@@ -127,6 +127,67 @@ def test_get_alerts_for_date_joins_candidate_fields(conn):
     assert aapl["max_loss"] == 500.0
 
 
+def _insert_alert_with_legs(conn, symbol: str, expiration_date: date, legs: list[dict], strategy_type: str = "cash_secured_put") -> None:
+    candidate_id = repo.insert_candidate_contract(
+        conn,
+        CandidateContract(
+            symbol=symbol,
+            snapshot_date=date(2026, 7, 31),
+            strategy_type=strategy_type,
+            expiration_date=expiration_date,
+            strikes={"short": legs[0]["strike"]},
+            legs=legs,
+            greeks_source="calculated",
+            conviction_score=80,
+            scoring_breakdown={},
+        ),
+    )
+    repo.insert_alert(
+        conn,
+        Alert(
+            symbol=symbol,
+            alert_date=date(2026, 7, 31),
+            alert_ts=datetime(2026, 7, 31, 10, 0),
+            candidate_contract_id=candidate_id,
+            conviction_score=80,
+            risk_profile="moderado",
+            threshold_applied=65,
+            was_notified=True,
+            narrative_text="texto",
+            narrative_source="fallback_template",
+            dedup_key=f"{symbol}-{strategy_type}-{expiration_date}-{legs[0]['strike']}",
+        ),
+    )
+
+
+def test_get_active_candidate_alerts_with_legs_excludes_expired(conn):
+    as_of = date(2026, 7, 31)
+    _insert_alert_with_legs(conn, "AAPL", date(2026, 8, 21), [{"strike": 300.0, "option_type": "put", "side": "short"}])
+    _insert_alert_with_legs(conn, "AAPL", date(2026, 7, 20), [{"strike": 250.0, "option_type": "put", "side": "short"}])  # vencido
+
+    rows = repo.get_active_candidate_alerts_with_legs(conn, "AAPL", as_of)
+    assert len(rows) == 1
+    assert json.loads(rows[0]["legs_json"])[0]["strike"] == 300.0
+
+
+def test_get_active_candidate_alerts_with_legs_filters_by_symbol(conn):
+    as_of = date(2026, 7, 31)
+    _insert_alert_with_legs(conn, "AAPL", date(2026, 8, 21), [{"strike": 300.0, "option_type": "put", "side": "short"}])
+    _insert_alert_with_legs(conn, "MSFT", date(2026, 8, 21), [{"strike": 450.0, "option_type": "put", "side": "short"}])
+
+    rows = repo.get_active_candidate_alerts_with_legs(conn, "AAPL", as_of)
+    assert len(rows) == 1
+    assert rows[0]["symbol"] == "AAPL"
+
+
+def test_get_active_candidate_alerts_with_legs_includes_expiration_equal_to_as_of(conn):
+    as_of = date(2026, 7, 31)
+    _insert_alert_with_legs(conn, "AAPL", as_of, [{"strike": 300.0, "option_type": "put", "side": "short"}])
+
+    rows = repo.get_active_candidate_alerts_with_legs(conn, "AAPL", as_of)
+    assert len(rows) == 1
+
+
 def _insert_candidate_with_annualized_return(conn, symbol: str, annualized_return_pct: float | None) -> None:
     repo.insert_candidate_contract(
         conn,
