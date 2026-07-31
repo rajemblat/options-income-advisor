@@ -21,7 +21,7 @@ from options_advisor.alerts.formatting import (
 )
 from options_advisor.broker import get_broker_client
 from options_advisor.broker.base import BrokerClient
-from options_advisor.broker.models import Mover, Quote
+from options_advisor.broker.models import IntradayBar, Mover, Quote
 from options_advisor.config import PROJECT_ROOT, Settings, load_movers_universe, load_settings, load_symbols
 from options_advisor.dashboard.portfolio_summary import summarize_portfolio
 from options_advisor.scheduler.market_calendar import MarketSession, market_session
@@ -1216,6 +1216,15 @@ def cached_option_quotes(occ_symbols: tuple[str, ...]) -> dict[str, Quote]:
     if not occ_symbols:
         return {}
     return get_broker().get_quotes(list(occ_symbols))
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def cached_intraday_bars(symbol: str, session_date: date, interval_minutes: int) -> list[IntradayBar]:
+    """Barras intradía para el gráfico de velas (2026-07-31) — cacheado 60s, mismo motivo que
+    el resto de los `cached_*` (Streamlit re-corre el script en cada interacción del usuario;
+    sin cache, cambiar de símbolo/intervalo en un widget vecino pegaría a Schwab de nuevo sin
+    necesidad)."""
+    return get_broker().get_intraday_bars(symbol, session_date, interval_minutes)
 
 
 def _fmt_table_datetime(trade_ts: str) -> str:

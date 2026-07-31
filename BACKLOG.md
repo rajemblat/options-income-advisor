@@ -4,9 +4,10 @@ Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se a
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.
 
-Última actualización: 2026-07-31 (Rebranding a "OptionsUp" completado — ver ítem #49. 3 tareas
-confirmadas quedan pendientes, no empezadas: modelo de barra intradía, página de gráfico de
-velas con VWAP, y conectar el gráfico con alertas — ver sección "Pendiente, no empezado".
+Última actualización: 2026-07-31 (Página "Gráfico de velas" con VWAP completada — ver ítem
+#51. Queda 1 tarea confirmada pendiente, no empezada: conectar el gráfico con alertas — ver
+sección "Pendiente, no empezado". Antes en la sesión: Modelo de barra intradía + VWAP
+completado — ver ítem #50. Antes: Rebranding a "OptionsUp" completado — ver ítem #49.
 Antes en la sesión: Pestaña Operaciones: corrección de layout sobre la vista de
 tabla del día anterior — aclaración del usuario: lo pedido no era un cambio de lógica sino
 ESTÉTICO. La vista de Tabla ahora es 1 fila compacta por operación, apertura o roll por igual
@@ -124,12 +125,6 @@ Ninguno.
 
 ## Pendiente, no empezado
 
-- **Modelo de barra intradía** (confirmado 2026-07-31): base de datos/indicadores de barras
-  OHLCV intradía (por minuto o intervalo corto), pensado como fundamento para el gráfico de
-  velas + VWAP de abajo. Alcance de fuente de datos (Schwab)/intervalo/retención a definir al
-  arrancar.
-- **Página de gráfico de velas con VWAP** (confirmado 2026-07-31): nueva página del dashboard,
-  candlestick intradía por símbolo + línea de VWAP, sobre el modelo de barra intradía de arriba.
 - **Conectar el gráfico de velas con alertas** (confirmado 2026-07-31): mostrar en el gráfico
   los niveles/strikes de las alertas activas (candidatos y operaciones reales) del símbolo, para
   ver el precio en contexto de la posición.
@@ -1050,6 +1045,44 @@ healthcheck ya cubre el caso real.
     mensaje de log/notify del scheduler colgado (`src/options_advisor/scheduler/healthcheck.py`).
     Los 3 actualizados a "OptionsUp". Verificado en navegador en vivo (screenshot de la página
     General, sin restos del nombre viejo) y 631/631 tests en verde.
+
+50. **Modelo de barra intradía + VWAP** (confirmado 2026-07-31, base para el gráfico de velas
+    de abajo). `broker/models.py::IntradayBar` (OHLCV con `timestamp`, a diferencia de
+    `PriceBar` que es 1 barra = 1 día) + `BrokerClient.get_intraday_bars(symbol, session_date,
+    interval_minutes)`. Investigado en vivo antes de programar: `SchwabBrokerClient` pide
+    `/pricehistory` con `startDate`/`endDate` explícitos en vez del parámetro `period` que ya
+    usa `get_price_history` — confirmado que `period=1` con `periodType=day` devuelve la
+    sesión ANTERIOR, no la de hoy, aun después del cierre (un rango explícito sí trae la
+    sesión pedida). `needExtendedHoursData=False` acota a la sesión regular (9:30-16:00 ET),
+    base correcta para VWAP (resetea cada sesión). Solo 1/5/10/15/30 min son intervalos
+    válidos para Schwab (confirmado en vivo: 2 y 3 dan 400 Bad Request) — validado del lado
+    del cliente antes de pedir. `scheduler/market_calendar.py` suma
+    `session_bounds()`/`latest_trading_session()` (reusa `pandas_market_calendars`, igual que
+    `market_session()` ya existente, sin manejar DST a mano). `MockBrokerClient` sintetiza
+    barras deterministas (seed por símbolo+fecha+intervalo) a partir del OHLC diario del
+    fixture, sin necesitar fixtures intradía nuevas. `indicators/intraday.py::compute_vwap()`
+    — precio típico (H+L+C)/3 ponderado por volumen, acumulado desde el inicio de la sesión.
+    Verificado en vivo contra Schwab real (AAPL, sesión de hoy, intervalo 5 min): 78 barras,
+    VWAP $303.76 coherente contra el cierre real $309.03. 20 tests nuevos — 651/651 en verde.
+
+51. **Página "Gráfico de velas" con VWAP** (confirmado 2026-07-31, sobre el modelo de barra
+    intradía del ítem #50). Nueva `pages/11_grafico.py` — selector de Símbolo/Intervalo
+    (1/5/10/15/30 min)/Sesión, candlestick (Plotly `go.Candlestick`) + línea de VWAP superpuesta
+    + volumen en un subplot separado abajo (nunca doble eje Y, ver skill de dataviz). Colores
+    reusan la paleta ya validada del resto de la app: velas suba/baja en `GOOD`/`CRITICAL`
+    (mismo verde/rojo direccional que Market Movers y el resto de la UI), VWAP en el naranja ya
+    usado para líneas de indicador en Indicadores (`pages/3_indicadores.py`), volumen coloreado
+    por la dirección de su propia vela. `dashboard/components.py::cached_intraday_bars()`
+    (cache 60s, mismo patrón que `cached_quotes`/`cached_option_quotes`).
+    Bug real encontrado y corregido en la verificación en vivo: el eje X mostraba las horas en
+    UTC (14:00-19:00) en vez de horario de mercado ET (9:30-16:00) — `IntradayBar.timestamp`
+    es UTC a propósito (correcto para guardar/calcular), pero Plotly grafica el tz-aware tal
+    cual sin convertir; fix fue convertir a `America/New_York` solo para el eje del gráfico,
+    sin tocar el modelo de datos. Registrada en `st.navigation` de `app.py` como "Gráfico".
+    Verificado en navegador en vivo con datos reales de Schwab (SPY y AAPL, sesión de hoy,
+    cambio de símbolo recalcula el gráfico y el VWAP correctamente). 651/651 tests en verde
+    (sin tests nuevos — la página es cableado de `get_intraday_bars`/`compute_vwap`, ya
+    testeados en el ítem #50; verificación en vivo en el navegador en su lugar).
 
 ## Cómo se usa este archivo
 
