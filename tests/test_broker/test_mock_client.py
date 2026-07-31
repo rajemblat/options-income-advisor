@@ -20,6 +20,51 @@ def test_get_recent_filled_orders_returns_empty_list(mock_fixtures_dir):
     assert client.get_recent_filled_orders(datetime.now()) == []
 
 
+# -- get_intraday_bars (gráfico de velas + VWAP, 2026-07-31) ------------------------------
+# 2026-01-02 (viernes, día hábil NYSE) cae dentro de las 60 sesiones diarias del fixture de
+# conftest.py::write_mock_fixtures (arranca 2026-01-01).
+_FIXTURE_TRADING_DAY = date(2026, 1, 2)
+
+
+def test_get_intraday_bars_covers_full_regular_session(mock_fixtures_dir):
+    client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
+    bars = client.get_intraday_bars("TST", _FIXTURE_TRADING_DAY, interval_minutes=1)
+    assert len(bars) == 390  # sesión regular completa, 9:30-16:00 ET a 1 min
+    assert bars[0].timestamp < bars[-1].timestamp
+
+
+def test_get_intraday_bars_open_and_close_match_daily_fixture(mock_fixtures_dir):
+    client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
+    day_bar = next(b for b in client.get_price_history("TST", 60) if b.trade_date == _FIXTURE_TRADING_DAY)
+    bars = client.get_intraday_bars("TST", _FIXTURE_TRADING_DAY)
+    assert bars[0].open == day_bar.open
+    assert bars[-1].close == day_bar.close
+    assert all(day_bar.low <= b.low <= b.high <= day_bar.high for b in bars)
+
+
+def test_get_intraday_bars_deterministic_across_calls(mock_fixtures_dir):
+    client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
+    first = client.get_intraday_bars("TST", _FIXTURE_TRADING_DAY)
+    second = client.get_intraday_bars("TST", _FIXTURE_TRADING_DAY)
+    assert [b.close for b in first] == [b.close for b in second]
+
+
+def test_get_intraday_bars_respects_interval_minutes(mock_fixtures_dir):
+    client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
+    bars = client.get_intraday_bars("TST", _FIXTURE_TRADING_DAY, interval_minutes=30)
+    assert len(bars) == 13  # 390 min / 30
+
+
+def test_get_intraday_bars_empty_on_non_trading_day(mock_fixtures_dir):
+    client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
+    assert client.get_intraday_bars("TST", date(2026, 1, 3)) == []  # sábado
+
+
+def test_get_intraday_bars_empty_without_daily_fixture_for_date(mock_fixtures_dir):
+    client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
+    assert client.get_intraday_bars("TST", date(2026, 6, 1)) == []  # fuera de las 60 sesiones del fixture
+
+
 def test_get_quote_returns_latest_price(mock_fixtures_dir):
     client = MockBrokerClient(fixtures_dir=mock_fixtures_dir)
     quote = client.get_quote("TST")

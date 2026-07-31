@@ -3,7 +3,15 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from datetime import date, datetime
 
-from options_advisor.broker.models import AccountPosition, FilledOrder, Mover, OptionChain, PriceBar, Quote
+from options_advisor.broker.models import (
+    AccountPosition,
+    FilledOrder,
+    IntradayBar,
+    Mover,
+    OptionChain,
+    PriceBar,
+    Quote,
+)
 
 
 class BrokerClient(ABC):
@@ -33,6 +41,17 @@ class BrokerClient(ABC):
     @abstractmethod
     def get_price_history(self, symbol: str, lookback_days: int) -> list[PriceBar]:
         """OHLCV diario, usado para ATR/RSI/medias móviles/soportes-resistencias e IV Rank proxy."""
+        ...
+
+    @abstractmethod
+    def get_intraday_bars(
+        self, symbol: str, session_date: date, interval_minutes: int = 1
+    ) -> list[IntradayBar]:
+        """OHLCV intradía de la sesión REGULAR (9:30-16:00 ET, sin pre/after-market) de
+        `session_date`, en el intervalo pedido — base del gráfico de velas + VWAP
+        (2026-07-31). `interval_minutes` debe ser uno de 1/5/10/15/30 (únicos valores que
+        Schwab acepta para frequencyType=minute, confirmado en vivo). [] si `session_date` no
+        es día hábil o si el broker no tiene datos para esa sesión."""
         ...
 
     @abstractmethod

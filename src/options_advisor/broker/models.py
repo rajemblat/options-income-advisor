@@ -75,6 +75,20 @@ class PriceBar(BaseModel):
     volume: int
 
 
+class IntradayBar(BaseModel):
+    """OHLCV de una sesión intradía (gráfico de velas + VWAP, 2026-07-31) — a diferencia de
+    `PriceBar` (una barra = un día), acá una barra es un intervalo dentro de la sesión regular
+    (9:30-16:00 ET), con `timestamp` tz-aware en vez de `trade_date`."""
+
+    symbol: str
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+
 class Greeks(BaseModel):
     delta: float
     gamma: float

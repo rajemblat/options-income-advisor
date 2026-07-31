@@ -775,3 +775,50 @@ def test_get_recent_filled_orders_one_account_failing_does_not_block_others(clie
     monkeypatch.setattr(httpx.Client, "get", _get)
     orders = client.get_recent_filled_orders(datetime.now(timezone.utc) - timedelta(minutes=15))
     assert len(orders) == 1
+
+
+# -- get_intraday_bars (gráfico de velas + VWAP, 2026-07-31) ------------------------------
+
+
+def test_get_intraday_bars_builds_session_range_and_parses_candles(client, monkeypatch):
+    captured = {}
+
+    def _get(self, path, params=None, headers=None):
+        captured["path"] = path
+        captured["params"] = params
+        candles = [
+            {"datetime": 1785410400000, "open": 100.0, "high": 101.0, "low": 99.5, "close": 100.5, "volume": 1000},
+            {"datetime": 1785410460000, "open": 100.5, "high": 100.8, "low": 100.2, "close": 100.6, "volume": 800},
+        ]
+        request = httpx.Request("GET", f"https://api.schwabapi.com/marketdata/v1{path}")
+        return httpx.Response(200, json={"candles": candles}, request=request)
+
+    monkeypatch.setattr(httpx.Client, "get", _get)
+    bars = client.get_intraday_bars("AAPL", date(2026, 7, 30), interval_minutes=5)
+
+    assert captured["path"] == "/pricehistory"
+    params = captured["params"]
+    assert params["frequencyType"] == "minute"
+    assert params["frequency"] == 5
+    assert params["needExtendedHoursData"] is False
+    # 2026-07-30 09:30/16:00 ET == 13:30/20:00 UTC (confirmado en vivo) == estos epoch ms
+    assert params["startDate"] == 1785418200000
+    assert params["endDate"] == 1785441600000
+
+    assert len(bars) == 2
+    assert bars[0].timestamp < bars[1].timestamp
+    assert bars[0].open == 100.0 and bars[0].close == 100.5
+    assert bars[0].timestamp.tzinfo is not None
+
+
+def test_get_intraday_bars_rejects_unsupported_interval(client):
+    with pytest.raises(ValueError):
+        client.get_intraday_bars("AAPL", date(2026, 7, 30), interval_minutes=2)
+
+
+def test_get_intraday_bars_returns_empty_on_non_trading_day(client, monkeypatch):
+    def _boom(self, path, params=None, headers=None):
+        raise AssertionError("no debería llamar a Schwab para un día no hábil")
+
+    monkeypatch.setattr(httpx.Client, "get", _boom)
+    assert client.get_intraday_bars("AAPL", date(2026, 8, 1)) == []  # sábado

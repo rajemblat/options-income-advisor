@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import random
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from options_advisor.broker.models import (
     AccountPosition,
     FilledOrder,
     Greeks,
+    IntradayBar,
     Mover,
     OptionChain,
     OptionContract,
@@ -21,6 +23,7 @@ from options_advisor.broker.models import (
     Quote,
 )
 from options_advisor.indicators.greeks import calculate_greeks
+from options_advisor.scheduler.market_calendar import session_bounds
 
 DEFAULT_RISK_FREE_RATE = 0.045
 
@@ -29,6 +32,20 @@ def _next_weekday(d: date) -> date:
     while d.weekday() >= 5:  # 5=sábado, 6=domingo
         d += timedelta(days=1)
     return d
+
+
+def _synthetic_intraday_closes(rng: random.Random, day_bar: PriceBar, n: int) -> list[float]:
+    """`n` precios de cierre sintéticos que van de `day_bar.open` a `day_bar.close` (última
+    barra siempre exacta), con ruido gaussiano acotado al rango real del día — un paseo
+    aleatorio simple, no un modelo de mercado, solo para tener forma de vela plausible en modo
+    mock."""
+    closes = []
+    for i in range(1, n + 1):
+        target = day_bar.open + (day_bar.close - day_bar.open) * (i / n)
+        noise = rng.gauss(0, max(day_bar.high - day_bar.low, 0.01) * 0.15)
+        closes.append(min(max(target + noise, day_bar.low), day_bar.high))
+    closes[-1] = day_bar.close
+    return closes
 
 
 class MockBrokerClient(BrokerClient):
@@ -185,6 +202,48 @@ class MockBrokerClient(BrokerClient):
         as_of_date = self._resolve_as_of_date(symbol)
         history = [b for b in self._load_price_history(symbol) if b.trade_date <= as_of_date]
         return history[-lookback_days:]
+
+    def get_intraday_bars(
+        self, symbol: str, session_date: date, interval_minutes: int = 1
+    ) -> list[IntradayBar]:
+        # Sin datos intradía reales en modo mock (las fixtures son diarias) — sintetiza barras
+        # deterministas (seed = símbolo+fecha+intervalo) que respetan el O/H/L/C real del día,
+        # suficiente para desarrollar/testear el gráfico de velas sin depender de Schwab.
+        bounds = session_bounds(session_date)
+        day_bar = next(
+            (b for b in self._load_price_history(symbol) if b.trade_date == session_date), None
+        )
+        if bounds is None or day_bar is None:
+            return []
+        market_open, market_close = bounds
+        n_bars = int((market_close - market_open).total_seconds() // 60 // interval_minutes)
+        if n_bars <= 0:
+            return []
+        rng = random.Random(f"{symbol}-{session_date}-{interval_minutes}")
+        closes = _synthetic_intraday_closes(rng, day_bar, n_bars)
+        day_range = max(day_bar.high - day_bar.low, 0.01)
+        bars = []
+        prev_close = day_bar.open
+        ts = market_open
+        for close in closes:
+            bar_open = prev_close
+            bar_high = min(max(bar_open, close) + rng.uniform(0, day_range * 0.02), day_bar.high)
+            bar_low = max(min(bar_open, close) - rng.uniform(0, day_range * 0.02), day_bar.low)
+            volume = max(1, int(rng.gauss(day_bar.volume / n_bars, day_bar.volume / n_bars * 0.3)))
+            bars.append(
+                IntradayBar(
+                    symbol=symbol,
+                    timestamp=ts,
+                    open=round(bar_open, 4),
+                    high=round(bar_high, 4),
+                    low=round(bar_low, 4),
+                    close=round(close, 4),
+                    volume=volume,
+                )
+            )
+            prev_close = close
+            ts += timedelta(minutes=interval_minutes)
+        return bars
 
     def get_option_chain(
         self, symbol: str, expiration_range_days: tuple[int, int] = (7, 60)

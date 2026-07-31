@@ -13,6 +13,7 @@ from options_advisor.broker.models import (
     FilledOrder,
     FilledOrderLeg,
     Greeks,
+    IntradayBar,
     Mover,
     OptionChain,
     OptionContract,
@@ -23,6 +24,11 @@ from options_advisor.broker.models import (
 )
 from options_advisor.broker.schwab_auth import DEFAULT_TOKEN_STORE_PATH, SchwabAuth
 from options_advisor.indicators.greeks import calculate_greeks
+from options_advisor.scheduler.market_calendar import session_bounds
+
+# Únicos valores que Schwab acepta para frequencyType=minute en /pricehistory — confirmado en
+# vivo 2026-07-31 (2 y 3 dan 400 Bad Request, estos 5 responden bien).
+VALID_INTRADAY_INTERVALS_MINUTES = (1, 5, 10, 15, 30)
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +306,50 @@ class SchwabBrokerClient(BrokerClient):
             )
         bars.sort(key=lambda b: b.trade_date)
         return bars[-lookback_days:]
+
+    def get_intraday_bars(
+        self, symbol: str, session_date: date, interval_minutes: int = 1
+    ) -> list[IntradayBar]:
+        if interval_minutes not in VALID_INTRADAY_INTERVALS_MINUTES:
+            raise ValueError(
+                f"interval_minutes={interval_minutes} inválido — Schwab solo acepta "
+                f"{VALID_INTRADAY_INTERVALS_MINUTES} para frequencyType=minute"
+            )
+        bounds = session_bounds(session_date)
+        if bounds is None:
+            return []
+        market_open, market_close = bounds
+        # startDate/endDate explícitos en vez de `period` (a diferencia de get_price_history):
+        # confirmado en vivo que `period=1` con periodType=day devuelve la sesión ANTERIOR, no
+        # la de hoy, aun después del cierre — un rango explícito sí trae la sesión pedida.
+        # needExtendedHoursData=False acota a la sesión regular (9:30-16:00 ET), la base
+        # correcta para VWAP (que arranca de nuevo cada sesión regular, no en pre/after-market).
+        data = self._get(
+            "/pricehistory",
+            params={
+                "symbol": symbol,
+                "periodType": "day",
+                "frequencyType": "minute",
+                "frequency": interval_minutes,
+                "needExtendedHoursData": False,
+                "startDate": int(market_open.timestamp() * 1000),
+                "endDate": int(market_close.timestamp() * 1000),
+            },
+        )
+        bars = [
+            IntradayBar(
+                symbol=symbol,
+                timestamp=datetime.fromtimestamp(candle["datetime"] / 1000, tz=timezone.utc),
+                open=candle["open"],
+                high=candle["high"],
+                low=candle["low"],
+                close=candle["close"],
+                volume=candle["volume"],
+            )
+            for candle in data.get("candles", [])
+        ]
+        bars.sort(key=lambda b: b.timestamp)
+        return bars
 
     def get_option_chain(self, symbol: str, expiration_range_days: tuple[int, int] = (7, 60)) -> OptionChain:
         min_days, max_days = expiration_range_days
