@@ -118,6 +118,26 @@ class StrategySettings(BaseModel):
     support_sma_periods: RiskLevelSupportSmaParams
 
 
+class SimulatorSettings(BaseModel):
+    """Simulador de Trading Automático (paper trading, Sección pedido 2026-08-02): 8 criterios
+    de entrada estrictos para Naked Put + regla de salida a 30% de ganancia — ver
+    `simulator/entry_rules.py`/`simulator/engine.py`."""
+
+    enabled: bool = True
+    initial_capital: float
+    max_position_pct: float
+    profit_target_pct: float
+    dte_range: tuple[int, int]
+    max_delta: float
+    rsi_range: tuple[float, float]
+    iv_rank_min: float
+    iv_percentile_min: float
+    support_max_distance_pct: float
+    weekly_support_max_distance_pct: float
+    sma_periods: list[int]
+    sma_min_distance_pct: float
+
+
 class Settings(BaseModel):
     broker: BrokerSettings
     database: DatabaseSettings
@@ -128,6 +148,7 @@ class Settings(BaseModel):
     conviction_thresholds: ConvictionThresholds
     iv_rank: IvRankSettings
     strategy: StrategySettings
+    simulator: SimulatorSettings
 
 
 class SymbolsConfig(BaseModel):

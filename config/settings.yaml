@@ -91,3 +91,34 @@ strategy:
     conservador: [8]
     moderado: [8, 20]
     agresivo: [8, 20]
+
+# Simulador de Trading Automático (paper trading, pedido 2026-08-02): cuenta simulada de
+# $100,000, datos reales de mercado, que evalúa la watchlist (config/symbols.yaml) todos los
+# días y abre/cierra Naked Put automáticamente según 8 criterios estrictos — nunca opera con
+# dinero real, solo registra en simulated_positions/simulated_account. Alcance inicial: SOLO
+# Naked Put (cash_secured_put), nada de otras estrategias todavía.
+simulator:
+  enabled: true
+  initial_capital: 100000.0
+  # % del capital de la cuenta simulada que se puede comprometer como garantía (cash-secured =
+  # strike*100*contratos) en UNA sola posición — limita concentración, no es un tamaño fijo de
+  # contratos (símbolos de strike alto ocupan menos contratos que uno de strike bajo con el
+  # mismo % de capital).
+  max_position_pct: 0.10
+  # Cierre automático cuando la ganancia no realizada llega a este % de la prima cobrada.
+  profit_target_pct: 0.30
+  dte_range: [30, 45]
+  max_delta: 0.18
+  rsi_range: [30, 40]
+  iv_rank_min: 50.0
+  iv_percentile_min: 50.0
+  # Distancia máxima (precio actual por encima de un soporte fuerte — cluster con >=2 toques,
+  # ver indicators/levels.py::find_strong_support_resistance) para considerar "cerca de
+  # soporte" — diario más estricto, semanal más ancho (cada vela semanal se mueve un rango
+  # mayor, ver NOTES.md).
+  support_max_distance_pct: 0.05
+  weekly_support_max_distance_pct: 0.09
+  # Criterio 8: precio por debajo de CADA una de estas SMA diarias, con al menos este % de
+  # distancia — "lejos de las medias móviles", no solo cruzado por poco.
+  sma_periods: [8, 20, 50]
+  sma_min_distance_pct: 0.03
