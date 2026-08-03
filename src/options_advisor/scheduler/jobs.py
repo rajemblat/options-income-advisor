@@ -14,6 +14,7 @@ from options_advisor.config import Settings
 from options_advisor.indicators.pipeline import analyze_symbol
 from options_advisor.market_context import economic_calendar, finnhub_client, fred_client, kalshi_client
 from options_advisor.scheduler.market_calendar import is_market_day
+from options_advisor.simulator import engine as simulator_engine
 from options_advisor.storage import repository as repo
 from options_advisor.storage.models import MacroSnapshot, NewsItem, Notification
 
@@ -148,8 +149,25 @@ def _run_full_analysis(
                 symbol_alert_count += len(alerts)
                 new_alerts.extend(alerts)
             logger.info("%s: iv_rank=%s, %d alerta(s) nueva(s) (3 perfiles)", symbol, analysis.snapshot.iv_rank, symbol_alert_count)
+
+            # Simulador de Trading Automático (paper trading, pedido 2026-08-02): reusa el
+            # snapshot/cadena/historial que analyze_symbol ya calculó arriba, no pide nada
+            # nuevo al broker. Aislado en su propio try — un fallo acá nunca debe perder las
+            # alertas de sugerencias ya generadas para este símbolo.
+            try:
+                simulator_engine.process_symbol_entry(conn, symbol, analysis.snapshot, analysis.chain, analysis.price_history, settings)
+            except Exception:
+                logger.exception("Simulador: fallo al evaluar entrada de %s; se continúa con el resto", symbol)
         except Exception:
             logger.exception("Fallo al procesar %s; se continúa con el resto de los símbolos", symbol)
+
+    # Mark-to-market diario de TODAS las posiciones simuladas abiertas (Simulador de Trading
+    # Automático) — una sola vez por corrida completa, no por símbolo: una posición simulada
+    # puede estar sobre un símbolo que ya no forma parte de la watchlist evaluada arriba.
+    try:
+        simulator_engine.mark_and_close_positions(conn, broker, settings, today)
+    except Exception:
+        logger.exception("Simulador: fallo al marcar posiciones abiertas hoy")
 
     return new_alerts
 

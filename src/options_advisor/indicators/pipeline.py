@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import NamedTuple
 
 from options_advisor.broker.base import BrokerClient
-from options_advisor.broker.models import OptionChain, Quote
+from options_advisor.broker.models import OptionChain, PriceBar, Quote
 from options_advisor.config import Settings
 from options_advisor.indicators import gex, levels, technical, volatility
 from options_advisor.market_context import finnhub_client
@@ -21,6 +21,11 @@ class SymbolAnalysis(NamedTuple):
     snapshot: IndicatorSnapshot
     chain: OptionChain
     quote: Quote
+    # Sumado 2026-08-02 para el Simulador de Trading Automático (simulator/entry_rules.py
+    # necesita las barras diarias crudas para el criterio de soporte fuerte semanal/diario,
+    # no solo support_levels ya resuelto del snapshot) — evita pedirle al broker el historial
+    # de precio una segunda vez, ya se trajo acá arriba para calcular RSI/SMAs/soportes.
+    price_history: list[PriceBar]
 
 
 def analyze_symbol(
@@ -86,4 +91,4 @@ def analyze_symbol(
     )
     repo.insert_indicator_snapshot(conn, snapshot)
 
-    return SymbolAnalysis(snapshot=snapshot, chain=chain, quote=quote)
+    return SymbolAnalysis(snapshot=snapshot, chain=chain, quote=quote, price_history=price_history)

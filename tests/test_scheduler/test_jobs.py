@@ -90,6 +90,8 @@ class _FakeAnalysis:
     def __init__(self, symbol: str):
         self.symbol = symbol
         self.snapshot = type("S", (), {"iv_rank": 50, "symbol": symbol, "snapshot_date": TODAY})()
+        self.chain = object()
+        self.price_history = []
 
 
 def test_run_full_analysis_passes_real_share_position_as_has_open_assigned_position(conn, monkeypatch):
@@ -175,6 +177,65 @@ def test_job_detect_real_trades_never_raises_on_failure(conn, monkeypatch):
     monkeypatch.setattr(jobs, "detect_and_alert_real_trades", _boom)
     broker = _FakeBroker(share_positions={})
     jobs.job_detect_real_trades(broker, conn, load_settings(), anthropic_api_key=None, finnhub_api_key=None)  # no debe lanzar
+
+
+# --- Simulador de Trading Automático (paper trading, pedido 2026-08-02) ---
+
+
+def test_run_full_analysis_calls_simulator_entry_once_per_symbol(conn, monkeypatch):
+    captured = []
+
+    monkeypatch.setattr(jobs, "analyze_symbol", lambda broker, conn, symbol, settings, **k: _FakeAnalysis(symbol))
+    monkeypatch.setattr(jobs.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    monkeypatch.setattr(jobs, "_refresh_news_for_symbol", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "_refresh_macro_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "process_symbol_alerts", lambda *a, **k: [])
+    monkeypatch.setattr(jobs.simulator_engine, "process_symbol_entry", lambda conn, symbol, *a, **k: captured.append(symbol))
+    monkeypatch.setattr(jobs.simulator_engine, "mark_and_close_positions", lambda *a, **k: None)
+
+    broker = _FakeBroker(share_positions={})
+    jobs._run_full_analysis(broker, conn, ["NVDA", "AAPL"], load_settings(), TODAY, None, None, None)
+
+    assert captured == ["NVDA", "AAPL"]  # una sola vez por símbolo, no una vez por perfil de riesgo
+
+
+def test_run_full_analysis_calls_simulator_mark_and_close_once_per_run(conn, monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(jobs, "analyze_symbol", lambda broker, conn, symbol, settings, **k: _FakeAnalysis(symbol))
+    monkeypatch.setattr(jobs.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    monkeypatch.setattr(jobs, "_refresh_news_for_symbol", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "_refresh_macro_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "process_symbol_alerts", lambda *a, **k: [])
+    monkeypatch.setattr(jobs.simulator_engine, "process_symbol_entry", lambda *a, **k: None)
+    monkeypatch.setattr(jobs.simulator_engine, "mark_and_close_positions", lambda conn, broker, settings, as_of: calls.append(as_of))
+
+    broker = _FakeBroker(share_positions={})
+    jobs._run_full_analysis(broker, conn, ["NVDA", "AAPL"], load_settings(), TODAY, None, None, None)
+
+    assert calls == [TODAY]  # una sola vez por corrida, no una vez por símbolo
+
+
+def test_run_full_analysis_simulator_entry_failure_does_not_lose_alerts(conn, monkeypatch):
+    """Un fallo del simulador para UN símbolo no debe perder las alertas de sugerencias ya
+    generadas para ese mismo símbolo, ni tumbar el resto de la corrida (mismo criterio de
+    aislamiento de fallas que el resto de _run_full_analysis)."""
+    monkeypatch.setattr(jobs, "analyze_symbol", lambda broker, conn, symbol, settings, **k: _FakeAnalysis(symbol))
+    monkeypatch.setattr(jobs.finnhub_client, "get_recent_news", lambda *a, **k: [])
+    monkeypatch.setattr(jobs, "_refresh_news_for_symbol", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "_refresh_macro_snapshot", lambda *a, **k: None)
+    monkeypatch.setattr(jobs, "process_symbol_alerts", lambda *a, **k: [{"symbol": "AAPL"}])
+
+    def _raise(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(jobs.simulator_engine, "process_symbol_entry", _raise)
+    monkeypatch.setattr(jobs.simulator_engine, "mark_and_close_positions", lambda *a, **k: None)
+
+    broker = _FakeBroker(share_positions={})
+    new_alerts = jobs._run_full_analysis(broker, conn, ["AAPL"], load_settings(), TODAY, None, None, None)
+
+    assert len(new_alerts) == 3  # 1 alerta x 3 perfiles de riesgo, pese al fallo del simulador
 
 
 # --- Sección Fed/FRED: bloqueo de candidatos nuevos en días de riesgo alto ---
