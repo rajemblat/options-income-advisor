@@ -62,11 +62,14 @@ def open_position(
     return position_id
 
 
-def _current_contract_value(chain: OptionChain | None, strike: float, expiration: date, underlying_price: float) -> float:
+def current_contract_value(chain: OptionChain | None, strike: float, expiration: date, underlying_price: float) -> float:
     """Precio para marcar la posición hoy: el mid de la MISMA opción si sigue en la cadena en
     vivo, o valor intrínseco si ya no aparece (vencimiento pasado/próximo fuera de la ventana
     pedida, o strike delistado) — mismo criterio de "degradar a intrínseco" que ya usa el resto
-    del motor cuando falta un dato de mercado en vivo (ver strategy/candidates.py::find_contract)."""
+    del motor cuando falta un dato de mercado en vivo (ver strategy/candidates.py::find_contract).
+    Función PURA de solo lectura (sin efecto en la base) — a diferencia de `mark_position`,
+    puede llamarse desde el dashboard para mostrar P&L en vivo sin arriesgar cerrar una
+    posición como efecto secundario de que alguien mire la página."""
     if chain is not None:
         ct = find_contract(chain, "put", expiration, strike)
         if ct is not None:
@@ -102,7 +105,7 @@ def mark_position(
     quantity = position_row["quantity"]
     entry_premium = position_row["entry_premium"]
 
-    current_value = _current_contract_value(chain, strike, expiration, underlying_price)
+    current_value = current_contract_value(chain, strike, expiration, underlying_price)
     unrealized_pnl = round((entry_premium - current_value) * CONTRACT_MULTIPLIER * quantity, 2)
     premium_collected = entry_premium * CONTRACT_MULTIPLIER * quantity
     pnl_pct_of_premium = unrealized_pnl / premium_collected if premium_collected > 0 else 0.0

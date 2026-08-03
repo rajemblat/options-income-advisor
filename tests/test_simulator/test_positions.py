@@ -141,5 +141,5 @@ def test_mark_position_stays_open_when_no_trigger(conn):
 def test_current_contract_value_falls_back_to_intrinsic_when_missing_from_chain():
     expiration = AS_OF + timedelta(days=30)
     empty_chain = OptionChain(symbol="TST", as_of=AS_OF, underlying_price=70.0, contracts=[])
-    value = positions._current_contract_value(empty_chain, strike=80.0, expiration=expiration, underlying_price=70.0)
+    value = positions.current_contract_value(empty_chain, strike=80.0, expiration=expiration, underlying_price=70.0)
     assert value == 10.0  # max(80-70, 0)

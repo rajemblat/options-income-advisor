@@ -1121,6 +1121,80 @@ healthcheck ya cubre el caso real.
     una duplicación, verificado contando strikes distintos. 12 tests nuevos (`test_repository.py`,
     `test_chart_overlays.py`) — 662/662 en verde.
 
+53. **Simulador de Trading Automático (paper trading)** (pedido 2026-08-02, alcance inicial
+    SOLO Naked Put). Cuenta simulada de $100,000 con datos REALES de mercado (Schwab) que
+    evalúa la watchlist todos los días según 8 criterios estrictos y abre/cierra posiciones
+    automáticamente en la simulación — nunca opera con dinero real. Plan de 6 bloques
+    confirmado con el usuario antes de programar (permiso autónomo total una vez definido):
+
+    **Confirmaciones de diseño** (2026-08-02): "IV Percentile" resultó ser el mismo concepto
+    que IV Rank en este motor (no hay un indicador nuevo, se evalúa una sola vez, cubre ambos
+    criterios 3 y 7 de la lista original). "Soporte fuerte" = cluster de pivotes con ≥2 toques
+    (no un mínimo/máximo aislado), evaluado en semanal Y diario. Tamaño de posición = % fijo
+    del EQUITY total de la cuenta (no del cash libre) por posición, no 1 contrato fijo. "Mejor
+    prima" entre 30-45 DTE = mayor crédito en dólares entre TODAS las combinaciones válidas
+    (expiración × strike con delta<0.18), no la más cercana al delta objetivo.
+
+    **1/6 — Soporte fuerte semanal/diario** (`indicators/levels.py`):
+    `find_strong_support_resistance` (clusters con ≥2 toques) + `resample_to_weekly` +
+    `find_weekly_strong_support_resistance` (resamplea velas diarias a semanales, mismo
+    algoritmo de pivotes). Refactor sin cambio de comportamiento de `find_support_resistance`
+    existente (extraída `_pivot_levels`, compartida entre ambas).
+
+    **2/6 — `simulator/entry_rules.py`**: `evaluate_entry()` con los 8 criterios. Earnings
+    antes del vencimiento como GATE DURO (a diferencia del filtro opcional del Screener) —
+    reusa el mismo criterio de comparación de fechas. Selector de "mejor prima" compara TODAS
+    las combinaciones de expiración/strike en la ventana 30-45 DTE con delta<0.18, no solo la
+    expiración más cercana (a diferencia del resto del motor, que sí hace eso). Acumula TODOS
+    los motivos de rechazo, no solo el primero, para poder loguear/mostrar por qué un símbolo
+    no calificó un día dado.
+
+    **3/6 — Motor** (`simulator/positions.py` + `simulator/engine.py`): 3 tablas nuevas
+    (`simulated_account`, `simulated_positions`, `simulated_equity_history`). Sizing por % de
+    EQUITY total (cash + garantía comprometida + P&L no realizado), no de cash libre — mantiene
+    el tamaño relativo estable con posiciones abiertas comiendo cash. Apertura reserva garantía
+    cash-secured (strike×100×contratos) y acredita la prima cobrada. Mark-to-market diario
+    revalúa contra la MISMA opción en la cadena en vivo (`strategy/candidates.py::find_contract`,
+    reusado) o cae a valor intrínseco si ya no aparece (vencimiento pasado/próximo, strike
+    delistado). Cierre automático al 30% de ganancia sobre la prima cobrada, o al vencimiento.
+
+    **4/6 — Scheduler**: enganchado a `scheduler/jobs.py::_run_full_analysis` (compartida por
+    el polling regular y el digest pre-apertura) — reusa el snapshot/cadena/historial que
+    `analyze_symbol` ya calculó (`SymbolAnalysis` sumó `price_history`), sin pedir nada nuevo al
+    broker. `mark_and_close_positions` corre UNA sola vez por corrida completa (no por símbolo
+    — una posición simulada puede estar sobre un símbolo fuera de la watchlist evaluada ese
+    día). Ambos aislados en su propio try/except: un fallo del simulador nunca pierde las
+    alertas de sugerencias ya generadas.
+
+    **5/6 — Dashboard** (`pages/12_simulador.py` + `dashboard/simulator_table.py`, lógica pura
+    separada de Streamlit, mismo patrón que `scanner_table.py`): métricas (equity total con %
+    de rendimiento, cash disponible, P&L realizado, posiciones abiertas, win rate), curva de
+    equity (línea con relleno sutil, línea punteada de referencia en el capital inicial —
+    paleta ya validada de la app, sin colores nuevos), tabla de posiciones abiertas con P&L EN
+    VIVO (pide precio/cadena una sola vez por símbolo distinto, nunca escribe nada — mirar el
+    dashboard nunca debe cerrar una posición, eso es exclusivo del scheduler) y de posiciones
+    cerradas, ganancia/pérdida promedio. `simulator/positions.py::current_contract_value`
+    (renombrada de privada a pública) se reusa tal cual desde el dashboard para el P&L en vivo.
+    Bug real encontrado y corregido en la verificación en vivo: 5 columnas de métricas con
+    montos en dólares largos ($152,084.00) se truncaban ("...") en el ancho de columna de
+    Streamlit — fix: 3 columnas para los montos en dólares, 2 separadas para los valores cortos
+    (conteo de posiciones, win rate), mismo límite de 3 columnas que ya usa la página Portafolio
+    para sus métricas en dólares.
+
+    **6/6 — Config**: sección `simulator` nueva en `settings.yaml`/`config.py` con capital
+    inicial, % máximo de capital por posición, y los umbrales de los 8 criterios.
+
+    Verificado en navegador en vivo contra datos reales de Schwab (mercado cerrado):
+    insertadas filas de prueba directamente en `data/app.db` (una posición abierta AAPL, una
+    cerrada MSFT, historial de equity), confirmado que la página renderiza sin errores, calcula
+    equity/win rate correctamente, y que el fallback a valor intrínseco funciona en vivo (strike
+    ficticio sin contrato real → cadena de Schwab real no lo encuentra → cae a intrínseco
+    correctamente). Datos de prueba eliminados de `data/app.db` después de verificar — no quedó
+    ningún residuo en la base real.
+    29 tests nuevos en total a lo largo de los 6 bloques (`test_indicators/test_levels.py`,
+    `test_simulator/` completo, `test_dashboard/test_simulator_table.py`,
+    `test_scheduler/test_jobs.py`) — 696/696 en verde (667/667 antes de empezar este ítem).
+
 ## Cómo se usa este archivo
 
 - Antes de arrancar algo nuevo: agregarlo a "Pendiente, no empezado" apenas se pide, aunque
