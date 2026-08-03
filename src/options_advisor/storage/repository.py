@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import date
+from datetime import date, datetime
 
 from options_advisor.storage.models import (
     Alert,
@@ -488,6 +488,131 @@ def get_real_trade_alerts(conn: sqlite3.Connection, symbol: str | None = None, l
             "SELECT * FROM real_trade_alerts WHERE symbol = ? ORDER BY trade_ts DESC LIMIT ?", (symbol, limit)
         ).fetchall()
     return conn.execute("SELECT * FROM real_trade_alerts ORDER BY trade_ts DESC LIMIT ?", (limit,)).fetchall()
+
+
+def get_simulated_account(conn: sqlite3.Connection) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM simulated_account WHERE id = 1").fetchone()
+
+
+def init_simulated_account(conn: sqlite3.Connection, initial_capital: float, created_at: datetime) -> None:
+    """`INSERT OR IGNORE`: si ya existe (corridas sucesivas del scheduler), no reinicia el
+    capital ni pisa el cash acumulado — solo crea la cuenta la primera vez."""
+    conn.execute(
+        "INSERT OR IGNORE INTO simulated_account (id, cash, created_at) VALUES (1, ?, ?)",
+        (initial_capital, created_at.isoformat()),
+    )
+    conn.commit()
+
+
+def update_simulated_account_cash(conn: sqlite3.Connection, cash: float) -> None:
+    conn.execute("UPDATE simulated_account SET cash = ? WHERE id = 1", (cash,))
+    conn.commit()
+
+
+def has_open_simulated_position(conn: sqlite3.Connection, symbol: str) -> bool:
+    """Evita abrir una segunda posición simulada sobre el mismo subyacente mientras ya tenga
+    una abierta (concentración/duplicados entre corridas sucesivas del scheduler)."""
+    row = conn.execute(
+        "SELECT 1 FROM simulated_positions WHERE symbol = ? AND status = 'open' LIMIT 1", (symbol,)
+    ).fetchone()
+    return row is not None
+
+
+def insert_simulated_position(
+    conn: sqlite3.Connection,
+    symbol: str,
+    strategy_type: str,
+    strike: float,
+    expiration_date: date,
+    quantity: int,
+    entry_date: date,
+    entry_premium: float,
+    collateral: float,
+) -> int:
+    cur = conn.execute(
+        """
+        INSERT INTO simulated_positions
+            (symbol, strategy_type, strike, expiration_date, quantity, entry_date, entry_premium,
+             collateral, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open')
+        """,
+        (symbol, strategy_type, strike, expiration_date.isoformat(), quantity, entry_date.isoformat(), entry_premium, collateral),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_open_simulated_positions(conn: sqlite3.Connection, symbol: str | None = None) -> list[sqlite3.Row]:
+    if symbol:
+        return conn.execute(
+            "SELECT * FROM simulated_positions WHERE status = 'open' AND symbol = ?", (symbol,)
+        ).fetchall()
+    return conn.execute("SELECT * FROM simulated_positions WHERE status = 'open' ORDER BY entry_date DESC").fetchall()
+
+
+def get_closed_simulated_positions(conn: sqlite3.Connection, limit: int = 500) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM simulated_positions WHERE status = 'closed' ORDER BY close_date DESC LIMIT ?", (limit,)
+    ).fetchall()
+
+
+def mark_simulated_position(conn: sqlite3.Connection, position_id: int, marked_date: date, unrealized_pnl: float) -> None:
+    conn.execute(
+        "UPDATE simulated_positions SET last_marked_date = ?, last_unrealized_pnl = ? WHERE id = ?",
+        (marked_date.isoformat(), unrealized_pnl, position_id),
+    )
+    conn.commit()
+
+
+def close_simulated_position(
+    conn: sqlite3.Connection, position_id: int, close_date: date, close_premium: float, close_reason: str, realized_pnl: float
+) -> None:
+    conn.execute(
+        """
+        UPDATE simulated_positions
+        SET status = 'closed', close_date = ?, close_premium = ?, close_reason = ?, realized_pnl = ?,
+            last_marked_date = ?, last_unrealized_pnl = ?
+        WHERE id = ?
+        """,
+        (close_date.isoformat(), close_premium, close_reason, realized_pnl, close_date.isoformat(), realized_pnl, position_id),
+    )
+    conn.commit()
+
+
+def upsert_simulated_equity_snapshot(
+    conn: sqlite3.Connection, snapshot_date: date, cash: float, collateral_committed: float, unrealized_pnl: float, equity: float
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO simulated_equity_history (snapshot_date, cash, collateral_committed, unrealized_pnl, equity)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(snapshot_date) DO UPDATE SET
+            cash=excluded.cash, collateral_committed=excluded.collateral_committed,
+            unrealized_pnl=excluded.unrealized_pnl, equity=excluded.equity
+        """,
+        (snapshot_date.isoformat(), cash, collateral_committed, unrealized_pnl, equity),
+    )
+    conn.commit()
+
+
+def get_simulated_equity_history(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute("SELECT * FROM simulated_equity_history ORDER BY snapshot_date ASC").fetchall()
+
+
+def get_simulated_performance_stats(conn: sqlite3.Connection) -> dict:
+    """Win rate y ganancia/pérdida promedio sobre las posiciones simuladas ya CERRADAS —
+    Dashboard: Simulador. Todo en 0/None cuando todavía no cerró ninguna (nada que promediar)."""
+    rows = conn.execute("SELECT realized_pnl FROM simulated_positions WHERE status = 'closed'").fetchall()
+    pnls = [r["realized_pnl"] for r in rows if r["realized_pnl"] is not None]
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p <= 0]
+    return {
+        "closed_count": len(pnls),
+        "win_rate_pct": round(len(wins) / len(pnls) * 100, 1) if pnls else None,
+        "avg_win": round(sum(wins) / len(wins), 2) if wins else None,
+        "avg_loss": round(sum(losses) / len(losses), 2) if losses else None,
+        "total_realized_pnl": round(sum(pnls), 2) if pnls else 0.0,
+    }
 
 
 def insert_assigned_position(

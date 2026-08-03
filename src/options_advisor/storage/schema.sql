@@ -201,6 +201,49 @@ CREATE TABLE IF NOT EXISTS real_trade_alerts (
     leg_role TEXT
 );
 
+-- Simulador de Trading Automático (paper trading, pedido 2026-08-02): cuenta simulada de
+-- $100,000 en datos REALES de mercado, fila única (mismo patrón que investor_profile).
+CREATE TABLE IF NOT EXISTS simulated_account (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    cash REAL NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- Posiciones Naked Put simuladas (único alcance inicial) — abiertas por
+-- simulator/engine.py::process_symbol_entry cuando los 8 criterios de entrada
+-- (simulator/entry_rules.py) pasan, cerradas por simulator/positions.py::mark_position al
+-- llegar al 30% de ganancia sobre la prima cobrada o al vencimiento.
+CREATE TABLE IF NOT EXISTS simulated_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    strategy_type TEXT NOT NULL DEFAULT 'cash_secured_put',
+    strike REAL NOT NULL,
+    expiration_date TEXT NOT NULL,
+    quantity INTEGER NOT NULL,
+    entry_date TEXT NOT NULL,
+    entry_premium REAL NOT NULL,
+    collateral REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    close_date TEXT,
+    close_premium REAL,
+    close_reason TEXT,
+    realized_pnl REAL,
+    last_marked_date TEXT,
+    last_unrealized_pnl REAL
+);
+CREATE INDEX IF NOT EXISTS idx_simulated_positions_status ON simulated_positions(status);
+CREATE INDEX IF NOT EXISTS idx_simulated_positions_symbol ON simulated_positions(symbol);
+
+-- Curva de equity diaria de la cuenta simulada (Dashboard: Simulador — P&L acumulado, %
+-- rendimiento sobre el capital inicial).
+CREATE TABLE IF NOT EXISTS simulated_equity_history (
+    snapshot_date TEXT PRIMARY KEY,
+    cash REAL NOT NULL,
+    collateral_committed REAL NOT NULL,
+    unrealized_pnl REAL NOT NULL,
+    equity REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_real_trade_alerts_symbol_date ON real_trade_alerts(symbol, trade_date);
 CREATE INDEX IF NOT EXISTS idx_iv_snapshots_symbol_date ON iv_snapshots(symbol, snapshot_date);
 CREATE INDEX IF NOT EXISTS idx_indicator_snapshots_symbol_date ON indicator_snapshots(symbol, snapshot_date);
