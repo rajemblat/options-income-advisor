@@ -188,6 +188,10 @@ def process_real_condor_cycle(conn, broker, settings, as_of: date) -> None:
 
     spot = bars[-1].close if bars else (full_chain.underlying_price if full_chain else None)
 
+    # 0) Filas que quedaron en 'sending' (se guardó la intención y el proceso murió antes de anotar el
+    # resultado): preguntarle a Schwab qué pasó ANTES de cualquier otra cosa.
+    _reconcile_sending(conn, broker, account_hash)
+
     # 1) Reconciliar/cerrar lo abierto SIEMPRE (aunque no esté armado ni haya señal — hay que poder salir).
     if chain is not None and spot is not None:
         _reconcile_and_manage_open(conn, broker, account_hash, chain, spot, as_of, cfg)
@@ -223,6 +227,83 @@ def process_real_condor_cycle(conn, broker, settings, as_of: date) -> None:
 
     _open_real_condor(conn, broker, account_hash, chain, build, spot, as_of, cfg, lt, symbol, signal,
                       vix_chg=vix_chg)
+
+
+_SENDING_GRACE_MINUTES = 5
+
+
+def _reconcile_sending(conn, broker, account_hash) -> None:
+    """Resuelve las filas que quedaron en 'sending': se guardaron justo antes de mandar la orden y el
+    proceso murió antes de poder anotar el resultado (usuario 2026-08-14 — ese día una orden REAL salió
+    a Schwab y su fila nunca se escribió, quedando una posición que el robot no gestionaba).
+
+    Con la fila ya guardada, al arrancar se le puede PREGUNTAR a Schwab qué pasó: si aparece una orden
+    llenada con las mismas 4 patas, se adopta; si no aparece nada tras la ventana de gracia, se cierra
+    como no confirmada y se avisa por mail para que el usuario lo revise en el broker. Nunca se asume
+    nada: o lo confirma Schwab, o te avisa."""
+    try:
+        filas = conn.execute(
+            "SELECT * FROM real_condor_positions WHERE status = 'sending' ORDER BY id"
+        ).fetchall()
+    except Exception:
+        return
+    if not filas:
+        return
+    for row in filas:
+        try:
+            _edad = None
+            if row["entry_date"]:
+                _edad = (datetime.now() - datetime.fromisoformat(str(row["entry_date"]) + "T00:00:00")).total_seconds() / 60.0
+            adoptada = _buscar_orden_en_schwab(broker, row)
+            if adoptada is not None:
+                credito_ps, oid = adoptada
+                repo.mark_real_condor_fill(conn, row["id"], entry_credit_ps=round(credito_ps, 2),
+                                           entry_net_credit=round(credito_ps * 100.0 * (row["quantity"] or 1), 2),
+                                           open_schwab_order_id=oid, entry_ts=datetime.now())
+                logger.warning("Condor-real: id=%s estaba en 'sending' y Schwab confirma que LLENÓ "
+                               "(orden %s) — adoptada", row["id"], oid)
+                _email("🟢 Lokshn recuperó un Iron Condor REAL que había quedado sin registrar",
+                       f"La orden del condor {row['underlying']} sí se ejecutó en Schwab y el robot la "
+                       f"volvió a tomar bajo su gestión. Crédito ${credito_ps * 100.0:,.2f}.")
+                continue
+            if _edad is not None and _edad < _SENDING_GRACE_MINUTES:
+                continue   # muy reciente: puede estar todavía negociándose, se revisa el próximo tick
+            repo.close_real_condor_position(conn, row["id"], date.today(), close_value=None,
+                                            close_reason="no_confirmada", realized_pnl=None,
+                                            close_ts=datetime.now())
+            logger.error("Condor-real: id=%s quedó en 'sending' y Schwab no confirma ninguna orden — "
+                         "marcada NO CONFIRMADA. REVISAR EN EL BROKER.", row["id"])
+            _email("⚠️ Lokshn: una orden de Iron Condor quedó SIN CONFIRMAR",
+                   f"El robot guardó la intención de abrir un condor {row['underlying']} "
+                   f"(put {row['short_put_strike']:.0f} / call {row['short_call_strike']:.0f}) pero no pudo "
+                   "confirmar con Schwab si la orden llegó a ejecutarse.\n\n"
+                   "REVISÁ TU CUENTA EN SCHWAB. Si la posición existe, el robot NO la está gestionando.")
+        except Exception:
+            logger.exception("Condor-real: fallo reconciliando la fila 'sending' id=%s", row["id"])
+
+
+def _buscar_orden_en_schwab(broker, row):
+    """¿Schwab tiene una orden LLENADA con exactamente las 4 patas de esta fila? Devuelve
+    (crédito por acción, order_id) o None. Es la única fuente de verdad admitida acá."""
+    try:
+        from datetime import timedelta, timezone
+        ordenes = broker.get_recent_filled_orders(datetime.now(timezone.utc) - timedelta(hours=6))
+    except Exception:
+        return None
+    buscadas = {row["short_put_symbol"], row["long_put_symbol"],
+                row["short_call_symbol"], row["long_call_symbol"]}
+    for o in ordenes or []:
+        patas = getattr(o, "legs", []) or []
+        if len(patas) != 4:
+            continue
+        if {getattr(l, "occ_symbol", None) for l in patas} != buscadas:
+            continue
+        credito = 0.0
+        for l in patas:
+            precio = float(getattr(l, "price", 0) or 0)
+            credito += precio if str(getattr(l, "instruction", "")).upper().startswith("SELL") else -precio
+        return credito, str(getattr(o, "order_id", "") or "")
+    return None
 
 
 def _reconcile_and_manage_open(conn, broker, account_hash, chain, spot, as_of: date, cfg) -> None:
@@ -431,28 +512,50 @@ def _open_real_condor(conn, broker, account_hash, chain, build, spot, as_of: dat
     # Vencimiento 0DTE de las patas armadas (todas comparten el mismo vencimiento).
     expiration = build.legs[0][2].expiration if build.legs else (chain.contracts[0].expiration if chain.contracts else as_of)
 
-    logger.warning("Condor-real: ABRIENDO %s — vende put %.0f/call %.0f, alas %.0f/%.0f (crédito arranca $%.2f → mid)",
-                   symbol, build.short_put_strike, build.short_call_strike,
-                   build.long_put_strike, build.long_call_strike, ladder[0])
-    res = rcs.execute_condor_walk(broker, account_hash, rcs.SIDE_OPEN, legs, quantity, ladder,
-                                  interval_seconds=10, leave_resting_at_mid=True)
-    if not res.ok:
-        logger.warning("Condor-real: la apertura NO se llegó a colocar (%s) — no se registra, se reintenta", res.error)
-        return
-
-    entry_ps = res.fill_price if (res.filled and res.fill_price is not None) else (res.final_limit_price or (build.net_credit / 100.0))
-    entry_total = round(entry_ps * 100.0 * quantity, 2)
-    status = "open" if res.filled else "working"
+    # ═══ GUARDAR ANTES DE MANDAR (usuario 2026-08-14) ═══
+    # El orden anterior era "mando y después guardo". El 14/08 la orden salió a Schwab a las 09:53 y
+    # la fila nunca se escribió porque la base estaba trabada: quedó una posición REAL viva que el
+    # robot no sabía que existía — no la marcaba, no la cerraba al 50%, no le aplicaba el stop. La
+    # tuvo que cerrar el usuario a mano.
+    # Ahora la fila se escribe PRIMERO, en estado 'sending'. Si el proceso muere entre el insert y el
+    # envío, al arrancar queda esa fila y `_reconcile_sending` le pregunta a Schwab qué pasó con esa
+    # orden. Una fila de más se limpia sola; una posición real sin registrar, no.
+    entry_estimado = round((build.net_credit / 100.0) * 100.0 * quantity, 2)
     pos_id = repo.insert_real_condor_position(
         conn, underlying=symbol, entry_date=as_of, expiration_date=expiration,
         short_put_strike=build.short_put_strike, short_call_strike=build.short_call_strike,
         long_put_strike=build.long_put_strike, long_call_strike=build.long_call_strike,
         short_put_symbol=legs.short_put_symbol, long_put_symbol=legs.long_put_symbol,
         short_call_symbol=legs.short_call_symbol, long_call_symbol=legs.long_call_symbol,
-        quantity=quantity, entry_net_credit=entry_total, max_loss=build.max_loss, max_profit=build.max_profit,
-        lower_breakeven=build.lower_breakeven, upper_breakeven=build.upper_breakeven, entry_spot=spot,
-        open_schwab_order_id=res.order_id, status=status, entry_ts=datetime.now() if res.filled else None,
+        quantity=quantity, entry_net_credit=entry_estimado, max_loss=build.max_loss,
+        max_profit=build.max_profit, lower_breakeven=build.lower_breakeven,
+        upper_breakeven=build.upper_breakeven, entry_spot=spot,
+        open_schwab_order_id=None, status="sending", entry_ts=None,
     )
+    logger.warning("Condor-real: ABRIENDO %s id=%s — vende put %.0f/call %.0f, alas %.0f/%.0f "
+                   "(crédito arranca $%.2f → mid) — fila guardada ANTES de mandar",
+                   symbol, pos_id, build.short_put_strike, build.short_call_strike,
+                   build.long_put_strike, build.long_call_strike, ladder[0])
+
+    res = rcs.execute_condor_walk(broker, account_hash, rcs.SIDE_OPEN, legs, quantity, ladder,
+                                  interval_seconds=10, leave_resting_at_mid=True)
+    if not res.ok:
+        # Nunca se colocó: la fila se cierra como descartada (P&L None → no ensucia el win rate).
+        repo.close_real_condor_position(conn, pos_id, date.today(), close_value=None,
+                                        close_reason="no_colocada", realized_pnl=None,
+                                        close_ts=datetime.now())
+        logger.warning("Condor-real: la apertura id=%s NO se llegó a colocar (%s) — descartada, se reintenta",
+                       pos_id, res.error)
+        return
+
+    entry_ps = res.fill_price if (res.filled and res.fill_price is not None) else (res.final_limit_price or (build.net_credit / 100.0))
+    entry_total = round(entry_ps * 100.0 * quantity, 2)
+    status = "open" if res.filled else "working"
+    repo.update_real_condor_open_order(conn, pos_id, open_schwab_order_id=res.order_id, status=status)
+    if res.filled:
+        repo.mark_real_condor_fill(conn, pos_id, entry_credit_ps=round(entry_ps, 2),
+                                   entry_net_credit=entry_total, open_schwab_order_id=res.order_id,
+                                   entry_ts=datetime.now())
     _log_open_for_learning(conn, as_of, pos_id, build, spot, signal, entry_total, vix_chg)
     if res.filled:
         logger.warning("Condor-real: ABIERTO id=%s LLENÓ al instante — crédito $%.2f", pos_id, entry_total)

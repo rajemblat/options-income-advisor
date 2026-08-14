@@ -264,3 +264,85 @@ def test_legs_are_none_when_the_four_symbols_are_not_distinct():
     build = _Build([("sell", "put", _c()), ("buy", "put", _c()),
                     ("sell", "call", _c()), ("buy", "call", _c())])
     assert lce._legs_from_build(build) is None
+
+
+# ---------------- guardar ANTES de mandar (usuario 2026-08-14) ----------------
+
+def test_a_sending_row_is_saved_before_the_order_goes_out():
+    """El incidente: la orden salió a Schwab y la fila nunca se escribió porque la base estaba
+    trabada, dejando una posición REAL que el robot no gestionaba. Ahora la fila va primero."""
+    conn = db.connect(":memory:")
+    pid = repo.insert_real_condor_position(
+        conn, underlying="SPX", entry_date=AS_OF, expiration_date=AS_OF,
+        short_put_strike=7775.0, short_call_strike=7835.0,
+        long_put_strike=7765.0, long_call_strike=7845.0,
+        short_put_symbol="SP", long_put_symbol="LP", short_call_symbol="SC", long_call_symbol="LC",
+        quantity=1, entry_net_credit=165.0, max_loss=835.0, max_profit=165.0,
+        lower_breakeven=7773.0, upper_breakeven=7837.0, entry_spot=7800.0,
+        open_schwab_order_id=None, status="sending", entry_ts=None)
+    fila = list(conn.execute("SELECT status, open_schwab_order_id FROM real_condor_positions WHERE id=?", (pid,)))[0]
+    assert fila[0] == "sending" and fila[1] is None
+    # Una fila 'sending' NO se gestiona como abierta (no se marca ni se cierra a mercado)...
+    assert [r["id"] for r in repo.get_open_real_condor_positions(conn)] == []
+    # ...pero SÍ ocupa el cupo del día, para no mandar una segunda mientras la primera está en duda.
+    assert repo.count_real_condor_opens_today(conn, AS_OF) == 1
+
+
+def test_an_unconfirmed_sending_row_does_not_pollute_the_win_rate():
+    """Si Schwab nunca confirma, se cierra como 'no_confirmada' con P&L None: no cuenta como
+    ganadora ni perdedora, pero queda el rastro y el usuario recibe un mail."""
+    conn = db.connect(":memory:")
+    pid = repo.insert_real_condor_position(
+        conn, underlying="SPX", entry_date=AS_OF, expiration_date=AS_OF,
+        short_put_strike=7775.0, short_call_strike=7835.0,
+        long_put_strike=7765.0, long_call_strike=7845.0,
+        short_put_symbol="SP", long_put_symbol="LP", short_call_symbol="SC", long_call_symbol="LC",
+        quantity=1, entry_net_credit=165.0, max_loss=835.0, max_profit=165.0,
+        lower_breakeven=7773.0, upper_breakeven=7837.0, entry_spot=7800.0,
+        open_schwab_order_id=None, status="sending", entry_ts=None)
+    repo.close_real_condor_position(conn, pid, AS_OF, close_value=None, close_reason="no_confirmada",
+                                    realized_pnl=None, close_ts=datetime.now())
+    stats = repo.get_real_condor_performance_stats(conn, AS_OF)
+    assert stats["closed_count"] == 0, "sin P&L no cuenta como operación cerrada"
+    assert stats["win_rate_pct"] is None
+
+
+def test_schwab_lookup_matches_the_exact_four_legs():
+    """La adopción de una orden huérfana exige que las 4 patas sean EXACTAMENTE las mismas.
+    Nunca se adopta 'algo parecido' — se opera con plata real."""
+    fila = {"short_put_symbol": "A", "long_put_symbol": "B", "short_call_symbol": "C",
+            "long_call_symbol": "D", "quantity": 1}
+
+    class _Pata:
+        def __init__(self, sym, instr, precio):
+            self.occ_symbol, self.instruction, self.price = sym, instr, precio
+
+    class _Orden:
+        def __init__(self, patas, oid):
+            self.legs, self.order_id = patas, oid
+
+    class _BrokerOk:
+        def get_recent_filled_orders(self, *a, **k):
+            return [_Orden([_Pata("A", "SELL_TO_OPEN", 2.28), _Pata("B", "BUY_TO_OPEN", 1.47),
+                            _Pata("C", "SELL_TO_OPEN", 1.71), _Pata("D", "BUY_TO_OPEN", 0.87)], "OID-7")]
+
+    credito, oid = lce._buscar_orden_en_schwab(_BrokerOk(), fila)
+    assert oid == "OID-7"
+    assert round(credito, 2) == round(2.28 - 1.47 + 1.71 - 0.87, 2)   # crédito neto = 1.65
+
+    class _BrokerOtraCosa:
+        def get_recent_filled_orders(self, *a, **k):
+            return [_Orden([_Pata("A", "SELL_TO_OPEN", 2.0), _Pata("B", "BUY_TO_OPEN", 1.0),
+                            _Pata("C", "SELL_TO_OPEN", 1.0), _Pata("Z", "BUY_TO_OPEN", 0.5)], "OID-8")]
+
+    assert lce._buscar_orden_en_schwab(_BrokerOtraCosa(), fila) is None, "una pata distinta = otra orden"
+
+
+def test_schwab_lookup_survives_a_broker_failure():
+    class _Broker:
+        def get_recent_filled_orders(self, *a, **k):
+            raise RuntimeError("sin red")
+
+    fila = {"short_put_symbol": "A", "long_put_symbol": "B", "short_call_symbol": "C",
+            "long_call_symbol": "D", "quantity": 1}
+    assert lce._buscar_orden_en_schwab(_Broker(), fila) is None
