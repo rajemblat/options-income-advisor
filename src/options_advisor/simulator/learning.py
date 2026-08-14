@@ -707,19 +707,23 @@ def review_condor(
             if a or p:
                 aprendido.append(field)
 
-        # VIX en suba: no se apunta al promedio sino al PEOR VIX con el que una operación salió bien,
-        # así el filtro nunca deja afuera un escenario que históricamente funcionó.
-        gv = [f for r in good if (f := _cd_feature(r[0], "vix_change_pct")) is not None]
-        bv = [f for r in bad if (f := _cd_feature(r[0], "vix_change_pct")) is not None]
+        # VIX QUIETO: se mira el MOVIMIENTO ABSOLUTO del día, para cualquier lado (usuario 2026-08-14:
+        # "no tiene que estar bajando ni subiendo, lo mejor es un día lateral estable"). Un VIX que se
+        # derrumba 8% tampoco es un día tranquilo. No se apunta al promedio sino al mayor movimiento
+        # que aguantó una operación GANADORA, así el filtro nunca deja afuera un escenario que
+        # históricamente funcionó.
+        gv = [abs(f) for r in good if (f := _cd_feature(r[0], "vix_change_pct")) is not None]
+        bv = [abs(f) for r in bad if (f := _cd_feature(r[0], "vix_change_pct")) is not None]
         if len(gv) >= 3 and len(bv) >= 3:
             peor_buena, avg_mala = max(gv), sum(bv) / len(bv)
-            if avg_mala > peor_buena:   # solo si las malas entraban con el VIX claramente más arriba
+            if avg_mala > peor_buena:   # solo si las malas entraban con el VIX claramente más movido
                 current = state.get(_CD_VIX_KEY, cfg.max_vix_change_pct)
                 current = float(current) if current is not None else _CD_BOUNDS[_CD_VIX_KEY][4]
                 a, p = _cd_move(conn, _CD_VIX_KEY, current, peor_buena,
-                                f"Las malas entraban con el VIX subiendo {avg_mala:+.2f}% y la peor de las buenas "
-                                f"soportó {peor_buena:+.2f}%: no entrar con el VIX subiendo más que eso "
-                                "({current:+.2f}% → {proposed:+.2f}%).",
+                                f"Las malas entraban con el VIX moviéndose {avg_mala:.2f}% en el día (para "
+                                f"cualquier lado) y la ganadora que más aguantó soportó {peor_buena:.2f}%: "
+                                "no entrar con el VIX moviéndose más que eso "
+                                "({current:.2f}% → {proposed:.2f}%).",
                                 auto_only_if_tighter=True)
                 applied += a
                 proposed += p

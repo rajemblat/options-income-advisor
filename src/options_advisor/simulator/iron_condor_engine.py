@@ -185,7 +185,8 @@ def process_condor_cycle(conn: sqlite3.Connection, broker: BrokerClient, setting
         elif not signal.calm:
             motivo = f"día movido (rango {signal.day_range_pct:+.2%} > {cfg.calm_range_pct:.2%})"
         else:
-            motivo = f"VIX subiendo {vix_chg:+.2f}% (tope aprendido {cfg.max_vix_change_pct:+.2f}%)"
+            motivo = (f"VIX moviéndose {vix_chg:+.2f}% en el día — se busca un día lateral "
+                      f"(tope ±{abs(cfg.max_vix_change_pct):.2f}%)")
         _watch_log(conn, as_of, "watch", f"Vigilando — {motivo}",
                    {"spot": spot, "day_range_pct": signal.day_range_pct, "calm": signal.calm,
                     "in_window": signal.in_window, "vix_ok": signal.vix_ok, "vix_change_pct": vix_chg})

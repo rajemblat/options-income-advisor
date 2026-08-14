@@ -1363,8 +1363,9 @@ with tab_aprendizaje:
                            "cuánto se puede mover el SPX en el día para que entre"),
         "min_credit": ("Iron Condor · crédito mínimo", "${v:,.0f}",
                        "la prima mínima que tiene que pagar para que valga la pena"),
-        "max_vix_change_pct": ("Iron Condor · tope de VIX en suba", "{v:+.2f}%",
-                               "cuánto puede estar subiendo el VIX para que entre igual"),
+        "max_vix_change_pct": ("Iron Condor · tope de movimiento del VIX", "±{v:.2f}%",
+                               "cuánto puede moverse el VIX en el día (para arriba O para abajo) "
+                               "y que igual entre — busca un día lateral"),
         "profit_target_pct": ("Iron Condor · objetivo de ganancia", "{v:.0%}",
                               "a qué porcentaje del crédito cierra la posición"),
         "stop_loss_dollars": ("Iron Condor · stop-loss", "${v:,.0f}",

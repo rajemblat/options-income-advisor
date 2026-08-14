@@ -69,6 +69,31 @@ def test_signal_out_of_window_early():
     assert sig.in_window is False
 
 
+def test_vix_filter_looks_at_absolute_movement_not_direction():
+    """Usuario 2026-08-14: "el vix no tiene que estar bajando, ni subiendo … sino que día lateral
+    estable". El tope es de MOVIMIENTO: ±4% pasa, y tanto un salto de +9% como un derrumbe de −9%
+    quedan afuera. Un VIX que se desploma no es un día tranquilo: suele ser un rally fuerte, y al
+    condor lo mata que el SPX se mueva, para el lado que sea."""
+    barras = _bars([7600, 7601, 7599, 7600], hour=10, minute=30)
+    cfg = _settings(max_vix_change_pct=4.0)
+
+    def vix_ok(chg):
+        return iron_condor.evaluate_condor_signal(barras, cfg, vix_change_pct=chg).vix_ok
+
+    assert vix_ok(1.5) is True and vix_ok(-1.5) is True, "un día lateral entra para los dos lados"
+    assert vix_ok(4.0) is True and vix_ok(-4.0) is True, "justo en el tope todavía entra"
+    assert vix_ok(9.0) is False, "VIX disparado = día movido"
+    assert vix_ok(-9.0) is False, "VIX derrumbándose también es un día movido, no uno lateral"
+
+
+def test_without_a_vix_ceiling_configured_the_filter_does_not_block():
+    """Sin tope configurado (o sin dato de VIX) el condor sigue operando como siempre: el filtro
+    nunca puede frenar por falta de información."""
+    barras = _bars([7600, 7601, 7599, 7600], hour=10, minute=30)
+    assert iron_condor.evaluate_condor_signal(barras, _settings(), vix_change_pct=-30.0).vix_ok is True
+    assert iron_condor.evaluate_condor_signal(barras, _settings(max_vix_change_pct=4.0)).vix_ok is True
+
+
 def test_window_is_compared_in_utc_not_new_york():
     """CANDADO de comportamiento (verificado 2026-08-14): la ventana se compara contra la hora de la
     barra TAL CUAL viene de Schwab, que es UTC. Con la config "10:00–14:00" eso significa, en horario

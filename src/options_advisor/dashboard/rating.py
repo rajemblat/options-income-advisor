@@ -147,7 +147,7 @@ def condor_data_rows(ctx: dict, r) -> list[tuple[str, str, str]]:
          f"{be_lo:,.0f} – {be_hi:,.0f}" + (f"  ({rango_pts:,.0f} pts = {rango_pts / spot * 100:.2f}%)"
                                            if rango_pts and spot else "") if (be_lo and be_hi) else "—"),
         ("dia_rango", "Rango del día al entrar", pct(d("day_range_pct"))),
-        ("vix", "VIX ese día",
+        ("vix", "Movimiento del VIX ese día",
          f"{d('vix_change_pct'):+.2f}%" if d("vix_change_pct") is not None else viejo("vix_change_pct")),
         ("fecha_hora", "Abierta el", (f"{g('entry_date')} " if g("entry_date") else "")
          + (str(g("entry_ts") or "")[11:19] or "")),

@@ -726,7 +726,8 @@ with st.expander("🧠 Lo que aprendió el condor", expanded=False):
         ("Delta de los cortos", "{v:.3f}", _cd_base.short_delta_max, _cd_eff.short_delta_max),
         ("Umbral de día calmo", "{v:.2%}", _cd_base.calm_range_pct, _cd_eff.calm_range_pct),
         ("Crédito mínimo", "${v:,.0f}", _cd_base.min_credit, _cd_eff.min_credit),
-        ("Tope de VIX en suba", "{v:+.2f}%", _cd_base.max_vix_change_pct, _cd_eff.max_vix_change_pct),
+        ("Tope de movimiento del VIX (día lateral)", "±{v:.2f}%",
+         _cd_base.max_vix_change_pct, _cd_eff.max_vix_change_pct),
         ("Objetivo de ganancia", "{v:.0%}", _cd_base.profit_target_pct, _cd_eff.profit_target_pct),
         ("Stop-loss", "${v:,.0f}", _cd_base.stop_loss_dollars, _cd_eff.stop_loss_dollars),
     ]

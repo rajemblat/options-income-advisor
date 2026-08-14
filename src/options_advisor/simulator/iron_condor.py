@@ -59,12 +59,15 @@ def evaluate_condor_signal(bars: list[IntradayBar], settings: IntradayCondorSett
     now = bars[-1].timestamp.time()
     in_window = _parse_hhmm(settings.entry_window_start) <= now <= _parse_hhmm(settings.entry_window_end)
     calm = day_range_pct <= settings.calm_range_pct
-    # VIX en suba: si el filtro está configurado y hay dato, se exige que la volatilidad no esté
-    # expandiéndose más de lo tolerado. Sin filtro configurado o sin dato de VIX, no bloquea nada.
+    # VIX QUIETO, para cualquier lado (usuario 2026-08-14: "no tiene que estar bajando ni subiendo;
+    # lo mejor es que no suba ni baje mucho ese día, que sea un día lateral estable"). Se mira el
+    # movimiento ABSOLUTO: un VIX que se DERRUMBA 8% tampoco es un día tranquilo — suele ser un rally
+    # fuerte, y al condor le duele igual que una suba, porque lo que lo mata es que el SPX se mueva.
+    # Sin filtro configurado o sin dato de VIX, no bloquea nada.
     limit = getattr(settings, "max_vix_change_pct", None)
     vix_ok = True
     if limit is not None and vix_change_pct is not None:
-        vix_ok = vix_change_pct <= limit
+        vix_ok = abs(vix_change_pct) <= abs(limit)
     return CondorSignal(calm, in_window, price, round(day_range_pct, 5), vix_ok, vix_change_pct)
 
 

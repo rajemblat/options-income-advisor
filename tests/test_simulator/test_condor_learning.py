@@ -122,7 +122,7 @@ def test_raises_the_minimum_credit_when_the_thin_premiums_are_the_losers():
 
 
 def test_learns_the_vix_ceiling_from_the_worst_winner_not_the_average():
-    """"VIX subiendo": el tope se pone en el PEOR VIX con el que una operación igual salió bien,
+    """El tope se pone en el PEOR movimiento de VIX con el que una operación igual salió bien,
     para no dejar afuera un escenario que históricamente funcionó."""
     conn = db.connect(":memory:")
     for i in range(14):
@@ -134,6 +134,24 @@ def test_learns_the_vix_ceiling_from_the_worst_winner_not_the_average():
     assert "max_vix_change_pct" in cambios
     # Arranca sin filtro (None → tope máximo 15) y baja hacia 3.0, con paso acotado.
     assert cambios["max_vix_change_pct"]["to"] < 15.0
+
+
+def test_a_vix_that_collapses_teaches_the_same_as_one_that_spikes():
+    """Usuario 2026-08-14: "el vix no tiene que estar bajando, ni subiendo … sino que día lateral
+    estable". Un VIX que se DERRUMBA 9% tampoco es un día tranquilo (suele ser un rally fuerte, y al
+    condor lo mata que el SPX se mueva, para donde sea). El aprendizaje mira el valor ABSOLUTO: con
+    las perdedoras entrando a −9% tiene que bajar el tope igual que si hubieran entrado a +9%."""
+    conn = db.connect(":memory:")
+    for i in range(14):
+        _open_and_close(conn, vix_change=(-1.0 if i % 2 else 1.0), pnl=100.0, reason="profit_target")
+    for _ in range(6):
+        _open_and_close(conn, vix_change=-9.0, pnl=-100.0, reason="stop_loss")
+    out = learning.review_condor(conn, _cfg())
+    cambios = {c["param"]: c for c in out["applied"] + out["proposed"]}
+    assert "max_vix_change_pct" in cambios, "un VIX desplomándose tiene que enseñar igual que uno subiendo"
+    c = cambios["max_vix_change_pct"]
+    assert c["to"] < 15.0
+    assert c["to"] > 0, "el tope es un movimiento máximo (±), nunca un número negativo"
 
 
 # ------------------------------- salvaguarda del stop -------------------------------
