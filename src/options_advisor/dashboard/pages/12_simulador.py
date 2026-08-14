@@ -1394,6 +1394,24 @@ with tab_aprendizaje:
         "score_weight_liquidity": ("Liquidez (spread/volumen)", "qué tan fácil es entrar y salir sin perder en el spread"),
         "score_weight_theta": ("Decaimiento de tiempo (theta)", "cuánto valor pierde la opción por día a tu favor"),
     }
+    # Perillas del Iron Condor (usuario 2026-08-14). NO son pesos del scoring como las de arriba: son
+    # umbrales concretos de la estrategia, así que se muestran con su propio texto y su propio formato.
+    # Sin esto, una propuesta de "crédito mínimo 0 → 150" se leía como "peso 0.00 → 150.00 · darle más
+    # importancia al elegir qué put vender", que no quiere decir nada.
+    _CONDOR_FACTOR = {
+        "short_delta_max": ("Iron Condor · delta de los cortos", "{v:.3f}",
+                            "qué tan lejos del precio vende el put y el call"),
+        "calm_range_pct": ("Iron Condor · umbral de día calmo", "{v:.2%}",
+                           "cuánto se puede mover el SPX en el día para que entre"),
+        "min_credit": ("Iron Condor · crédito mínimo", "${v:,.0f}",
+                       "la prima mínima que tiene que pagar para que valga la pena"),
+        "max_vix_change_pct": ("Iron Condor · tope de VIX en suba", "{v:+.2f}%",
+                               "cuánto puede estar subiendo el VIX para que entre igual"),
+        "profit_target_pct": ("Iron Condor · objetivo de ganancia", "{v:.0%}",
+                              "a qué porcentaje del crédito cierra la posición"),
+        "stop_loss_dollars": ("Iron Condor · stop-loss", "${v:,.0f}",
+                              "cuánto tolera perder antes de salir"),
+    }
 
     def _why_clear(rationale: str, name: str) -> str:
         r = (rationale or "").lower()
@@ -1411,16 +1429,27 @@ with tab_aprendizaje:
     for p in proposals:
         pc1, pc2, pc3 = st.columns([5, 1, 1])
         with pc1:
-            _name, _desc = _LEARN_FACTOR.get(p["param"], (p["param"], ""))
-            _up = p["proposed_value"] > p["current_value"]
-            _verb = "darle MÁS importancia a" if _up else "darle MENOS importancia a"
-            _why = _why_clear(p["rationale"], _name)
-            st.markdown(
-                f"**{_name}**  ·  peso {p['current_value']:.2f} → **{p['proposed_value']:.2f}**  \n"
-                f"<span style='color:{TEXT_MUTED};font-size:0.88rem'>El robot va a **{_verb}** {_desc} "
-                f"al elegir qué put vender.{(' ' + _why) if _why else ''}</span>",
-                unsafe_allow_html=True,
-            )
+            if p["param"] in _CONDOR_FACTOR:
+                _name, _fmt, _desc = _CONDOR_FACTOR[p["param"]]
+                _de = _fmt.format(v=p["current_value"])
+                _a = _fmt.format(v=p["proposed_value"])
+                st.markdown(
+                    f"**{_name}**  ·  {_de} → **{_a}**  \n"
+                    f"<span style='color:{TEXT_MUTED};font-size:0.88rem'>Cambia {_desc}. "
+                    f"{p['rationale'] or ''}</span>",
+                    unsafe_allow_html=True,
+                )
+            else:
+                _name, _desc = _LEARN_FACTOR.get(p["param"], (p["param"], ""))
+                _up = p["proposed_value"] > p["current_value"]
+                _verb = "darle MÁS importancia a" if _up else "darle MENOS importancia a"
+                _why = _why_clear(p["rationale"], _name)
+                st.markdown(
+                    f"**{_name}**  ·  peso {p['current_value']:.2f} → **{p['proposed_value']:.2f}**  \n"
+                    f"<span style='color:{TEXT_MUTED};font-size:0.88rem'>El robot va a **{_verb}** {_desc} "
+                    f"al elegir qué put vender.{(' ' + _why) if _why else ''}</span>",
+                    unsafe_allow_html=True,
+                )
         with pc2:
             if st.button("✅ Aprobar", key=f"appr_{p['id']}"):
                 learning.apply_approved_proposal(conn, p["id"])

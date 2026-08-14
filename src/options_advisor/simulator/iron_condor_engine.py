@@ -8,10 +8,23 @@ from datetime import date, datetime
 from options_advisor.broker.base import BrokerClient
 from options_advisor.broker.models import OptionChain
 from options_advisor.config import Settings
-from options_advisor.simulator import iron_condor
+from options_advisor.simulator import iron_condor, learning
 from options_advisor.storage import repository as repo
 
 logger = logging.getLogger(__name__)
+
+
+def vix_change_pct(broker) -> float | None:
+    """Variación del VIX en el día (usuario 2026-08-14: "primas altas y vix subiendo"). Se pide una
+    sola vez por tick, en la misma llamada batch de quotes que ya usa el resto de la app. None si el
+    broker no lo expone o falla — en ese caso el filtro de VIX no bloquea nada y solo queda sin
+    guardar la feature de aprendizaje de esa operación."""
+    try:
+        q = broker.get_quotes(["$VIX"]).get("$VIX")
+        return round(float(q.net_change_pct), 3) if q is not None else None
+    except Exception:
+        logger.debug("Condor: no se pudo leer el VIX", exc_info=True)
+        return None
 
 # 0DTE: pedir del mismo día hasta +2 por si un feriado/fin de semana corre el vencimiento cercano.
 CHAIN_FETCH_RANGE_DAYS = (0, 2)
@@ -105,6 +118,9 @@ def process_condor_cycle(conn: sqlite3.Connection, broker: BrokerClient, setting
     cfg = settings.intraday_condor
     if not cfg.enabled:
         return
+    # Perillas APRENDIDAS encima de las del settings (usuario 2026-08-14). El motor real aplica lo
+    # mismo, así que papel y real siguen siendo el mismo cerebro incluso mientras aprende.
+    cfg = learning.effective_condor(conn, cfg)
     symbol = cfg.underlying
 
     try:
@@ -158,13 +174,19 @@ def process_condor_cycle(conn: sqlite3.Connection, broker: BrokerClient, setting
     if daily_cap_hit or open_cap_hit:
         return
 
-    # 3) Señal: día calmo + dentro de la ventana horaria.
-    signal = iron_condor.evaluate_condor_signal(bars, cfg)
-    if not (signal.calm and signal.in_window):
-        motivo = ("fuera de la ventana horaria" if not signal.in_window
-                  else f"día movido (rango {signal.day_range_pct:+.2%} > {cfg.calm_range_pct:.2%})")
+    # 3) Señal: día calmo + dentro de la ventana horaria + VIX no expandiéndose.
+    vix_chg = vix_change_pct(broker)
+    signal = iron_condor.evaluate_condor_signal(bars, cfg, vix_change_pct=vix_chg)
+    if not (signal.calm and signal.in_window and signal.vix_ok):
+        if not signal.in_window:
+            motivo = "fuera de la ventana horaria"
+        elif not signal.calm:
+            motivo = f"día movido (rango {signal.day_range_pct:+.2%} > {cfg.calm_range_pct:.2%})"
+        else:
+            motivo = f"VIX subiendo {vix_chg:+.2f}% (tope aprendido {cfg.max_vix_change_pct:+.2f}%)"
         _watch_log(conn, as_of, "watch", f"Vigilando — {motivo}",
-                   {"spot": spot, "day_range_pct": signal.day_range_pct, "calm": signal.calm, "in_window": signal.in_window})
+                   {"spot": spot, "day_range_pct": signal.day_range_pct, "calm": signal.calm,
+                    "in_window": signal.in_window, "vix_ok": signal.vix_ok, "vix_change_pct": vix_chg})
         return
 
     build = iron_condor.build_iron_condor(chain, spot, cfg)
@@ -181,10 +203,18 @@ def process_condor_cycle(conn: sqlite3.Connection, broker: BrokerClient, setting
         lower_breakeven=build.lower_breakeven, upper_breakeven=build.upper_breakeven,
         entry_spot=spot, entry_ts=datetime.now(),
     )
+    # Features de la apertura para el aprendizaje (usuario 2026-08-14). `book` distingue papel de
+    # real, que llevan ids independientes; sin eso el dataset cruzaría posiciones equivocadas.
+    _sp_delta, _sc_delta = iron_condor.short_leg_deltas(build)
     _log(conn, as_of, "open", "Entrada condor abierta", {
-        "position_id": position_id, "spot": spot, "day_range_pct": signal.day_range_pct,
+        "position_id": position_id, "book": "paper", "spot": spot,
+        "day_range_pct": signal.day_range_pct,
         "short_put": build.short_put_strike, "short_call": build.short_call_strike,
         "net_credit": build.net_credit, "max_loss": build.max_loss,
+        "short_put_delta": _sp_delta, "short_call_delta": _sc_delta,
+        "short_delta_avg": (round((_sp_delta + _sc_delta) / 2, 4)
+                            if _sp_delta is not None and _sc_delta is not None else None),
+        "vix_change_pct": vix_chg,
     })
     logger.info(
         "Condor: ABIERTO id=%s SP=%.0f/SC=%.0f alas=%.0f venc=%s crédito=%.2f riesgo_máx=%.2f",

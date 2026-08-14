@@ -27,9 +27,16 @@ class CondorSignal:
     in_window: bool
     price: float
     day_range_pct: float
+    # Filtro de volatilidad en suba (usuario 2026-08-14). True cuando el VIX no está expandiéndose
+    # más de lo tolerado, o cuando el filtro está apagado / no hay dato de VIX. Se evalúa aparte de
+    # `calm` a propósito: son dos cosas distintas (el SPX quieto vs. la volatilidad quieta) y el log
+    # tiene que poder decir cuál de las dos frenó la entrada.
+    vix_ok: bool = True
+    vix_change_pct: float | None = None
 
 
-def evaluate_condor_signal(bars: list[IntradayBar], settings: IntradayCondorSettings) -> CondorSignal:
+def evaluate_condor_signal(bars: list[IntradayBar], settings: IntradayCondorSettings,
+                           vix_change_pct: float | None = None) -> CondorSignal:
     """Evalúa si conviene abrir un Iron Condor: el día viene CALMO (rango intradía máx-mín por
     debajo de `calm_range_pct`) y estamos dentro de la ventana horaria de entrada (hora de la última
     barra). Usa el timestamp de la última barra como 'ahora' del mercado (testeable).
@@ -52,7 +59,13 @@ def evaluate_condor_signal(bars: list[IntradayBar], settings: IntradayCondorSett
     now = bars[-1].timestamp.time()
     in_window = _parse_hhmm(settings.entry_window_start) <= now <= _parse_hhmm(settings.entry_window_end)
     calm = day_range_pct <= settings.calm_range_pct
-    return CondorSignal(calm, in_window, price, round(day_range_pct, 5))
+    # VIX en suba: si el filtro está configurado y hay dato, se exige que la volatilidad no esté
+    # expandiéndose más de lo tolerado. Sin filtro configurado o sin dato de VIX, no bloquea nada.
+    limit = getattr(settings, "max_vix_change_pct", None)
+    vix_ok = True
+    if limit is not None and vix_change_pct is not None:
+        vix_ok = vix_change_pct <= limit
+    return CondorSignal(calm, in_window, price, round(day_range_pct, 5), vix_ok, vix_change_pct)
 
 
 @dataclass
@@ -173,6 +186,25 @@ def condor_intrinsic_close_value(
         - (max(long_put_strike - spot, 0.0) + max(spot - long_call_strike, 0.0))
     )
     return round(net * CONTRACT_MULTIPLIER, 2)
+
+
+def short_leg_deltas(build: CondorBuild) -> tuple[float | None, float | None]:
+    """Delta ABSOLUTO del put corto y del call corto realmente elegidos. Es la feature que el
+    aprendizaje necesita para saber si las operaciones buenas entraban más lejos o más cerca del
+    dinero que las malas (usuario 2026-08-14). None si el broker no devolvió griegas."""
+    sp = sc = None
+    for side, otype, contract in build.legs:
+        if side != "sell":
+            continue
+        greeks = getattr(contract, "greeks", None)
+        delta = getattr(greeks, "delta", None) if greeks is not None else None
+        if delta is None:
+            continue
+        if otype == "put":
+            sp = round(abs(float(delta)), 4)
+        elif otype == "call":
+            sc = round(abs(float(delta)), 4)
+    return sp, sc
 
 
 def condor_unrealized(entry_net_credit: float, close_value: float) -> float:

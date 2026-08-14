@@ -21,6 +21,7 @@ from options_advisor.dashboard.components import (
     render_header,
     render_notification_bell,
 )
+from options_advisor.simulator import learning
 from options_advisor.storage import repository as repo
 
 st.set_page_config(page_title="Lokshn · Real Market", page_icon="🔴", layout="wide", initial_sidebar_state="expanded")
@@ -608,6 +609,41 @@ with _ca3:
                   "gestionando). " if _cond_paused else "")
                + ("" if _cond_system_on else "⚠️ El sistema real del condor está apagado en el settings "
                   "(`intraday_condor.live_enabled`) o el trading real no está en modo REAL."))
+
+
+# --- Lo que el condor APRENDIÓ (usuario 2026-08-14) ---------------------------------------------
+# Se muestra acá, pegado al condor real, porque lo aprendido aplica a los DOS libros: el papel y el
+# real usan el mismo `effective_condor`. Las propuestas grandes se aprueban en la pestaña Simulador,
+# junto con las del resto del aprendizaje (una sola bandeja, no dos).
+with st.expander("🧠 Lo que aprendió el condor", expanded=False):
+    _cd_base = settings.intraday_condor
+    _cd_eff = learning.effective_condor(conn, _cd_base)
+    _cd_filas = [
+        ("Delta de los cortos", "{v:.3f}", _cd_base.short_delta_max, _cd_eff.short_delta_max),
+        ("Umbral de día calmo", "{v:.2%}", _cd_base.calm_range_pct, _cd_eff.calm_range_pct),
+        ("Crédito mínimo", "${v:,.0f}", _cd_base.min_credit, _cd_eff.min_credit),
+        ("Tope de VIX en suba", "{v:+.2f}%", _cd_base.max_vix_change_pct, _cd_eff.max_vix_change_pct),
+        ("Objetivo de ganancia", "{v:.0%}", _cd_base.profit_target_pct, _cd_eff.profit_target_pct),
+        ("Stop-loss", "${v:,.0f}", _cd_base.stop_loss_dollars, _cd_eff.stop_loss_dollars),
+    ]
+    _cd_cambiadas = [f for f in _cd_filas if f[2] != f[3]]
+    for _lbl, _fmt, _base_v, _eff_v in _cd_filas:
+        _b = _fmt.format(v=_base_v) if _base_v is not None else "sin filtro"
+        _e = _fmt.format(v=_eff_v) if _eff_v is not None else "sin filtro"
+        if _base_v == _eff_v:
+            st.markdown(f"- **{_lbl}**: {_e}  <span style='color:{TEXT_MUTED}'>(tu valor, sin cambios)</span>",
+                        unsafe_allow_html=True)
+        else:
+            st.markdown(f"- **{_lbl}**: {_b} → **{_e}**  <span style='color:{ACCENT}'>(aprendido)</span>",
+                        unsafe_allow_html=True)
+    if not _cd_cambiadas:
+        st.caption(f"Todavía no cambió nada: el condor no toca ninguna perilla hasta tener "
+                   f"{learning.CONDOR_MIN_EXAMPLES} operaciones cerradas (papel + real juntas). "
+                   "Aprende de cada cierre y revisa una vez por día, después del cierre de mercado.")
+    st.caption("El stop-loss solo se ajusta solo cuando se hace MÁS estricto. Aflojarlo siempre te "
+               "queda como propuesta para aprobar en la pestaña Simulador → Aprendizaje.")
+
+st.divider()
 
 
 def _render_condor_card(row) -> str:

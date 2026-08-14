@@ -383,7 +383,12 @@ class IntradayCondorSettings(BaseModel):
     entry_window_start: str = "10:00"
     entry_window_end: str = "14:00"
     max_collateral: float = 1000.0       # 10 pts de ala en SPX = ~$1000 teórico (riesgo real = stop $100)
-    min_credit: float = 0.0              # crédito mínimo para armar (0 = sin mínimo)
+    min_credit: float = 0.0              # crédito mínimo en DÓLARES para armar (0 = sin mínimo)
+    # Filtro de VOLATILIDAD EN SUBA (usuario 2026-08-14: "primas altas y vix subiendo"). Un condor
+    # vendido gana con la volatilidad quieta o cayendo; el VIX expandiéndose es justo el escenario
+    # que lo lastima. Si el VIX sube MÁS que este % en el día, no se abre. None = filtro apagado
+    # (comportamiento histórico intacto). Es una de las perillas que el aprendizaje puede mover.
+    max_vix_change_pct: float | None = None
     # --- Paso a DINERO REAL del Iron Condor (usuario 2026-08-13: "conectar el condor en real, el
     # mismo cerebro que en papel, mismo stop loss y mismo profit %") ---
     # APAGADO por default: aunque el condor de PAPEL corra (enabled=true), NUNCA se manda una orden

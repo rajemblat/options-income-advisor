@@ -28,7 +28,7 @@ from datetime import date, datetime
 from options_advisor.execution import price_walker as pw
 from options_advisor.execution import real_condor_sender as rcs
 from options_advisor.execution.live_engine import _serialized
-from options_advisor.simulator import iron_condor
+from options_advisor.simulator import iron_condor, iron_condor_engine, learning
 from options_advisor.simulator.iron_condor_engine import (
     CHAIN_FETCH_RANGE_DAYS,
     _chain_for_expiration,
@@ -153,6 +153,11 @@ def process_real_condor_cycle(conn, broker, settings, as_of: date) -> None:
     if not account_hash:
         return
 
+    # Perillas APRENDIDAS, las MISMAS que aplica el papel (usuario 2026-08-14): lo que el robot
+    # aprendió operando en papel se aplica igual acá. Va después de las compuertas de seguridad a
+    # propósito — el aprendizaje ajusta CÓMO opera, nunca SI puede operar.
+    cfg = learning.effective_condor(conn, cfg)
+
     symbol = cfg.underlying
     # Datos de mercado (bars para la señal, cadena 0DTE para marcar/armar). Una sola pedida por tick.
     try:
@@ -197,14 +202,18 @@ def process_real_condor_cycle(conn, broker, settings, as_of: date) -> None:
     if bars is None or chain is None or spot is None:
         return
 
-    signal = iron_condor.evaluate_condor_signal(bars, cfg)
-    if not (signal.calm and signal.in_window):
+    # Mismo filtro de VIX en suba que el papel (usuario 2026-08-14) — el cfg de acá ya viene con las
+    # perillas aprendidas aplicadas, así que el tope de VIX es el mismo que aprendió operando en papel.
+    vix_chg = iron_condor_engine.vix_change_pct(broker)
+    signal = iron_condor.evaluate_condor_signal(bars, cfg, vix_change_pct=vix_chg)
+    if not (signal.calm and signal.in_window and signal.vix_ok):
         return
     build = iron_condor.build_iron_condor(chain, spot, cfg)
     if build is None:
         return
 
-    _open_real_condor(conn, broker, account_hash, chain, build, spot, as_of, cfg, lt, symbol, signal)
+    _open_real_condor(conn, broker, account_hash, chain, build, spot, as_of, cfg, lt, symbol, signal,
+                      vix_chg=vix_chg)
 
 
 def _reconcile_and_manage_open(conn, broker, account_hash, chain, spot, as_of: date, cfg) -> None:
@@ -361,7 +370,31 @@ def settings_commission(cfg) -> float:
     return 0.0
 
 
-def _open_real_condor(conn, broker, account_hash, chain, build, spot, as_of: date, cfg, lt, symbol, signal) -> None:
+def _log_open_for_learning(conn, as_of: date, pos_id: int, build, spot, signal, entry_total: float,
+                           vix_chg: float | None) -> None:
+    """Registra la apertura REAL en el mismo log del robot que usa el papel, con las MISMAS features,
+    para que el aprendizaje del condor se alimente de las dos (usuario 2026-08-14: "papel y real
+    juntos"). `book: real` es lo que evita que un id de papel y uno real se confundan al cruzar."""
+    try:
+        import json as _json
+        sp_d, sc_d = iron_condor.short_leg_deltas(build)
+        ctx = {
+            "strategy": "iron_condor", "book": "real", "position_id": pos_id, "spot": spot,
+            "day_range_pct": signal.day_range_pct,
+            "short_put": build.short_put_strike, "short_call": build.short_call_strike,
+            "net_credit": entry_total, "max_loss": build.max_loss,
+            "short_put_delta": sp_d, "short_call_delta": sc_d,
+            "short_delta_avg": (round((sp_d + sc_d) / 2, 4) if sp_d is not None and sc_d is not None else None),
+            "vix_change_pct": vix_chg,
+        }
+        repo.insert_robot_decision(conn, as_of, "SPX", "open", "Entrada condor REAL abierta",
+                                   _json.dumps(ctx, default=str), datetime.now())
+    except Exception:
+        logger.debug("Condor-real: no se pudo registrar la apertura para el aprendizaje", exc_info=True)
+
+
+def _open_real_condor(conn, broker, account_hash, chain, build, spot, as_of: date, cfg, lt, symbol, signal,
+                      vix_chg: float | None = None) -> None:
     """Manda la orden combinada REAL para abrir el condor y registra la posición."""
     legs = _legs_from_build(build)
     if legs is None:
@@ -403,6 +436,7 @@ def _open_real_condor(conn, broker, account_hash, chain, build, spot, as_of: dat
         lower_breakeven=build.lower_breakeven, upper_breakeven=build.upper_breakeven, entry_spot=spot,
         open_schwab_order_id=res.order_id, status=status, entry_ts=datetime.now() if res.filled else None,
     )
+    _log_open_for_learning(conn, as_of, pos_id, build, spot, signal, entry_total, vix_chg)
     if res.filled:
         logger.warning("Condor-real: ABIERTO id=%s LLENÓ al instante — crédito $%.2f", pos_id, entry_total)
         _email("🟢 Lokshn ABRIÓ un Iron Condor REAL",

@@ -464,6 +464,14 @@ def job_learning_review(conn: sqlite3.Connection, settings: Settings, force: boo
         logger.info("Aprendizaje (iron): %s", bf.get("summary", ""))
     except Exception:
         logger.exception("Aprendizaje: fallo en la revisión diaria del iron butterfly")
+    # Iron Condor (usuario 2026-08-14): aprende de papel y real JUNTOS y ajusta delta de los cortos,
+    # umbral de día calmo, crédito mínimo, tope de VIX en suba y objetivo de ganancia. El stop-loss
+    # solo lo aprieta por su cuenta; aflojarlo siempre pasa por tu aprobación.
+    try:
+        cd = learning.review_condor(conn, settings.intraday_condor)
+        logger.info("Aprendizaje (condor): %s", cd.get("summary", ""))
+    except Exception:
+        logger.exception("Aprendizaje: fallo en la revisión diaria del iron condor")
     # Cruza tus votos POR PARÁMETRO (cada casillero 👍/😐/👎) con los pesos del cerebro y deja
     # propuestas de ajuste para que las apruebes (usuario 2026-08-06).
     try:

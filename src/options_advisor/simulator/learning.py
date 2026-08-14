@@ -4,7 +4,7 @@ import json
 import logging
 import sqlite3
 
-from options_advisor.config import IntradayButterflySettings, SimulatorSettings
+from options_advisor.config import IntradayButterflySettings, IntradayCondorSettings, SimulatorSettings
 from options_advisor.simulator import rules
 from options_advisor.storage import repository as repo
 
@@ -191,9 +191,13 @@ def calibrate_broker_margin_factor(conn: sqlite3.Connection, broker, settings: S
 
 def _state_key_for_param(param: str) -> str:
     """Mapea el nombre del parámetro de una propuesta a su clave en learning_state. Los pesos del
-    cerebro de puts van con prefijo 'weight.'; el umbral del butterfly con 'butterfly.'."""
+    cerebro de puts van con prefijo 'weight.'; el umbral del butterfly con 'butterfly.'; las perillas
+    del Iron Condor con 'condor.' (usuario 2026-08-14)."""
     if param == "distance_threshold_pct":
         return _BF_THRESHOLD_KEY
+    for key, (field, *_rest) in _CD_BOUNDS.items():
+        if param == field:
+            return key
     return f"weight.{param}"
 
 
@@ -545,3 +549,230 @@ def review_butterfly(
     repo.insert_learning_report(conn, n, summary, json.dumps(
         {"strategy": "iron_butterfly", "avg_good": avg_good, "avg_bad": avg_bad, "current": current, "proposed": proposed_val}, default=str))
     return {"applied": applied, "proposed": proposed, "examples": n, "summary": summary, "enough": True}
+
+
+# ============================ Aprendizaje del IRON CONDOR (usuario 2026-08-14) ============================
+# "Que el robot aprenda de las operaciones y se haga experto, sepa qué hacer y qué no volver a hacer."
+#
+# Cómo aprende: cada APERTURA de condor queda registrada con sus features (delta real de los cortos,
+# rango intradía del día, crédito cobrado, VIX y su variación). Cuando esa posición CIERRA, se le pega
+# una etiqueta de calidad con la MISMA función que el resto del aprendizaje (`_quality_label`: tu
+# feedback pesa 0.7 y el resultado real 0.3). Después, por cada perilla, se compara el promedio de la
+# feature en las BUENAS contra el de las MALAS y se mueve el parámetro hacia donde estaban las buenas,
+# con un paso acotado.
+#
+# Decisiones del usuario (2026-08-14):
+#   · perillas: delta de los cortos, objetivo de ganancia, día calmo, stop-loss, y además crédito
+#     mínimo ("primas altas") y VIX en suba;
+#   · modo MIXTO: cambio chico se aplica solo, grande queda como propuesta para aprobar;
+#   · aprende de papel Y real juntos;
+#   · no toca NADA hasta tener 20 operaciones cerradas con señal.
+#
+# Salvaguarda propia del condor: el STOP-LOSS solo se auto-aplica cuando el cambio lo hace MÁS
+# ESTRICTO (stop más chico = menos riesgo). Aflojar el stop siempre pasa por tu aprobación, por más
+# chico que sea el paso — es tu límite de riesgo, no un parámetro más.
+
+CONDOR_MIN_EXAMPLES = 20
+
+_CD_PREFIX = "condor."
+_CD_DELTA_KEY = _CD_PREFIX + "short_delta_max"
+_CD_CALM_KEY = _CD_PREFIX + "calm_range_pct"
+_CD_CREDIT_KEY = _CD_PREFIX + "min_credit"
+_CD_VIX_KEY = _CD_PREFIX + "max_vix_change_pct"
+_CD_PROFIT_KEY = _CD_PREFIX + "profit_target_pct"
+_CD_STOP_KEY = _CD_PREFIX + "stop_loss_dollars"
+
+# (clave de estado, campo del settings, paso máximo por revisión, hasta dónde se aplica solo, mín, máx)
+_CD_BOUNDS = {
+    _CD_DELTA_KEY:  ("short_delta_max",     0.03,   0.015,   0.05,   0.30),
+    _CD_CALM_KEY:   ("calm_range_pct",      0.001,  0.0005,  0.001,  0.012),
+    _CD_CREDIT_KEY: ("min_credit",          25.0,   10.0,    0.0,    400.0),
+    _CD_VIX_KEY:    ("max_vix_change_pct",  1.5,    0.75,    0.5,    15.0),
+    _CD_PROFIT_KEY: ("profit_target_pct",   0.05,   0.025,   0.20,   0.80),
+    _CD_STOP_KEY:   ("stop_loss_dollars",   25.0,   10.0,    25.0,   400.0),
+}
+
+# Cuando el stop-loss se dispara en esta fracción o más de las operaciones, el objetivo de ganancia
+# está demasiado lejos: se cobra más tarde y da tiempo a que el mercado se dé vuelta.
+_CD_STOP_RATE_HIGH = 0.30
+# Si NUNCA hubo stop y todas cerraron por objetivo, hay margen para pedir un poco más de ganancia.
+_CD_STOP_RATE_LOW = 0.05
+
+
+def effective_condor(conn: sqlite3.Connection, cfg: IntradayCondorSettings) -> IntradayCondorSettings:
+    """Copia del IntradayCondorSettings con las perillas APRENDIDAS aplicadas. La usan los DOS
+    motores (papel y real) para que sigan siendo el mismo cerebro: lo que aprende operando en papel
+    se aplica igual cuando opera con plata real."""
+    try:
+        state = repo.get_learning_state(conn)
+    except Exception:
+        return cfg
+    update = {}
+    for key, (field, *_rest) in _CD_BOUNDS.items():
+        learned = state.get(key)
+        if learned is not None:
+            update[field] = learned
+    if not update:
+        return cfg
+    return cfg.model_copy(update=update)
+
+
+def _cd_feature(ctx: dict, name: str) -> float | None:
+    v = ctx.get(name)
+    return float(v) if isinstance(v, (int, float)) else None
+
+
+def _cd_move(conn, key: str, current: float, target: float, reason_tpl: str,
+             *, auto_only_if_tighter: bool = False, tighter_is_lower: bool = True) -> tuple[list, list]:
+    """Mueve una perilla hacia `target` con paso acotado. Devuelve (aplicados, propuestos).
+    `auto_only_if_tighter`: si el cambio afloja el parámetro, nunca se aplica solo — va a propuesta."""
+    field, max_step, auto_cap, lo, hi = _CD_BOUNDS[key]
+    delta = max(-max_step, min(max_step, target - current))
+    proposed_val = round(min(hi, max(lo, current + delta)), 6)
+    change = round(proposed_val - current, 6)
+    if abs(change) < 1e-9:
+        return [], []
+    reason = reason_tpl.format(current=current, proposed=proposed_val)
+    afloja = (change > 0) if tighter_is_lower else (change < 0)
+    puede_solo = abs(change) <= auto_cap and not (auto_only_if_tighter and afloja)
+    entry = {"param": field, "from": current, "to": proposed_val, "reason": reason}
+    if puede_solo:
+        repo.set_learning_value(conn, key, proposed_val)
+        return [entry], []
+    if not repo.has_pending_proposal_for(conn, field):
+        repo.insert_learning_proposal(conn, field, current, proposed_val, reason)
+        return [], [entry]
+    return [], []
+
+
+def review_condor(
+    conn: sqlite3.Connection,
+    cfg: IntradayCondorSettings,
+    *,
+    min_examples: int = CONDOR_MIN_EXAMPLES,
+) -> dict:
+    """Revisión diaria del Iron Condor: cruza cada apertura (papel Y real) con su resultado y ajusta
+    las perillas. Devuelve un resumen legible para el dashboard y el log."""
+    examples = repo.get_condor_learning_examples(conn)
+    rows = []   # (features de la apertura, calidad, motivo de cierre)
+    for ex in examples:
+        try:
+            ctx = json.loads(ex["context_json"]) if ex["context_json"] else {}
+        except (ValueError, TypeError):
+            continue
+        q = _quality_label(ex)
+        if q is None:
+            continue
+        rows.append((ctx, q, ex["close_reason"]))
+
+    n = len(rows)
+    state = repo.get_learning_state(conn)
+    if n < min_examples:
+        summary = (f"Iron Condor: todavía no toco nada — llevo {n} de las {min_examples} operaciones "
+                   f"cerradas que pedí para tener una muestra confiable.")
+        repo.insert_learning_report(conn, n, summary, json.dumps({"strategy": "iron_condor", "n": n}))
+        return {"applied": [], "proposed": [], "examples": n, "summary": summary, "enough": False}
+
+    good = [r for r in rows if r[1] > 0]
+    bad = [r for r in rows if r[1] < 0]
+    applied, proposed, aprendido = [], [], []
+
+    # --- Perillas de ENTRADA: se aprenden comparando buenas contra malas ---
+    if good and bad:
+        for key, feat, texto in (
+            (_CD_DELTA_KEY, "short_delta_avg",
+             "Las buenas vendían a delta {g:.3f} y las malas a {b:.3f}: conviene {dir} el delta ({{current:.3f}} → {{proposed:.3f}})."),
+            (_CD_CALM_KEY, "day_range_pct",
+             "Las buenas entraban con el SPX moviéndose {g:.3%} en el día y las malas {b:.3%}: {dir} la exigencia de día calmo ({{current:.3%}} → {{proposed:.3%}})."),
+            (_CD_CREDIT_KEY, "net_credit",
+             "Las buenas cobraban ${g:,.0f} de prima y las malas ${b:,.0f}: {dir} el crédito mínimo (${{current:,.0f}} → ${{proposed:,.0f}})."),
+        ):
+            g = [f for r in good if (f := _cd_feature(r[0], feat)) is not None]
+            b = [f for r in bad if (f := _cd_feature(r[0], feat)) is not None]
+            if len(g) < 3 or len(b) < 3:
+                continue   # sin datos suficientes de ESTA feature (ej. condors viejos sin delta guardado)
+            avg_g, avg_b = sum(g) / len(g), sum(b) / len(b)
+            field = _CD_BOUNDS[key][0]
+            current = state.get(key, getattr(cfg, field, None))
+            if current is None:
+                current = avg_g
+            # Para el crédito mínimo no se apunta al promedio de las buenas (dejaría fuera a la mitad),
+            # sino a un 85% de ese promedio: filtra las primas claramente flacas sin cortar de más.
+            target = avg_g * 0.85 if key == _CD_CREDIT_KEY else avg_g
+            direccion = "subir" if target > current else "bajar"
+            a, p = _cd_move(conn, key, float(current), float(target),
+                            texto.format(g=avg_g, b=avg_b, dir=direccion))
+            applied += a
+            proposed += p
+            if a or p:
+                aprendido.append(field)
+
+        # VIX en suba: no se apunta al promedio sino al PEOR VIX con el que una operación salió bien,
+        # así el filtro nunca deja afuera un escenario que históricamente funcionó.
+        gv = [f for r in good if (f := _cd_feature(r[0], "vix_change_pct")) is not None]
+        bv = [f for r in bad if (f := _cd_feature(r[0], "vix_change_pct")) is not None]
+        if len(gv) >= 3 and len(bv) >= 3:
+            peor_buena, avg_mala = max(gv), sum(bv) / len(bv)
+            if avg_mala > peor_buena:   # solo si las malas entraban con el VIX claramente más arriba
+                current = state.get(_CD_VIX_KEY, cfg.max_vix_change_pct)
+                current = float(current) if current is not None else _CD_BOUNDS[_CD_VIX_KEY][4]
+                a, p = _cd_move(conn, _CD_VIX_KEY, current, peor_buena,
+                                f"Las malas entraban con el VIX subiendo {avg_mala:+.2f}% y la peor de las buenas "
+                                f"soportó {peor_buena:+.2f}%: no entrar con el VIX subiendo más que eso "
+                                "({current:+.2f}% → {proposed:+.2f}%).",
+                                auto_only_if_tighter=True)
+                applied += a
+                proposed += p
+                if a or p:
+                    aprendido.append("max_vix_change_pct")
+
+    # --- Perillas de SALIDA: se aprenden de CÓMO cerraron, no de cómo entraron ---
+    stops = [r for r in rows if r[2] == "stop_loss"]
+    stop_rate = len(stops) / n
+    cur_profit = float(state.get(_CD_PROFIT_KEY, cfg.profit_target_pct))
+    if stop_rate >= _CD_STOP_RATE_HIGH:
+        a, p = _cd_move(conn, _CD_PROFIT_KEY, cur_profit, cur_profit - _CD_BOUNDS[_CD_PROFIT_KEY][1],
+                        f"Saltó el stop en {stop_rate:.0%} de las operaciones: el objetivo está lejos y da "
+                        "tiempo a que el mercado se dé vuelta; cobrar antes ({current:.0%} → {proposed:.0%}).")
+        applied += a
+        proposed += p
+        if a or p:
+            aprendido.append("profit_target_pct")
+    elif stop_rate <= _CD_STOP_RATE_LOW and len(good) >= min_examples // 2:
+        a, p = _cd_move(conn, _CD_PROFIT_KEY, cur_profit, cur_profit + _CD_BOUNDS[_CD_PROFIT_KEY][1],
+                        f"Casi no saltó el stop ({stop_rate:.0%}) y {len(good)} operaciones salieron bien: "
+                        "hay margen para pedir un poco más de ganancia ({current:.0%} → {proposed:.0%}).")
+        applied += a
+        proposed += p
+        if a or p:
+            aprendido.append("profit_target_pct")
+
+    # Stop-loss: SOLO se ajusta hacia abajo (más estricto) de forma automática. Aflojarlo, nunca solo.
+    if stops:
+        peor = min(r[1] for r in rows)   # solo para el texto: qué tan mal salieron las peores
+        cur_stop = float(state.get(_CD_STOP_KEY, cfg.stop_loss_dollars))
+        if stop_rate >= _CD_STOP_RATE_HIGH:
+            a, p = _cd_move(conn, _CD_STOP_KEY, cur_stop, cur_stop - _CD_BOUNDS[_CD_STOP_KEY][1],
+                            f"El stop se disparó en {stop_rate:.0%} de las operaciones (calidad peor "
+                            f"{peor:+.2f}): cortar antes la pérdida (${{current:,.0f}} → ${{proposed:,.0f}}).",
+                            auto_only_if_tighter=True)
+            applied += a
+            proposed += p
+            if a or p:
+                aprendido.append("stop_loss_dollars")
+
+    partes = []
+    if applied:
+        partes.append(f"ajusté solo {len(applied)} perilla(s)")
+    if proposed:
+        partes.append(f"dejé {len(proposed)} propuesta(s) para que apruebes")
+    if not partes:
+        partes.append("no hizo falta cambiar nada")
+    summary = (f"Iron Condor: aprendí de {n} operaciones ({len(good)} buenas, {len(bad)} malas, "
+               f"stop en {stop_rate:.0%}): " + ", ".join(partes) + ".")
+    repo.insert_learning_report(conn, n, summary, json.dumps(
+        {"strategy": "iron_condor", "n": n, "good": len(good), "bad": len(bad),
+         "stop_rate": round(stop_rate, 4), "params": aprendido,
+         "applied": applied, "proposed": proposed}, default=str))
+    return {"applied": applied, "proposed": proposed, "examples": n, "summary": summary,
+            "enough": True, "stop_rate": stop_rate}

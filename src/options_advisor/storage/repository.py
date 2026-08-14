@@ -1760,6 +1760,35 @@ def get_butterfly_learning_examples(conn: sqlite3.Connection) -> list[sqlite3.Ro
     ).fetchall()
 
 
+def get_condor_learning_examples(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Dataset del aprendizaje del Iron Condor (usuario 2026-08-14): cada APERTURA con sus features
+    en el contexto (delta real de los cortos, rango del día, crédito, VIX), tu feedback, y el
+    resultado de la posición que abrió.
+
+    Toma PAPEL Y REAL juntos, como pidió el usuario. El contexto guarda `position_id` y `book`
+    ('paper' o 'real') para saber contra qué tabla enlazar — las dos tienen ids independientes, así
+    que sin el `book` un id 7 de papel se confundiría con un id 7 real. Las aperturas viejas, de
+    antes de que se guardara `book`, se tratan como de papel (era lo único que existía)."""
+    return conn.execute(
+        """
+        SELECT d.id, d.context_json, d.user_feedback,
+               COALESCE(p.status, r.status)             AS position_status,
+               COALESCE(p.realized_pnl, r.realized_pnl) AS realized_pnl,
+               COALESCE(p.close_reason, r.close_reason) AS close_reason
+        FROM robot_decisions d
+        LEFT JOIN iron_condor_positions p
+               ON COALESCE(json_extract(d.context_json, '$.book'), 'paper') = 'paper'
+              AND p.id = CAST(json_extract(d.context_json, '$.position_id') AS INTEGER)
+        LEFT JOIN real_condor_positions r
+               ON json_extract(d.context_json, '$.book') = 'real'
+              AND r.id = CAST(json_extract(d.context_json, '$.position_id') AS INTEGER)
+        WHERE d.action = 'open'
+          AND json_extract(d.context_json, '$.strategy') = 'iron_condor'
+        ORDER BY d.id DESC
+        """
+    ).fetchall()
+
+
 def get_robot_decisions(conn: sqlite3.Connection, limit: int = 200, action: str | None = None) -> list[sqlite3.Row]:
     if action:
         return conn.execute(
