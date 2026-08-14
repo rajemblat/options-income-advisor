@@ -1709,18 +1709,26 @@ def set_decision_position_id(conn: sqlite3.Connection, decision_id: int, positio
     conn.commit()
 
 
-def get_intraday_open_decision(conn: sqlite3.Connection, strategy: str, position_id: int) -> sqlite3.Row | None:
+def get_intraday_open_decision(conn: sqlite3.Connection, strategy: str, position_id: int,
+                               book: str = "paper") -> sqlite3.Row | None:
     """La decisión de apertura de una posición intradía (iron_butterfly / iron_condor), enlazada por
     el position_id guardado en su contexto — para poder puntuarla (👍/👎 + nota) desde el dashboard
-    igual que los puts (usuario 2026-08-05)."""
+    igual que los puts (usuario 2026-08-05).
+
+    `book` distingue papel de real: las dos tablas de condor llevan ids independientes, así que sin
+    este filtro el condor de papel #7 podía traer la decisión del condor REAL #7 (y mostrarte los
+    datos de otra operación al puntuar). Las decisiones viejas, de antes de que se guardara `book`,
+    se tratan como de papel — era lo único que existía."""
     return conn.execute(
         """
         SELECT * FROM robot_decisions
-        WHERE action = 'open' AND context_json LIKE ?
+        WHERE action = 'open'
+          AND json_extract(context_json, '$.strategy') = ?
           AND CAST(json_extract(context_json, '$.position_id') AS INTEGER) = ?
+          AND COALESCE(json_extract(context_json, '$.book'), 'paper') = ?
         ORDER BY id DESC LIMIT 1
         """,
-        (f"%{strategy}%", position_id),
+        (strategy, position_id, book),
     ).fetchone()
 
 

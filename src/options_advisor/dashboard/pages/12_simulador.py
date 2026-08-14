@@ -35,6 +35,11 @@ from options_advisor.dashboard.simulator_table import (
 from options_advisor.scheduler.market_calendar import market_session
 from options_advisor.simulator import learning, rules
 from options_advisor.storage import repository as repo
+from options_advisor.dashboard.rating import (  # noqa: E402  (bloque compartido con Real Market)
+    _render_intraday_ratings,
+    _render_rating,
+    condor_data_rows,
+)
 
 CONTRACT_MULTIPLIER = 100
 _ACTION_LABELS = {"open": "🟢 Abrió", "close": "🔵 Cerró", "skip": "⚪ Salteó", "skip_risk": "🟠 Salteó (riesgo)", "watch": "👁️ Vigilando"}
@@ -231,93 +236,6 @@ def _data_grid_md(ctx: dict, pos_row) -> str:
         r = right[i] if i < len(right) else ("", "", "")
         lines.append(f"| {l[1]} | **{l[2]}** | {r[1]} | **{r[2] if r[1] else ''}** |")
     return "\n".join(lines)
-
-
-_VOTE_OPTS = ["—", "👍", "😐", "👎"]
-_VOTE_TO_FB = {"👍": "good", "😐": "normal", "👎": "bad", "—": None}
-_FB_TO_IDX = {"good": 1, "normal": 2, "bad": 3}
-
-
-@st.fragment
-def _render_rating(conn, decision_row, key_suffix: str, question: str, param_rows=None) -> None:
-    """Bloque de puntuación 👍/😐/👎 + nota. Es un `st.fragment` + `st.form`: al Guardar recarga SOLO
-    este bloque, no toda la página — antes recargaba todo (y volvía a pedir datos a Schwab) y la
-    pantalla quedaba oscura varios segundos (usuario 2026-08-06). Ahora el guardado es instantáneo;
-    la operación desaparece de la lista de pendientes cuando refrescás. "Normal" = neutral (indeciso):
-    el aprendizaje lo trata como señal neutra, ni suma ni resta.
-
-    Si se pasa `param_rows` (lista de (param_key, etiqueta, valor)), se muestra además un voto
-    👍/😐/👎 POR CADA casillero (usuario 2026-08-06: "votar cada parámetro"). Todo se guarda con el
-    mismo botón. El aprendizaje cruza esos votos con los pesos del cerebro."""
-    if decision_row is None:
-        st.caption("No se encontró la decisión de apertura para puntuar esta operación.")
-        return
-    did = decision_row["id"]
-    cur_idx = _FB_TO_IDX.get(decision_row["user_feedback"], 0)
-    stored_params = repo.get_decision_param_feedback(conn, did) if param_rows else {}
-    with st.form(key=f"ratingform_{key_suffix}_{did}"):
-        rc1, rc2 = st.columns([1, 2])
-        with rc1:
-            choice = st.radio(question, ["Sin marcar", "👍 Bien", "😐 Normal", "👎 Mal"], index=cur_idx, key=f"fb_{key_suffix}_{did}")
-        with rc2:
-            note = st.text_area("📝 Tu nota (enseñale con tus palabras)", value=decision_row["user_note"] or "",
-                                key=f"note_{key_suffix}_{did}", height=90,
-                                placeholder="Ej: buena entrada, venía cayendo y con IV alta / se cerró tarde, debió esperar…")
-
-        param_widgets = {}
-        if param_rows:
-            with st.expander("🗳️ Votar cada parámetro (opcional) — enseñale qué estuvo bien/mal casillero por casillero"):
-                st.caption("Dejá en **—** los que no quieras opinar. Los que el robot usa para decidir "
-                           "(delta, cobertura, anualizado, POP, IV rank, día, liquidez, theta) ajustan cómo elige; "
-                           "el resto queda guardado como tu historial detallado.")
-                for pkey, plabel, pval in param_rows:
-                    pc1, pc2 = st.columns([3, 2])
-                    with pc1:
-                        st.markdown(f"**{plabel}:** {pval}")
-                    with pc2:
-                        idx = _FB_TO_IDX.get(stored_params.get(pkey), 0)
-                        param_widgets[pkey] = st.radio(
-                            plabel, _VOTE_OPTS, index=idx, horizontal=True,
-                            key=f"pv_{key_suffix}_{did}_{pkey}", label_visibility="collapsed")
-
-        if st.form_submit_button("💾 Guardar puntuación"):
-            fb = {"👍 Bien": "good", "😐 Normal": "normal", "👎 Mal": "bad"}.get(choice)
-            repo.set_decision_feedback(conn, did, fb)
-            repo.set_decision_note(conn, did, note)
-            if param_rows:
-                votes = {k: _VOTE_TO_FB[v] for k, v in param_widgets.items() if _VOTE_TO_FB.get(v)}
-                repo.set_decision_param_feedback(conn, did, votes)
-            marca = {"good": "👍 Bien", "normal": "😐 Normal", "bad": "👎 Mal"}.get(fb, "sin marcar")
-            extra = f" · {sum(1 for v in param_widgets.values() if _VOTE_TO_FB.get(v))} parámetro(s) votado(s)" if param_rows else ""
-            st.success(f"Guardado ✅ ({marca}{extra}). Pasa a **Puntuadas** al refrescar la página.")
-
-
-def _render_intraday_ratings(conn, strategy: str, open_rows, closed_rows, label_fn, key_prefix: str) -> None:
-    """Puntuación 👍/👎 + nota para las operaciones intradía (iron butterfly / iron condor), una por
-    posición dentro de un expander. Enlaza cada posición con su decisión de apertura por el
-    position_id del contexto (usuario 2026-08-05: "en los iron poner para puntuar")."""
-    st.markdown("#### ⭐ Puntuá estas operaciones")
-    st.caption("Decile 👍/👎 con una nota — así el robot aprende tu criterio también en el iron. "
-               "Al guardar, la operación se va a **Puntuadas ✅** y desaparece de acá cuando refrescás.")
-    shown = 0
-    had_any = False
-    for r in list(open_rows) + list(closed_rows)[:15]:
-        dec = repo.get_intraday_open_decision(conn, strategy, r["id"])
-        if dec is None:
-            continue
-        had_any = True
-        # Ya puntuada → se oculta de la lista de pendientes (igual que los puts, usuario 2026-08-06).
-        if dec["user_feedback"]:
-            continue
-        with st.expander(f"· sin puntuar  {label_fn(r)}"):
-            _render_rating(conn, dec, key_prefix, "¿La IA operó BIEN esta operación (entrada y salida)?")
-        shown += 1
-    if shown == 0:
-        if had_any:
-            st.success("¡Listo! No te queda ninguna operación del iron por puntuar (para el período elegido). "
-                       "Las que puntuaste están en **Puntuadas ✅**.")
-        else:
-            st.caption("Todavía no hay operaciones para puntuar (aparecen acá cuando el iron abra alguna).")
 
 
 st.set_page_config(page_title="Lokshn · Robot", page_icon="🤖", layout="wide", initial_sidebar_state="expanded")
@@ -1340,9 +1258,13 @@ with tab_condor:
     st.divider()
     _render_intraday_ratings(
         conn, "iron_condor", ic_open, ic_closed,
-        lambda r: f"SP {r['short_put_strike']:.0f} / SC {r['short_call_strike']:.0f} · crédito ${r['entry_net_credit']:.2f} · "
-                  f"{'abierto' if r['status']=='open' else 'cerrado'}",
-        "ic",
+        lambda r: (f"SP {r['short_put_strike']:.0f} / SC {r['short_call_strike']:.0f} · "
+                   f"alas {r['short_put_strike'] - r['long_put_strike']:.0f}/{r['long_call_strike'] - r['short_call_strike']:.0f} pts · "
+                   f"crédito ${r['entry_net_credit']:.2f} · "
+                   + (f"{r['close_reason']} ${r['realized_pnl']:+,.2f}"
+                      if r["status"] == "closed" and r["realized_pnl"] is not None
+                      else ("abierto" if r["status"] == "open" else "cerrado"))),
+        "ic", data_rows_fn=condor_data_rows, book="paper",
     )
 
 

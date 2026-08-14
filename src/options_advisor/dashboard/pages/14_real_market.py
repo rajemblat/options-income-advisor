@@ -21,6 +21,7 @@ from options_advisor.dashboard.components import (
     render_header,
     render_notification_bell,
 )
+from options_advisor.dashboard.rating import _render_intraday_ratings, condor_data_rows
 from options_advisor.simulator import learning
 from options_advisor.storage import repository as repo
 
@@ -691,6 +692,26 @@ with _ca3:
                   "gestionando). " if _cond_paused else "")
                + ("" if _cond_system_on else "⚠️ El sistema real del condor está apagado en el settings "
                   "(`intraday_condor.live_enabled`) o el trading real no está en modo REAL."))
+
+
+# --- Puntuá los condors REALES (usuario 2026-08-14: "tanto en real como simulador") --------------
+# Mismo bloque y mismos datos que en el Simulador, pero leyendo la tabla REAL. El `book="real"` es
+# imprescindible: las dos tablas llevan ids independientes, así que sin él el condor real #7 traería
+# la decisión del condor de papel #7 y estarías puntuando otra operación.
+_co_cerrados_rate = repo.get_closed_real_condor_positions(conn, limit=30)
+if _co_open or _co_cerrados_rate:
+    _render_intraday_ratings(
+        conn, "iron_condor", _co_open, _co_cerrados_rate,
+        lambda r: (f"REAL · SP {r['short_put_strike']:.0f} / SC {r['short_call_strike']:.0f} · "
+                   f"alas {r['short_put_strike'] - r['long_put_strike']:.0f}/"
+                   f"{r['long_call_strike'] - r['short_call_strike']:.0f} pts · "
+                   f"crédito ${r['entry_net_credit']:.2f} · "
+                   + (f"{r['close_reason']} ${r['realized_pnl']:+,.2f}"
+                      if r["status"] == "closed" and r["realized_pnl"] is not None
+                      else ("abierto" if r["status"] == "open" else str(r["status"])))),
+        "icreal", data_rows_fn=condor_data_rows, book="real",
+    )
+    st.divider()
 
 
 # --- Lo que el condor APRENDIÓ (usuario 2026-08-14) ---------------------------------------------
