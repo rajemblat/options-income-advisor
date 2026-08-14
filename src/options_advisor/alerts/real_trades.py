@@ -4,8 +4,8 @@ import logging
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 
-from options_advisor.alerts import notifier
-from options_advisor.alerts.narrator import build_real_trade_context, narrate_real_trade
+from options_advisor.alerts import formatting, notifier
+from options_advisor.alerts.narrator import build_real_trade_context
 from options_advisor.broker.base import BrokerClient
 from options_advisor.broker.models import FilledOrder, FilledOrderLeg, index_quote_symbol, parse_occ_option_symbol
 from options_advisor.config import Settings
@@ -53,47 +53,82 @@ def _is_roll(order: FilledOrder) -> bool:
     return "OPENING" in effects and "CLOSING" in effects
 
 
+def _order_legs_for_display(opening: list[FilledOrderLeg], parsed: dict[str, tuple]) -> list[FilledOrderLeg]:
+    """Ordena las patas para la tarjeta: las VENDIDAS primero (la 1ª es el ancla — sus datos van en
+    las columnas singulares de real_trade_alerts y en la cobertura), luego las compradas; dentro de
+    cada grupo, puts antes que calls y por strike. Así el ancla de un ratio es el put corto."""
+    def key(leg: FilledOrderLeg):
+        _, _, opt_type, strike = parsed[leg.occ_symbol]
+        is_sell = leg.instruction == "SELL_TO_OPEN"
+        # Agrupado por ALA: puts antes que calls; dentro de cada tipo, la(s) VENDIDA(s) primero (la 1ª es el
+        # ancla — columnas singulares + cobertura), luego las compradas; por strike. Mantiene el orden que
+        # espera `_strikes_dict` para el iron condor (sell_put, buy_put, sell_call, buy_call).
+        return (0 if opt_type == "put" else 1, 0 if is_sell else 1, strike)
+    return sorted(opening, key=key)
+
+
+def _label_for_legs(opening: list[FilledOrderLeg], parsed: dict[str, tuple]) -> str:
+    """Etiqueta la composición REAL de la orden con el nombre con propio que mejor le calce (para que
+    el narrador/UI la nombre lindo); si no calza ninguno con nombre, `CUSTOM_MULTILEG` — el payoff se
+    calcula igual, genérico por patas (usuario 2026-08-12: espejo EXACTO de lo que se hace en Schwab,
+    cualquier estructura: ratios, backratios, spreads de crédito Y débito, straddles, etc.)."""
+    n = len(opening)
+    sells = [l for l in opening if l.instruction == "SELL_TO_OPEN"]
+    buys = [l for l in opening if l.instruction == "BUY_TO_OPEN"]
+    sp = [l for l in sells if parsed[l.occ_symbol][2] == "put"]
+    sc = [l for l in sells if parsed[l.occ_symbol][2] == "call"]
+    bp = [l for l in buys if parsed[l.occ_symbol][2] == "put"]
+    bc = [l for l in buys if parsed[l.occ_symbol][2] == "call"]
+
+    def _eq_qty(a: FilledOrderLeg, b: FilledOrderLeg) -> bool:
+        # Vertical "de verdad" = 1:1 (misma cantidad de contratos). Si difieren (vender 2 / comprar 1) es
+        # un RATIO, no un vertical — cae a las ramas de ratio de abajo (usuario 2026-08-12: el caso META).
+        return int(round(a.quantity)) == int(round(b.quantity))
+
+    if n == 4 and len(sp) == 1 and len(bp) == 1 and len(sc) == 1 and len(bc) == 1:
+        return c.IRON_CONDOR
+    # Vertical de puts (2 patas 1:1, 1 vendida + 1 comprada): crédito (vendo el strike MÁS ALTO) = bull put;
+    # débito (compro el más alto) = bear put.
+    if n == 2 and len(sp) == 1 and len(bp) == 1 and not sc and not bc and _eq_qty(sp[0], bp[0]):
+        return c.BULL_PUT_SPREAD if parsed[sp[0].occ_symbol][3] > parsed[bp[0].occ_symbol][3] else c.BEAR_PUT_SPREAD
+    # Vertical de calls 1:1: crédito (vendo el más BAJO) = bear call; débito (compro el más bajo) = bull call.
+    if n == 2 and len(sc) == 1 and len(bc) == 1 and not sp and not bp and _eq_qty(sc[0], bc[0]):
+        return c.BEAR_CALL_SPREAD if parsed[sc[0].occ_symbol][3] < parsed[bc[0].occ_symbol][3] else c.BULL_CALL_SPREAD
+    # Solo puts, cantidades desparejas (o >2 patas): ratio de puts (ej. el backratio de META: vender 2, comprar 1).
+    if sp and not sc and not bc:
+        return c.PUT_RATIO_SPREAD
+    if sc and not sp and not bp:
+        return c.CALL_RATIO_SPREAD
+    return c.CUSTOM_MULTILEG
+
+
 def _classify_opening_legs(legs: list[FilledOrderLeg]) -> tuple[str, list[FilledOrderLeg]] | None:
-    """Clasifica las patas de APERTURA de una orden según su composición REAL — no una elegida
-    por el motor — para reconocer estrategias de varias patas armadas en una sola orden
-    combinada de Schwab (Iron Condor, credit spreads). Bug real 2026-07-29: un Iron Condor de 4
-    patas (AMD) se detectaba como Cash-Secured Put de 1 sola pata porque el caller procesaba
-    cada pata VENDIDA por separado, ignorando las patas COMPRADAS que definen el riesgo
-    acotado. None si la composición no matchea ninguna de las estrategias reconocidas acá — el
-    caller degrada al camino de 1 pata vendida por vez (comportamiento anterior, sigue correcto
-    para posiciones genuinamente desnudas). Alcance deliberadamente acotado a estrategias de
-    INGRESO (crédito neto: la pata vendida cobra más que lo que cuesta la comprada) — un debit
-    spread no es una venta de prima, queda fuera de este detector igual que antes."""
+    """Agrupa TODAS las patas de APERTURA de una orden de Schwab como UNA sola estrategia combinada,
+    para replicar EXACTO lo que el usuario armó (usuario 2026-08-12: "si vendo dos put y compro uno debe
+    decir exacto"). Reemplaza la versión anterior que solo reconocía iron condors y verticales de crédito
+    y colapsaba todo lo demás (ratios, backratios, débitos) a un put/call desnudo con el riesgo mal.
+
+    Devuelve (etiqueta, patas_ordenadas) para CUALQUIER orden multi-pata de UNA sola expiración; el payoff
+    se calcula genérico por patas (strategy/payoff.py::_generic_multileg_payoff), así que la etiqueta es
+    solo informativa. Devuelve None cuando NO hay que agrupar:
+      - 1 sola pata de apertura → el caller usa el camino de siempre (CSP/desnudo/covered call), correcto.
+      - Varias EXPIRACIONES distintas (calendar/diagonal) → el payoff a una sola expiración no aplica; se
+        deja el comportamiento anterior (fuera de alcance de este espejo por ahora).
+      - Alguna pata con instrucción que no sea SELL_TO_OPEN/BUY_TO_OPEN → no forzar."""
     opening = [leg for leg in legs if leg.position_effect == "OPENING"]
+    if len(opening) < 2:
+        return None
     parsed: dict[str, tuple] = {}
     for leg in opening:
         p = parse_occ_option_symbol(leg.occ_symbol)
         if p is None:
             return None
         parsed[leg.occ_symbol] = p
-
-    sells = [leg for leg in opening if leg.instruction == "SELL_TO_OPEN"]
-    buys = [leg for leg in opening if leg.instruction == "BUY_TO_OPEN"]
-    if len(sells) + len(buys) != len(opening):
-        return None  # alguna pata con otra instrucción — no forzar una clasificación a medias
-
-    sell_puts = [leg for leg in sells if parsed[leg.occ_symbol][2] == "put"]
-    sell_calls = [leg for leg in sells if parsed[leg.occ_symbol][2] == "call"]
-    buy_puts = [leg for leg in buys if parsed[leg.occ_symbol][2] == "put"]
-    buy_calls = [leg for leg in buys if parsed[leg.occ_symbol][2] == "call"]
-
-    if len(opening) == 4 and len(sell_puts) == 1 and len(buy_puts) == 1 and len(sell_calls) == 1 and len(buy_calls) == 1:
-        return c.IRON_CONDOR, [sell_puts[0], buy_puts[0], sell_calls[0], buy_calls[0]]
-
-    if len(opening) == 2 and len(sell_puts) == 1 and len(buy_puts) == 1:
-        sell_leg, buy_leg = sell_puts[0], buy_puts[0]
-        return (c.BULL_PUT_SPREAD, [sell_leg, buy_leg]) if sell_leg.price > buy_leg.price else None
-
-    if len(opening) == 2 and len(sell_calls) == 1 and len(buy_calls) == 1:
-        sell_leg, buy_leg = sell_calls[0], buy_calls[0]
-        return (c.BEAR_CALL_SPREAD, [sell_leg, buy_leg]) if sell_leg.price > buy_leg.price else None
-
-    return None
+    if any(leg.instruction not in ("SELL_TO_OPEN", "BUY_TO_OPEN") for leg in opening):
+        return None
+    if len({parsed[leg.occ_symbol][1] for leg in opening}) != 1:
+        return None  # varias expiraciones (calendar/diagonal) — fuera del payoff a una sola expiración
+    return _label_for_legs(opening, parsed), _order_legs_for_display(opening, parsed)
 
 
 def _strikes_dict(strategy_type: str, legs: list[FilledOrderLeg], parsed: dict[str, tuple]) -> dict:
@@ -107,10 +142,13 @@ def _strikes_dict(strategy_type: str, legs: list[FilledOrderLeg], parsed: dict[s
             "call_short_strike": parsed[sell_call.occ_symbol][3],
             "call_long_strike": parsed[buy_call.occ_symbol][3],
         }
-    if strategy_type in (c.BULL_PUT_SPREAD, c.BEAR_CALL_SPREAD):
-        sell_leg, buy_leg = legs
-        return {"short_strike": parsed[sell_leg.occ_symbol][3], "long_strike": parsed[buy_leg.occ_symbol][3]}
-    return {}
+    # Cualquier vertical de 2 patas (1 vendida + 1 comprada), de crédito o débito: strike corto/largo.
+    if len(legs) == 2:
+        sells = [l for l in legs if l.instruction == "SELL_TO_OPEN"]
+        buys = [l for l in legs if l.instruction == "BUY_TO_OPEN"]
+        if len(sells) == 1 and len(buys) == 1:
+            return {"short_strike": parsed[sells[0].occ_symbol][3], "long_strike": parsed[buys[0].occ_symbol][3]}
+    return {}   # ratios/custom/multi-pata: la composición completa vive en las patas (legs_json)
 
 
 def _build_and_persist_roll_closed_leg(conn: sqlite3.Connection, order: FilledOrder, leg: FilledOrderLeg, today: date) -> dict | None:
@@ -231,6 +269,7 @@ def _build_and_persist_real_trade_alert(
         strategy_type = _resolve_strategy_type(primary_option_type, share_positions, underlying_symbol, contracts_added)
         build = candidate_builder.build_from_contract(strategy_type, build_legs[0][1], contracts_added, entry_price=primary_leg.price)
     payoff = payoff_calc.compute_payoff(build, quote.last_price, today, settings.market.risk_free_rate)
+    _greeks = getattr(build, "net_greeks", None) or {}
 
     recent_news = finnhub_client.get_recent_news(underlying_symbol, today, finnhub_api_key)
     next_earnings_date = repo.get_latest_next_earnings_date(conn, underlying_symbol)
@@ -259,8 +298,14 @@ def _build_and_persist_real_trade_alert(
         annualized_return_pct=payoff.annualized_return_pct,
         early_close_projection=payoff.early_close_projection,
         capital_available=capital_available,
+        net_greeks=_greeks,
+        greeks_source=getattr(build, "greeks_source", None),
     )
-    narrative_text, narrative_source = narrate_real_trade(context, settings.llm, anthropic_api_key)
+    # Alerta CORTA y en tiempo real (usuario 2026-08-05): sin narración de IA — es determinística,
+    # instantánea (sin latencia de la llamada al LLM) y más breve. `anthropic_api_key`/`settings.llm`
+    # quedan sin usar acá a propósito.
+    narrative_text = formatting.format_real_trade_message(context)
+    narrative_source = "fallback_template"   # determinística (sin IA), el modelo solo admite claude|fallback_template
 
     historical_check, similar_check = backtest.compute_historical_checks(broker, quote_symbol, payoff.legs, payoff.underlying_price, payoff.dte)
 
@@ -288,6 +333,12 @@ def _build_and_persist_real_trade_alert(
         payoff_is_estimate=payoff.is_estimate,
         annualized_return_pct=payoff.annualized_return_pct,
         early_close_projection=payoff.early_close_projection,
+        net_delta=_greeks.get("delta"),
+        net_gamma=_greeks.get("gamma"),
+        net_theta=_greeks.get("theta"),
+        net_vega=_greeks.get("vega"),
+        net_rho=_greeks.get("rho"),
+        greeks_source=getattr(build, "greeks_source", None),
         historical_move_occurrences=historical_check.occurrences if historical_check else None,
         historical_move_total_windows=historical_check.total_windows if historical_check else None,
         similar_move_occurrences=similar_check.similar_occurrences if similar_check else None,

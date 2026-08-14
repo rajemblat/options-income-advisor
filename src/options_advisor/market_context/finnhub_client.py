@@ -39,6 +39,35 @@ def get_next_earnings_date(symbol: str, as_of: date, api_key: str | None, lookah
         return None
 
 
+def get_symbol_earnings_dates(symbol: str, from_date: date, to_date: date, api_key: str | None) -> list[date]:
+    """Fechas de earnings HISTÓRICAS de UN símbolo en [from_date, to_date], vía
+    `/calendar/earnings?symbol=X&from=&to=` (mismo endpoint que `get_next_earnings_date` pero con rango
+    hacia atrás y filtrado por símbolo del lado del servidor — mucho más liviano que traer el calendario
+    completo, y con más chance en el plan free). [] si no hay key/datos o falla. Usado por el backtest
+    de earnings (usuario 2026-08-07)."""
+    if not api_key:
+        return []
+    try:
+        response = httpx.get(
+            f"{BASE_URL}/calendar/earnings",
+            params={"symbol": symbol, "from": from_date.isoformat(), "to": to_date.isoformat(), "token": api_key},
+            timeout=_TIMEOUT,
+        )
+        response.raise_for_status()
+        rows = response.json().get("earningsCalendar", [])
+        out = []
+        for row in rows:
+            if row.get("date"):
+                try:
+                    out.append(date.fromisoformat(row["date"]))
+                except (ValueError, TypeError):
+                    pass
+        return sorted(set(out))
+    except Exception:
+        logger.warning("Finnhub earnings (histórico) no disponible para %s; se omite", symbol, exc_info=True)
+        return []
+
+
 def get_earnings_calendar_range(from_date: date, to_date: date, api_key: str | None) -> list[dict]:
     """Earnings de TODAS las empresas (no un símbolo puntual) publicados en [from_date, to_date]
     — mismo endpoint que `get_next_earnings_date` pero SIN el filtro `symbol`, Finnhub devuelve

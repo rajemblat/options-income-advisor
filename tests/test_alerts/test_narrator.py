@@ -30,7 +30,7 @@ def test_narrate_alert_never_raises_when_api_call_fails(monkeypatch):
         raise RuntimeError("fallo simulado de red")
 
     monkeypatch.setattr(
-        "anthropic.Anthropic", lambda api_key: type("C", (), {"messages": type("M", (), {"create": staticmethod(_boom)})()})()
+        "anthropic.Anthropic", lambda api_key, **kw: type("C", (), {"messages": type("M", (), {"create": staticmethod(_boom)})()})()
     )
 
     context = build_narration_context(
@@ -82,7 +82,7 @@ def test_narrate_real_trade_never_raises_when_api_call_fails(monkeypatch):
         raise RuntimeError("fallo simulado de red")
 
     monkeypatch.setattr(
-        "anthropic.Anthropic", lambda api_key: type("C", (), {"messages": type("M", (), {"create": staticmethod(_boom)})()})()
+        "anthropic.Anthropic", lambda api_key, **kw: type("C", (), {"messages": type("M", (), {"create": staticmethod(_boom)})()})()
     )
 
     context = build_real_trade_context(
@@ -111,3 +111,26 @@ def test_build_real_trade_context_has_no_conviction_score_field():
     assert "scoring_breakdown" not in context
     assert context["quantity"] == 1
     assert context["entry_price"] == 5.5
+
+
+def test_narrate_alert_passes_timeout_and_retry_cap_to_client(monkeypatch):
+    """Blindaje anti-cuelgue (usuario 2026-08-05): el cliente Anthropic se crea SIEMPRE con un
+    timeout corto y pocos reintentos, para que una llamada lenta no congele el scheduler (como pasó
+    con el cuelgue de 33 min). Verifica que narrate_alert los pasa."""
+    captured = {}
+
+    def _fake_anthropic(api_key, **kw):
+        captured.update(kw)
+        resp = type("R", (), {"content": [type("B", (), {"type": "text", "text": "ok"})()]})()
+        return type("C", (), {"messages": type("M", (), {"create": staticmethod(lambda **k: resp)})()})()
+
+    monkeypatch.setattr("anthropic.Anthropic", _fake_anthropic)
+    context = build_narration_context(
+        symbol="AAPL", strategy_type="cash_secured_put", conviction_score=76, breakdown={},
+        iv_rank=68.0, iv_rank_source="implied_volatility", rsi=55.0, supports=[195.0], resistances=[],
+        strikes={"short_strike": 195.0}, expiration_date=date(2026, 8, 15),
+    )
+    text, source = narrate_alert(context, LlmSettings(model="claude-haiku-4-5-20251001", max_tokens=300), api_key="fake-key")
+    assert source == "claude" and "ok" in text  # el comentario del LLM va dentro del mensaje armado
+    assert captured.get("timeout") is not None and captured["timeout"] <= 60
+    assert captured.get("max_retries") is not None and captured["max_retries"] <= 2

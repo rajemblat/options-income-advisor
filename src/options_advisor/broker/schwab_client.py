@@ -5,7 +5,7 @@ import os
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from options_advisor.broker.base import BrokerClient
 from options_advisor.broker.models import (
@@ -31,6 +31,20 @@ from options_advisor.scheduler.market_calendar import session_bounds
 VALID_INTRADAY_INTERVALS_MINUTES = (1, 5, 10, 15, 30)
 
 logger = logging.getLogger(__name__)
+
+
+def _is_retryable_http_error(exc: BaseException) -> bool:
+    """¿Vale la pena reintentar este error? Solo los transitorios: 429 (rate limit) y 5xx
+    (fallo del servidor). Los 4xx (400/401/403/404) son determinísticos —un símbolo sin cadena
+    de opciones responde 404 siempre, así que reintentarlo 4 veces con backoff exponencial
+    (1s+2s+4s ≈ 7s) solo agrega segundos muertos por cada símbolo malo y hacía que el escaneo
+    del universo tardara minutos de más (bug de lentitud, usuario 2026-08). Un 4xx se propaga
+    de una y el que llama lo aísla por símbolo."""
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    code = exc.response.status_code
+    return code == 429 or 500 <= code < 600
+
 
 MARKET_DATA_BASE_URL = "https://api.schwabapi.com/marketdata/v1"
 TRADER_API_BASE_URL = "https://api.schwabapi.com/trader/v1"
@@ -201,7 +215,7 @@ class SchwabBrokerClient(BrokerClient):
         return self.auth.is_authenticated()
 
     @retry(
-        retry=retry_if_exception_type(httpx.HTTPStatusError),
+        retry=retry_if_exception(_is_retryable_http_error),
         stop=stop_after_attempt(4),
         wait=wait_exponential(multiplier=1, min=1, max=20),
         reraise=True,
@@ -498,6 +512,7 @@ class SchwabBrokerClient(BrokerClient):
                     option_type=option_type,
                     strike=strike,
                     expiration=expiration,
+                    maintenance_requirement=position.get("maintenanceRequirement"),
                 )
             )
         return positions
@@ -541,6 +556,93 @@ class SchwabBrokerClient(BrokerClient):
             except Exception:
                 logger.exception("Fallo al leer órdenes de la cuenta %s; se continúa con el resto", account.get("accountNumber"))
         return orders
+
+    # ------------------------------------------------------------------------------------------
+    # ENVÍO REAL de órdenes (usuario 2026-08-10, "poner en real"). Todo esto SOLO se invoca cuando
+    # el trading real está encendido (enabled + armado + sin dry-run), detrás del guardián. El
+    # ejecutor camina el precio reemplazando la orden; acá viven las 4 primitivas contra Schwab.
+    # ------------------------------------------------------------------------------------------
+    def _trader_headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.auth.get_valid_access_token()}"}
+
+    def list_account_hashes(self) -> list[dict]:
+        """[{'accountNumber': '...', 'hashValue': '...'}] de las cuentas vinculadas. El hash es lo que
+        va en la URL de /accounts/{hash}/orders (Schwab nunca expone el número de cuenta en la ruta)."""
+        response = self._trader_client.get("/accounts/accountNumbers", headers=self._trader_headers())
+        response.raise_for_status()
+        return response.json()
+
+    def resolve_account_hash(self, account_number: str | None = None) -> str | None:
+        """Hash de la cuenta a operar. Si se pasa `account_number`, matchea esa exacta comparando SOLO los
+        dígitos (así '74257810' matchea aunque la API o el usuario agreguen sufijos como 'SCHW'); es una
+        salvaguarda clave con varias cuentas vinculadas (usuario 2026-08-10: mandó a la cuenta vacía por
+        error). Si NO matchea ninguna, devuelve None y NO se opera (mejor no operar que operar la cuenta
+        equivocada). Sin `account_number`, usa la PRIMERA (comportamiento viejo)."""
+        try:
+            accounts = self.list_account_hashes()
+        except Exception:
+            logger.exception("Live: no se pudo listar cuentas para resolver el hash de la orden")
+            return None
+        if not accounts:
+            return None
+        if account_number:
+            want = "".join(ch for ch in str(account_number) if ch.isdigit())
+            for acc in accounts:
+                have = "".join(ch for ch in str(acc.get("accountNumber")) if ch.isdigit())
+                if have and want and have == want:
+                    logger.info("Live: operando la cuenta ...%s (match por account_number)", have[-4:])
+                    return acc.get("hashValue")
+            logger.error("Live: la cuenta pedida %s NO está entre las vinculadas — NO se opera", account_number)
+            return None
+        logger.warning("Live: account_number vacío — usando la PRIMERA cuenta vinculada (...%s). Configurá "
+                       "account_number para elegir la correcta.",
+                       str(accounts[0].get("accountNumber"))[-4:])
+        return accounts[0].get("hashValue")
+
+    @staticmethod
+    def _order_id_from_location(response: httpx.Response) -> str | None:
+        """Schwab devuelve el id de la orden nueva en el header Location (…/orders/{orderId}), no en el
+        cuerpo (201 Created con body vacío). Devuelve el último segmento de esa URL."""
+        location = response.headers.get("Location") or response.headers.get("location")
+        if not location:
+            return None
+        return location.rstrip("/").split("/")[-1]
+
+    def place_order(self, account_hash: str, order_payload: dict) -> str:
+        """POST de la orden. Devuelve el orderId (del header Location). Lanza si Schwab la rechaza."""
+        response = self._trader_client.post(
+            f"/accounts/{account_hash}/orders", json=order_payload, headers=self._trader_headers()
+        )
+        response.raise_for_status()
+        order_id = self._order_id_from_location(response)
+        if not order_id:
+            raise RuntimeError("Schwab aceptó la orden pero no devolvió orderId en Location")
+        return order_id
+
+    def get_order(self, account_hash: str, order_id: str) -> dict:
+        """Estado actual de una orden (status, filledQuantity, orderActivityCollection con los fills)."""
+        response = self._trader_client.get(
+            f"/accounts/{account_hash}/orders/{order_id}", headers=self._trader_headers()
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def replace_order(self, account_hash: str, order_id: str, order_payload: dict) -> str:
+        """PUT que reemplaza (cancela + recrea) la orden con un nuevo precio límite — el corazón del
+        caminar-el-precio. Devuelve el orderId NUEVO (Schwab asigna uno nuevo al reemplazar)."""
+        response = self._trader_client.put(
+            f"/accounts/{account_hash}/orders/{order_id}", json=order_payload, headers=self._trader_headers()
+        )
+        response.raise_for_status()
+        return self._order_id_from_location(response) or order_id
+
+    def cancel_order(self, account_hash: str, order_id: str) -> None:
+        """DELETE: cancela una orden viva (para no dejar una orden colgada sin supervisión al terminar
+        la ventana de negociación)."""
+        response = self._trader_client.delete(
+            f"/accounts/{account_hash}/orders/{order_id}", headers=self._trader_headers()
+        )
+        response.raise_for_status()
 
     # Rango de precio y liquidez razonables para vender prima con capital manejable — evita
     # penny stocks (spreads horribles) y nombres de $1000+ (100 acciones de colateral inviables).

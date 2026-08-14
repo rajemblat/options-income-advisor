@@ -12,7 +12,7 @@ from options_advisor.dashboard.scanner_table import build_scanner_rows
 from options_advisor.scheduler.jobs import job_poll_and_analyze
 from options_advisor.storage import repository as repo
 
-st.set_page_config(page_title="Escaneo de mercado", page_icon="🔍", layout="wide")
+st.set_page_config(page_title="Lokshn · Escaneo de mercado", page_icon="🔍", layout="wide", initial_sidebar_state="expanded")
 inject_theme()
 render_header(
     icon("target", size=24, color=ACCENT),
@@ -79,6 +79,7 @@ else:
                     anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
                     finnhub_api_key=os.environ.get("FINNHUB_API_KEY"),
                     fred_api_key=os.environ.get("FRED_API_KEY"),
+                    force=True,
                 )
                 elapsed = time.time() - t0
             st.success(f"Listo en {elapsed:.1f}s. Revisá la página de Alertas — ordená por score para ver las mejores oportunidades del escaneo.")

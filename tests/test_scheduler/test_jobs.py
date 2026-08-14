@@ -92,6 +92,7 @@ class _FakeAnalysis:
         self.snapshot = type("S", (), {"iv_rank": 50, "symbol": symbol, "snapshot_date": TODAY})()
         self.chain = object()
         self.price_history = []
+        self.quote = type("Q", (), {"net_change_pct": 0.0})()
 
 
 def test_run_full_analysis_passes_real_share_position_as_has_open_assigned_position(conn, monkeypatch):
@@ -179,12 +180,47 @@ def test_job_detect_real_trades_never_raises_on_failure(conn, monkeypatch):
     jobs.job_detect_real_trades(broker, conn, load_settings(), anthropic_api_key=None, finnhub_api_key=None)  # no debe lanzar
 
 
+# --- job_poll_and_analyze: chequeo de día de mercado y override manual (force) ---
+
+
+def test_job_poll_and_analyze_skips_on_non_market_day(conn, monkeypatch):
+    monkeypatch.setattr(jobs, "is_market_day", lambda d: False)
+    called = []
+    monkeypatch.setattr(jobs, "_run_full_analysis", lambda *a, **k: called.append(1))
+
+    jobs.job_poll_and_analyze(broker=None, conn=conn, symbols=["AAPL"], settings=load_settings(), anthropic_api_key=None)
+    assert called == []
+
+
+def test_job_poll_and_analyze_force_bypasses_market_day_check(conn, monkeypatch):
+    """Bug real encontrado 2026-08-02: el botón "Correr análisis ahora" (y "Fase 2" de
+    Escaneo) mostraban éxito aunque hoy no fuera día de mercado, sin haber corrido nada —
+    incluido el Simulador de Trading Automático, wireado dentro de _run_full_analysis. `force`
+    es el override explícito para un click manual del usuario."""
+    monkeypatch.setattr(jobs, "is_market_day", lambda d: False)
+    called = []
+    monkeypatch.setattr(jobs, "_run_full_analysis", lambda *a, **k: called.append(1))
+
+    jobs.job_poll_and_analyze(broker=None, conn=conn, symbols=["AAPL"], settings=load_settings(), anthropic_api_key=None, force=True)
+    assert called == [1]
+
+
+def test_job_poll_and_analyze_runs_on_market_day_without_force(conn, monkeypatch):
+    monkeypatch.setattr(jobs, "is_market_day", lambda d: True)
+    called = []
+    monkeypatch.setattr(jobs, "_run_full_analysis", lambda *a, **k: called.append(1))
+
+    jobs.job_poll_and_analyze(broker=None, conn=conn, symbols=["AAPL"], settings=load_settings(), anthropic_api_key=None)
+    assert called == [1]
+
+
 # --- Simulador de Trading Automático (paper trading, pedido 2026-08-02) ---
 
 
 def test_run_full_analysis_calls_simulator_entry_once_per_symbol(conn, monkeypatch):
     captured = []
 
+    monkeypatch.setattr(jobs, "market_session", lambda *a, **k: "abierto")
     monkeypatch.setattr(jobs, "analyze_symbol", lambda broker, conn, symbol, settings, **k: _FakeAnalysis(symbol))
     monkeypatch.setattr(jobs.finnhub_client, "get_recent_news", lambda *a, **k: [])
     monkeypatch.setattr(jobs, "_refresh_news_for_symbol", lambda *a, **k: None)
@@ -338,3 +374,70 @@ def test_job_premarket_digest_does_not_duplicate_proactive_warning_on_second_run
 
     proactive = [n for n in repo.get_recent_notifications(conn, limit=20) if n["kind"] == "risk_event_proactive"]
     assert len(proactive) == 1
+
+
+def test_job_robot_scan_skips_alerts_and_news(conn, monkeypatch):
+    """El escaneo rápido del robot NO debe llamar a la capa de alertas/IA ni a las noticias —
+    solo indicadores + entrada del robot + marcado. Ahí está el ahorro de tiempo (usuario 2026-08)."""
+    monkeypatch.setattr(jobs, "is_market_day", lambda d: True)
+    monkeypatch.setattr(jobs, "market_session", lambda *a, **k: "abierto")
+    monkeypatch.setattr(jobs, "_refresh_macro_snapshot", lambda *a, **k: None)
+
+    called = {"analyze": [], "entry": [], "mark": 0, "alerts": 0, "news": 0}
+
+    class _FakeAnalysis:
+        snapshot = object()
+        chain = object()
+        price_history = []
+        quote = type("Q", (), {"net_change_pct": 0.0})()
+
+    monkeypatch.setattr(jobs, "analyze_symbol", lambda *a, **k: called["analyze"].append(a[2]) or _FakeAnalysis())
+    monkeypatch.setattr(jobs.simulator_engine, "process_symbol_entry", lambda *a, **k: called["entry"].append(a[1]))
+    monkeypatch.setattr(jobs.simulator_engine, "mark_and_close_positions", lambda *a, **k: called.__setitem__("mark", called["mark"] + 1))
+    # trampas: si el robot llama a estas, el test falla
+    monkeypatch.setattr(jobs, "process_symbol_alerts", lambda *a, **k: called.__setitem__("alerts", called["alerts"] + 1) or [])
+    monkeypatch.setattr(jobs.finnhub_client, "get_recent_news", lambda *a, **k: called.__setitem__("news", called["news"] + 1) or [])
+
+    jobs.job_robot_scan(broker=object(), conn=conn, symbols=["AAPL", "AMD"], settings=load_settings(), force=True)
+
+    assert called["analyze"] == ["AAPL", "AMD"]
+    assert called["entry"] == ["AAPL", "AMD"]
+    assert called["mark"] == 1
+    assert called["alerts"] == 0  # nunca toca la narración de IA
+    assert called["news"] == 0    # nunca pide noticias
+
+
+def test_job_robot_scan_skips_non_market_day_without_force(conn, monkeypatch):
+    monkeypatch.setattr(jobs, "is_market_day", lambda d: False)
+    ran = {"n": 0}
+    monkeypatch.setattr(jobs, "_run_robot_scan", lambda *a, **k: ran.__setitem__("n", ran["n"] + 1))
+    jobs.job_robot_scan(broker=None, conn=conn, symbols=["AAPL"], settings=load_settings(), force=False)
+    assert ran["n"] == 0
+
+
+def test_learning_review_notifies_when_questions_pending(conn, monkeypatch):
+    """Al final del día, si al robot le quedan CONSULTAS (propuestas pendientes) para aprobar, avisa
+    al usuario (nativa macOS + Telegram) — usuario 2026-08-05."""
+    # una consulta pendiente
+    repo.insert_learning_proposal(conn, "score_weight_delta", 0.35, 0.45, "sube delta")
+    # las revisiones no deben pesar en este test
+    monkeypatch.setattr(jobs.learning, "review", lambda *a, **k: {"summary": "", "proposed": [], "applied": []})
+    monkeypatch.setattr(jobs.learning, "review_butterfly", lambda *a, **k: {"summary": "", "proposed": [], "applied": []})
+    monkeypatch.setattr(jobs, "is_market_day", lambda *a, **k: True)
+    captured = {}
+    monkeypatch.setattr(jobs.notifier, "send_native", lambda msg, **k: captured.setdefault("native", msg))
+    monkeypatch.setattr(jobs.notifier, "send_text", lambda msg, **k: captured.setdefault("text", msg))
+
+    jobs.job_learning_review(conn, load_settings(), force=True)
+    assert "native" in captured and "1 consulta" in captured["native"]
+
+
+def test_learning_review_no_notify_when_no_questions(conn, monkeypatch):
+    monkeypatch.setattr(jobs.learning, "review", lambda *a, **k: {"summary": "", "proposed": [], "applied": []})
+    monkeypatch.setattr(jobs.learning, "review_butterfly", lambda *a, **k: {"summary": "", "proposed": [], "applied": []})
+    monkeypatch.setattr(jobs, "is_market_day", lambda *a, **k: True)
+    called = {"n": 0}
+    monkeypatch.setattr(jobs.notifier, "send_native", lambda *a, **k: called.__setitem__("n", called["n"] + 1))
+    monkeypatch.setattr(jobs.notifier, "send_text", lambda *a, **k: None)
+    jobs.job_learning_review(conn, load_settings(), force=True)
+    assert called["n"] == 0  # sin consultas, no molesta

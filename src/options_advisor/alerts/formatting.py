@@ -305,6 +305,84 @@ def format_alert_message(context: dict, comment: str, header: str = "✦ Alerta 
     return "\n".join(lines)
 
 
+def _real_trade_label(strategy_type: str) -> str:
+    """En operaciones reales el usuario opera NAKED, así que el put vendido se muestra como
+    'Naked PUT' (usuario 2026-08-05), no 'Cash-Secured Put'."""
+    if strategy_type == "cash_secured_put":
+        return "Naked PUT"
+    return strategy_label(strategy_type)
+
+
+def _signed_leg_line(leg: dict) -> str:
+    """Como _leg_line pero la cantidad va en NEGATIVO si es venta (−2 Put), para que se lea que es
+    una posición corta (usuario 2026-08-05)."""
+    side_icon = "↓ Venta" if leg["side"] == "sell" else "↑ Compra"
+    option_label = "Put" if leg["option_type"] == "put" else "Call"
+    qty = leg.get("quantity", 1)
+    qty_disp = -abs(qty) if leg["side"] == "sell" else abs(qty)
+    return (
+        f"{side_icon} · {qty_disp} {option_label} · Strike ${leg['strike']:.2f} · "
+        f"Vence {leg['expiration']} · Prima ${leg['premium']:.2f}"
+    )
+
+
+def format_real_trade_message(context: dict) -> str:
+    """Alerta CORTA de operación real ejecutada (usuario 2026-08-05): sin comentario de IA ni
+    noticias (más rápida y en tiempo real), la pata en NEGRITA con cantidad negativa, y el
+    breakeven / cobertura ya con la PRIMA descontada. Todo lo numérico ya viene calculado."""
+    label = _real_trade_label(context["strategy_type"])
+    lines = ["✦ Operación Real Ejecutada", _earnings_line(context), f"✧ {context['symbol']} — {label}"]
+    if context.get("underlying_price") is not None:
+        lines.append(f"• Precio actual del subyacente: ${context['underlying_price']:,.2f}")
+    lines.append(SEPARATOR)
+    for leg in (context.get("legs") or []):
+        lines.append(f"**{_signed_leg_line(leg)}**")   # la operación en negrita
+
+    net_premium = context.get("net_premium")
+    if net_premium is not None:
+        kind = "crédito" if net_premium >= 0 else "débito"
+        lines.append(f"＄ Prima neta: {_fmt_money(abs(net_premium))} ({kind})")
+
+    lines.append(f"▲ Beneficio máximo: {_fmt_money(context.get('max_profit'))}")
+    lines.append(f"▽ Pérdida máxima (riesgo): {_fmt_money(context.get('max_loss'))}")
+
+    breakevens = context.get("breakevens") or []
+    be_str = " / ".join(f"${b:,.2f}" for b in breakevens) if breakevens else "N/D"
+    lines.append(f"≡ Breakeven(s): {be_str}  (ya incluye la prima)")
+
+    # Cobertura tomando el BREAKEVEN (no el strike), o sea con la prima descontada.
+    up = context.get("underlying_price")
+    if up and breakevens:
+        be = breakevens[0]
+        cov = (up - be) / up
+        arrow = "↓" if cov >= 0 else "↑"
+        lines.append(f"{arrow} Cobertura: {abs(cov) * 100:.1f}% (necesita caer hasta ${be:,.2f}, breakeven con prima)")
+
+    lines.append(f"◎ Probabilidad de beneficio: {_fmt_pct(context.get('probability_of_profit'))}")
+    dte = context.get("dte")
+    lines.append(f"○ DTE: {dte if dte is not None else 'N/D'} días")
+    ann = _annualized_return_line(context.get("annualized_return_pct"))
+    if ann:
+        lines.append(ann)
+    greeks_line = _greeks_line(context.get("net_greeks"), context.get("greeks_source"))
+    if greeks_line:
+        lines.append(greeks_line)
+    return "\n".join(lines)
+
+
+def _greeks_line(net_greeks: dict | None, source: str | None) -> str | None:
+    """Línea de griegas NETAS de la posición combinada (usuario 2026-08-12: detalle tipo OptionStrat).
+    Δ (delta) · Θ (theta) · Γ (gamma) · V (vega) · ρ (rho). None si no hay datos."""
+    if not net_greeks:
+        return None
+    def g(k, dec=2):
+        v = net_greeks.get(k)
+        return f"{v:+.{dec}f}" if isinstance(v, (int, float)) else "N/D"
+    src = " (estimadas)" if source == "calculated" else ""
+    return (f"Δ Griegas netas{src}: Δ {g('delta')} · Θ {g('theta')} · Γ {g('gamma', 3)} · "
+            f"V {g('vega')} · ρ {g('rho')}")
+
+
 def shorten_for_sharing(text: str) -> str:
     """Versión más corta del texto completo para copiar a WhatsApp/Telegram (pedido explícito
     2026-07-28: "muy largo para compartir rápido") — quita la línea de "Cierre anticipado" y la

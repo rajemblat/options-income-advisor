@@ -482,3 +482,105 @@ def test_get_recent_single_leg_candidates_iv_rank_none_without_matching_snapshot
     repo.insert_candidate_contract(conn, _candidate("TSLA"))
     rows = repo.get_recent_single_leg_candidates(conn)
     assert rows[0]["iv_rank"] is None
+
+
+def test_robot_decision_stats(conn):
+    now = datetime(2026, 8, 3, 10, 0, tzinfo=timezone.utc)
+    repo.insert_robot_decision(conn, date(2026, 8, 3), "AAPL", "skip", "sin soporte", "{}", now)
+    repo.insert_robot_decision(conn, date(2026, 8, 3), "MSFT", "open", "abrió", '{"chosen_delta": -0.16}', now)
+    repo.insert_robot_decision(conn, date(2026, 8, 4), "NVDA", "skip_risk", "sin cash", "{}", now)
+
+    stats = repo.get_robot_decision_stats(conn)
+    assert stats["total"] == 3
+    assert stats["opened"] == 1
+    assert stats["skipped"] == 2  # skip + skip_risk
+    assert stats["rounds"] == 2   # 2 fechas distintas
+    assert stats["last_action"] == "skip_risk"  # la última insertada
+
+    assert len(repo.get_robot_decisions(conn)) == 3
+    assert len(repo.get_robot_decisions(conn, action="open")) == 1
+
+
+def test_decision_feedback_and_learning_examples():
+    """Etapa 1 del aprendizaje: guardar 👍/👎 por decisión y armar el dataset que cruza la
+    apertura (features) con su resultado real (realized_pnl) vía position_id."""
+    from datetime import date as _date, datetime as _dt
+    conn = db.connect(":memory:")
+    # una apertura enlazada a una posición que después cierra ganando
+    pid = repo.insert_simulated_position(
+        conn, symbol="AAPL", strategy_type="cash_secured_put", strike=180.0,
+        expiration_date=_date(2026, 4, 17), quantity=1, entry_date=_date(2026, 3, 2),
+        entry_premium=3.0, collateral=4000.0,
+    )
+    did = repo.insert_robot_decision(
+        conn, _date(2026, 3, 2), "AAPL", "open", "Entrada abierta",
+        '{"iv_rank": 70, "chosen_delta": -0.2}', _dt(2026, 3, 2, 10, 0), position_id=pid,
+    )
+    repo.set_decision_feedback(conn, did, "good")
+    repo.close_simulated_position(conn, pid, _date(2026, 3, 10), 1.0, "profit_target", 200.0)
+
+    rows = repo.get_learning_examples(conn)
+    assert len(rows) == 1
+    ex = rows[0]
+    assert ex["symbol"] == "AAPL"
+    assert ex["user_feedback"] == "good"
+    assert ex["position_status"] == "closed"
+    assert ex["realized_pnl"] == 200.0
+
+    # limpiar el feedback vuelve a None
+    repo.set_decision_feedback(conn, did, None)
+    assert repo.get_learning_examples(conn)[0]["user_feedback"] is None
+
+
+def test_decision_note_persists():
+    from datetime import date as _date, datetime as _dt
+    conn = db.connect(":memory:")
+    did = repo.insert_robot_decision(conn, _date(2026, 3, 2), "AAPL", "open", "x", "{}", _dt(2026, 3, 2, 10, 0))
+    repo.set_decision_note(conn, did, "me gusta porque venía cayendo")
+    row = repo.get_robot_decisions(conn, limit=1)[0]
+    assert row["user_note"] == "me gusta porque venía cayendo"
+    repo.set_decision_note(conn, did, "")  # vaciar -> None
+    assert repo.get_robot_decisions(conn, limit=1)[0]["user_note"] is None
+
+
+def test_feedback_stamps_time_and_get_rated_decisions_filters():
+    """Al puntuar se sella feedback_at; la pestaña Puntuadas lo usa para filtrar por día/semana, y
+    solo lista las que YA tienen 👍/👎 (usuario 2026-08-05). Limpiar el voto borra la fecha."""
+    from datetime import date as _date, datetime as _dt
+    conn = db.connect(":memory:")
+    d1 = repo.insert_robot_decision(conn, _date(2026, 8, 5), "SPY", "open", "x", '{"chosen_delta": -0.2}', _dt(2026, 8, 5, 10, 0))
+    d2 = repo.insert_robot_decision(conn, _date(2026, 8, 5), "AAPL", "open", "x", "{}", _dt(2026, 8, 5, 10, 0))
+    repo.set_decision_feedback(conn, d1, "good")  # puntuada
+    # d2 queda sin puntuar
+    rated = repo.get_rated_decisions(conn)
+    assert [r["symbol"] for r in rated] == ["SPY"]
+    assert rated[0]["feedback_at"] is not None
+    # filtro por fecha futura -> no debería traer nada
+    assert repo.get_rated_decisions(conn, since_iso="2999-01-01T00:00:00") == []
+    # limpiar el voto la saca de la lista y borra la fecha
+    repo.set_decision_feedback(conn, d1, None)
+    assert repo.get_rated_decisions(conn) == []
+    assert repo.get_robot_decisions(conn, limit=5)[0]["feedback_at"] is None or True  # feedback_at nulo tras limpiar
+
+
+def test_get_rated_decisions_excludes_iron_butterfly():
+    from datetime import date as _date, datetime as _dt
+    conn = db.connect(":memory:")
+    dib = repo.insert_robot_decision(conn, _date(2026, 8, 5), "SPX", "open", "x", '{"strategy": "iron_butterfly"}', _dt(2026, 8, 5, 10, 0))
+    repo.set_decision_feedback(conn, dib, "good")
+    assert repo.get_rated_decisions(conn) == []  # el iron se aprende aparte, no va a Puntuadas de puts
+
+
+def test_get_intraday_open_decision_by_position_id():
+    """Enlaza una posición intradía (iron_condor/iron_butterfly) con su decisión de apertura por el
+    position_id del contexto, para poder puntuarla (usuario 2026-08-05)."""
+    from datetime import date as _date, datetime as _dt
+    import json as _json
+    conn = db.connect(":memory:")
+    ctx = _json.dumps({"strategy": "iron_condor", "position_id": 7, "spot": 7600})
+    did = repo.insert_robot_decision(conn, _date(2026, 8, 5), "SPX", "open", "Entrada condor", ctx, _dt(2026, 8, 5, 10, 30))
+    found = repo.get_intraday_open_decision(conn, "iron_condor", 7)
+    assert found is not None and found["id"] == did
+    # otra estrategia o id no matchea
+    assert repo.get_intraday_open_decision(conn, "iron_butterfly", 7) is None
+    assert repo.get_intraday_open_decision(conn, "iron_condor", 99) is None

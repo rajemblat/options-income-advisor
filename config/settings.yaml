@@ -23,12 +23,13 @@ scheduler:
   # oportunidades — mucho más liviana (solo diffea posiciones, sin indicadores/scoring/narración
   # de candidatos por símbolo), así que corre más seguido para que una venta real se vea
   # reflejada casi en tiempo real (pedido 2026-07-27) en vez de esperar hasta 30 minutos.
-  real_trade_poll_interval_minutes: 3
+  real_trade_poll_interval_minutes: 1   # cada 1 min = casi tiempo real (usuario 2026-08-05)
   market_open_snapshot_time: "09:35"
   market_close_snapshot_time: "15:55"
   market_hours_start: "09:30"
   market_hours_end: "16:00"
   premarket_digest_time: "09:15"   # resumen en el dashboard antes de la apertura (09:30 ET)
+  robot_scan_interval_minutes: 1   # escaneo cada 1 min (usuario 2026-08-10) — re-negocia y detecta más rápido
 
 # Perfil de inversor por defecto (Sección 2 de la hoja de ruta). Se puede sobreescribir vía dashboard.
 investor_profile:
@@ -104,14 +105,150 @@ simulator:
   # strike*100*contratos) en UNA sola posición — limita concentración, no es un tamaño fijo de
   # contratos (símbolos de strike alto ocupan menos contratos que uno de strike bajo con el
   # mismo % de capital).
-  max_position_pct: 0.10
-  # Cierre automático cuando la ganancia no realizada llega a este % de la prima cobrada.
+  max_position_pct: 0.20  # PDF: máx 20% del capital por símbolo
+  # Salida BASE (escalonada, ver profit_target_far/near_exp abajo): 30% de la prima cobrada.
   profit_target_pct: 0.30
-  dte_range: [30, 45]
-  max_delta: 0.18
+  dte_range: [30, 90]  # venta de prima a 30/45/90 días (no day trading)
+  max_delta: 0.21  # techo DURO de delta para TODA venta de put (usuario 2026-08-10: "menos de 0.21, no
+                   # más"). La selección dinámica (0.15 volátiles / 0.20 normales) queda por debajo; este
+                   # techo impide que ninguna entre por encima de 0.21.
   rsi_range: [30, 40]
   iv_rank_min: 50.0
   iv_percentile_min: 50.0
+
+  # === Robot (2026-08-03): parámetros combinados PDF + criterios del usuario ===
+  # Modelo de capital: NAKED put (margen Reg-T chico) — así el rendimiento % es el real y usa poco
+  # capital por operación (usuario 2026-08-04).
+  margin_mode: naked
+  # Calibración al margen REAL del broker (usuario 2026-08-06): tu cuenta LLC usa portfolio margin,
+  # más bajo que Reg-T. Semilla desde tu ejemplo real (4× AAL 15P: broker $131.85/contrato vs Reg-T
+  # $234.40 → factor ≈ 0.56). El robot lo recalibra solo cada día desde el maintenanceRequirement de
+  # tus posiciones reales; este valor es solo el arranque hasta que tenga datos.
+  broker_margin_factor: 0.56
+  # Volatilidad "por IV": acción volátil si IV ATM anualizada supera esto.
+  volatile_iv_threshold: 0.40
+  # Cobertura dinámica (distancia OTM del strike elegido).
+  # APAGADA 2026-08-04: chocaba con el delta 0.15-0.20 (un put de delta bajo casi nunca está
+  # 8-10% lejos) y bloqueaba TODAS las entradas. El delta ya asegura la distancia. Reactivar con
+  # números más bajos cuando quieras más colchón.
+  require_coverage: false
+  coverage_normal: 0.08          # acción poco volátil
+  coverage_volatile: 0.10        # acción volátil
+  coverage_far_from_support: 0.12  # lejos de un soporte fuerte
+  coverage_sma200_far_above: 0.09  # precio muy por debajo de la SMA200
+  near_support_pct: 0.03
+  near_sma200_pct: 0.03
+  event_coverage_bump: 0.05      # Fed/earnings antes del vencimiento: +5% de cobertura
+  # Delta objetivo por volatilidad (0.15 muy volátil / 0.20 menos).
+  use_dynamic_delta: true
+  delta_target_volatile: 0.15
+  delta_target_normal: 0.20
+  delta_band: 0.05
+  # Cerebro flexible (usuario 2026-08-04): puntúa cada put por cercanía al ideal (delta+cobertura+
+  # retorno+POP promediados) y elige el mejor, en vez de exigir todo por separado.
+  use_soft_scoring: true
+  min_entry_score: 0.40
+  delta_score_tol: 0.15
+  target_annualized: 0.20
+  score_weight_delta: 0.35
+  score_weight_coverage: 0.25
+  score_weight_return: 0.25
+  score_weight_pop: 0.15
+  score_weight_day_change: 0.40    # preferencia (NO regla) FUERTE por acciones que caen/están en rojo ese
+                                   # día (usuario 2026-08-10, nivel "Medio": subido a 0.40 porque el
+                                   # aprendizaje solo no alcanzaba —los verdes que ganan plata lo diluían—
+                                   # así que su preferencia manda más. La volatilidad/IV todavía puede
+                                   # ganarle a una verde chica con muy buena oportunidad. Bloqueo duro en +2%.
+  score_weight_iv_rank: 0.25       # prefiere IV Rank ALTA (más prima) — usuario 2026-08-05
+  score_weight_liquidity: 0.12     # prefiere spread ajustado (mejor fill/salida)
+  score_weight_theta: 0.12         # prefiere buen decaimiento de prima por día
+  # Soporte en diario Y mensual.
+  # MODO APRENDIZAJE (2026-08-03): soporte mensual OFF para que abra más seguido y puedas dar
+  # feedback. Volver a true para el modo estricto original.
+  require_monthly_support: false
+  monthly_support_max_distance_pct: 0.12
+  put_min_support_rank: 2        # STRIKE del 2º soporte fuerte para abajo (usuario 2026-08-10): más cobertura,
+                                 # no pegado al 1er soporte. Entre los del rank pedido, el más FUERTE. 0 = off.
+  require_rsi: false             # la lógica nueva del usuario no lista RSI como gate
+  # MODO APRENDIZAJE: acepta IV Rank del proxy de HV mientras se juntan ~20 sesiones de IV real.
+  # Volver a true para exigir IV real ("no operar con datos incompletos").
+  require_real_iv_rank: false
+  # Liquidez (criterios 6 y 7 del PDF).
+  require_positive_bid: true
+  min_open_interest: 100
+  min_contract_volume: 10
+  max_bid_ask_spread_pct: 0.12
+  # Probabilidad OTM mínima (~1 - |delta|).
+  min_probability_otm: 0.70
+  min_credit: 0.10
+  # Retorno anualizado mínimo. Bajado a 10% el 2026-08-04 para DESTRABAR (con 25% + cobertura no
+  # encontraba nada). El robot igual ELIGE el de mejor retorno entre los que pasan. Subir cuando
+  # ya opere y quieras ser más exigente.
+  min_annualized_return: 0.10
+  # Confirmación de tendencia / VWAP.
+  confirm_uptrend: false         # el 200MA se usa para cobertura, no como gate duro
+  trend_sma_period: 50
+  # MODO APRENDIZAJE (2026-08-03): VWAP OFF (depende de datos intradía que pueden faltar).
+  # Volver a true para exigir precio >= VWAP.
+  require_price_above_vwap: false
+  # Riesgo de cartera.
+  max_open_positions: 20            # subido 2026-08-04 (naked usa poco capital)
+  min_free_buying_power_pct: 0.0    # NO saltear por buying power (usuario 2026-08-04)
+  max_opens_per_day: 5              # DEFAULT: 5 naked puts por día (usuario 2026-08-07). Ajustable en vivo
+                                    # desde el dashboard (Simulador) antes de que abra el mercado, de 1 a 20+.
+  max_entry_day_change_pct: -1.0    # FILTRO DURO de caída (usuario 2026-08-10): SOLO vende puts si la acción
+                                    # está al menos 1% ABAJO hoy (−1%, −3%, −15%… todo lo que caiga más entra;
+                                    # lo que esté plano/verde NO). Entre las que pasan, el ranking elige la más caída.
+                                    # como regla (usuario 2026-08-07: "es un sentimiento, debe aprender; si
+                                    # está +0.5% pero con volatilidad, es oportunidad y hay que abrir").
+  day_change_pref_span_pct: 4.0     # cayendo 4% o más ese día = entrada ideal para el puntaje
+  # Gestión de posición. Salida de GANANCIA: 30% PLANO — cierra apenas la ganancia llega al 30%
+  # o más de la prima cobrada, sin escalonar (usuario 2026-08-05: "30 o más"). Los escalones que
+  # hacían esperar 40% (lejos del strike) o 50% (cerca de vencimiento) quedan DESACTIVADOS (0.0 =
+  # usa la base de 30%). Se mantienen como salvaguardas: stop-loss (pérdida grande) y el cierre por
+  # noticia importante cerca del vencimiento — no son reglas de ganancia, protegen la cuenta.
+  stop_loss_multiple: 2.0        # salvaguarda: cerrar si la opción vale 3x la prima (pérdida de 2x)
+  close_at_dte: 0                # no forzar cierre por DTE
+  profit_target_far_pct: 0.0     # (viejo escalón, desactivado)
+  profit_target_near_exp_pct: 0.0  # (viejo escalón, desactivado)
+  far_from_strike_pct: 0.10
+  near_exp_dte: 7                 # salvaguarda por noticia importante cerca del vencimiento
+  # Salida de ganancia ESCALONADA por ANTIGÜEDAD de la operación (usuario 2026-08-12):
+  #   días 0-2: 30% (profit_target_pct arriba) · días 3-6: 35% · día 7+: 40%.
+  # Aplica IGUAL al simulador y al Real Market (venta de puts). Cambiá acá si querés otros escalones.
+  profit_age_step2_days: 3          # a partir del día 3: 35%
+  profit_age_step3_days: 7          # a partir del día 7: 40%
+  profit_target_step2_pct: 0.35     # objetivo días 3-6
+  profit_target_step3_pct: 0.40     # objetivo días 7+
+  # --- Compat (esquema anterior semana1/semana2/near-exp): ya NO se usan, se dejan por si una config
+  #     vieja los trae. El objetivo de ganancia ahora es el escalón por antigüedad de arriba. ---
+  profit_week1_days: 7
+  profit_week2_days: 14
+  profit_target_week1_pct: 0.18
+  profit_target_week2_pct: 0.30
+  profit_dte_threshold: 20
+  profit_target_near_exp_far_pct: 0.45
+  near_strike_close_pct: 0.06
+  # Fricción y ejecución con órdenes límite (negociación del spread).
+  commission_per_contract: 0.50   # usuario 2026-08-07: $0.50 por PATA/contrato en cada lado (abrir y cerrar)
+  # 0.0 = fills al MID (neutro y realista): la posición arranca en $0 de P/L y solo se mueve con
+  # el movimiento REAL del precio, sin regalar la mitad del spread al abrir (usuario 2026-08-04).
+  # Subir hacia 1.0 solo si conseguís fills cerca del lado favorable (vender caro / comprar barato).
+  fill_edge_pct: 0.0
+  # Tamaño por precio de la acción (usuario 2026-08-07, preparando trading REAL):
+  #   hasta $50 → 4 contratos · $50-$400 → 3 · $400+ → 1.
+  use_price_tier_sizing: true
+  price_tier_low: 50.0
+  price_tier_high: 400.0
+  contracts_cheap: 4
+  contracts_mid: 3
+  contracts_expensive: 1
+  # Naked puts SOLO sobre acciones por debajo de este precio (usuario 2026-08-07): las más caras
+  # que esto no se operan (colateral/exposición demasiado grande por contrato).
+  max_underlying_price_puts: 700.0
+  risk_free_rate: 0.043
+  # Ver TODO el mercado (usuario 2026-08-04): escanea el S&P 500 (~386) en vez de los 15.
+  scan_full_universe: false   # solo la watchlist del usuario (config/symbols.yaml), no todo el Nasdaq-100 (2026-08-05)
   # Distancia máxima (precio actual por encima de un soporte fuerte — cluster con >=2 toques,
   # ver indicators/levels.py::find_strong_support_resistance) para considerar "cerca de
   # soporte" — diario más estricto, semanal más ancho (cada vela semanal se mueve un rango
@@ -122,3 +259,100 @@ simulator:
   # distancia — "lejos de las medias móviles", no solo cruzado por poco.
   sma_periods: [8, 20, 50]
   sma_min_distance_pct: 0.03
+
+# === Estrategia 2: Iron Butterfly 0DTE intradía (reversión a la SMA8, SPX) ===
+# APAGADA hasta que el motor en vivo esté probado con datos intradía reales (mañana, mercado
+# abierto). No interfiere con el robot de CSP de arriba.
+intraday_butterfly:
+  enabled: true
+  underlying: $SPX          # Schwab exige el índice con prefijo $ (SPX pelado no trae cadena)
+  timeframe_minutes: 1
+  sma_period: 8
+  distance_threshold_pct: 0.0010   # ~0.10% de distancia a la SMA8 (bajado 2026-08-05 para que entre más seguido)
+  breakeven_offset_pct: 0.0015
+  wing_width: 5.0
+  # Tope para ARMAR el fly (pérdida máxima teórica del butterfly de 5 puntos ≈ $500 en SPX; con
+  # $70 rechazaba TODAS las operaciones). El control real de riesgo es el stop_loss de abajo, que
+  # corta a -$70 mucho antes del máximo teórico (usuario 2026-08-04: "quiero al iron operando").
+  max_collateral: 500.0
+  profit_target_pct: 0.0           # DESACTIVADO (usuario 2026-08-10): scalp rápido, cierra a +$50 fijo (abajo)
+  profit_target: 50.0              # cerrar apenas la ganancia abierta llega a +$50 (scalp rápido)
+  stop_loss: 70.0                  # salir a -$70 — ESTE es el control real de riesgo por operación
+  dte: 0                           # 0DTE (mismo día)
+  max_open_positions: 1
+  stop_loss_streak_halt: 2         # 2 stop-loss seguidos en el día = no abre más butterflies hoy (usuario 2026-08-08)
+
+# Estrategia 3 (2026-08-05): Iron Condor 0DTE sobre SPX para DÍAS CALMOS (poco movimiento). Vende
+# put+call OTM a delta <= 0.15 (donde mejor pague), alas de 10 puntos, cierra al 60% del crédito o
+# con -$100 de pérdida. Entra TEMPRANO si el día viene calmo, hasta 3 por día.
+intraday_condor:
+  enabled: true
+  underlying: $SPX
+  timeframe_minutes: 1
+  short_delta_max: 0.15            # vender put/call a delta <= 0.15
+  wing_width: 10.0                 # alas de 10 puntos
+  profit_target_pct: 0.50          # pasada la ventana temprana: cerrar al 50% del crédito (usuario 2026-08-07)
+  profit_target_early_pct: 0.20    # ganancia RÁPIDA (usuario 2026-08-11): si ya está a +20% en los primeros 30 min, cerrar ya
+  early_window_minutes: 30.0       # "temprano/rápido" = primeros 30 minutos de la posición
+  stop_loss_dollars: 100.0         # cerrar con -$100 de pérdida
+  dte: 0                           # 0DTE
+  max_per_day: 0                   # 0 = SIN TOPE diario (usuario 2026-08: "todos los que quieras")
+  max_open_positions: 5            # pero hasta 5 abiertos a la vez (freno de exposición simultánea)
+  stop_loss_streak_halt: 2         # 2 stop-loss seguidos en el día = no abre más condors hoy (usuario 2026-08-08)
+  calm_range_pct: 0.004            # rango intradía <= 0.4% = día calmo
+  # ⚠️ OJO — ESTA VENTANA SE COMPARA EN **UTC**, NO EN HORA DEL ESTE (verificado 2026-08-14).
+  # `evaluate_condor_signal` mira la hora de la ÚLTIMA BARRA intradía, y Schwab las devuelve en UTC
+  # (`schwab_client.get_intraday_bars` → `datetime.fromtimestamp(..., tz=timezone.utc)`).
+  # Con UTC−4 (horario de verano) "10:00–14:00" son las 06:00–10:00 ET; como el mercado abre 09:30 ET,
+  # la ventana EFECTIVA son los primeros 30 minutos de la rueda (09:30–10:00 ET).
+  # NO es un descuido para corregir a la ligera: los 16 condors ganadores del papel (6, 7, 11 y 12 de
+  # agosto, 100% de aciertos) se abrieron TODOS entre las 09:31 y las 09:54 ET — o sea, dentro de esa
+  # ventana. Cambiar el huso movería la estrategia a un horario donde nunca fue probada. Decisión del
+  # usuario (2026-08-14): dejarlo como está y documentarlo.
+  # ⏰ PENDIENTE ANTES DE NOVIEMBRE: con el cambio a UTC−5 el mercado abre 14:30 UTC — DESPUÉS de
+  # entry_window_end (14:00) — y el condor dejaría de abrir para siempre, en silencio y sin error.
+  entry_window_start: "10:00"      # ventana de entrada, en UTC (ver el bloque de arriba)
+  entry_window_end: "14:00"        # ...con tiempo para que corra el 0DTE
+  max_collateral: 1000.0           # 10 pts de ala ≈ $1000 teórico (riesgo real = stop $100)
+  min_credit: 0.0
+  # Paso a DINERO REAL del condor (usuario 2026-08-13). Apagado por default: se prende acá cuando el
+  # usuario dé el OK, junto con live_trading.enabled=true. El mismo cerebro del papel, mismo stop/profit.
+  live_enabled: true               # true = manda condors REALES (requiere también live_trading.enabled + START del día)
+  live_max_per_day: 1              # tope duro de condors reales por día (usuario 2026-08-13: "1 por día")
+
+# ==========================================================================================
+# TRADING REAL en Schwab (usuario 2026-08-07). TODO APAGADO hasta activarlo explícitamente
+# la semana que viene, con el usuario presente. Estos son TOPES DUROS: un segundo cinturón de
+# seguridad evaluado por execution/live_guard justo antes de cualquier envío de orden. El guard
+# NUNCA los relaja ni manda más contratos que los pedidos.
+# ==========================================================================================
+live_trading:
+  # ===== FASE 1 (usuario 2026-08-10): REAL ENCENDIDO, ultra conservadora =====
+  # Real prendido (enabled=true, dry_run=false), pero con doble cinturón: nada sale hasta que el usuario dé
+  # START del día (require_manual_arm) Y el guardián apruebe. Config: 1 contrato, 1 orden/día, máx 5/semana,
+  # $10.000 de colateral máx, solo la watchlist de abajo, delta ≤ 0.21. Solo entra si se dan los parámetros.
+  enabled: true                    # REAL ENCENDIDO (usuario 2026-08-10) — pero nada sale sin START del día
+  dry_run: false                   # false = MANDA la orden de verdad al broker (ya no es simulacro)
+  kill_switch: false               # freno de emergencia (corta todo, aun estando armado)
+  require_manual_arm: true         # el usuario da START cada mañana (doble confirmación) para operar ese día
+  max_contracts_per_order: 1       # Fase 1: 1 contrato por orden
+  max_notional_per_order: 0        # Fase 1: sin tope de EXPOSICIÓN por orden (el freno real es el colateral;
+                                   #         el cap por exposición diaria lo agregamos "más adelante", usuario)
+  max_orders_per_day: 2            # 2 posiciones reales por día (usuario 2026-08-10: "quiero una operación más hoy")
+  max_orders_per_week: 5           # Fase 1: máximo 5 por semana
+  max_total_deployed: 10000.0      # Fase 1: $10.000 de COLATERAL/MARGEN máximo (no strike×100; el margen real
+                                   #         que traba el broker: ~$300 NU, ~$1200 C → alcanza para varias)
+  max_underlying_price: 700.0      # no operar acciones por encima de este precio...
+  price_cap_exempt_symbols: [SPY]  # ...salvo SPY, que se opera aunque supere los $700 (usuario 2026-08-09)
+  min_account_cash_buffer: 0.0     # (el tope de colateral ya limita el uso de cash)
+  account_number: "74257810"       # cuenta LLC TRADING (la de $180k). Sin esto usaba la 1ª (vacía) y Schwab rebotaba
+  # Fase 1 (usuario 2026-08-10): whitelist real acotada. Solo estos símbolos pueden generar una orden real.
+  # Whitelist real (usuario 2026-08-10): Fase 1 + NVDA + tanda ampliada.
+  allowed_symbols: [AA, AAL, NU, DLO, DAL, BAC, C, WFC, SPY, NVDA,
+                    UAL, NCLH, CCL, COIN, AAPL, EWY, DIS, AXP, TLT, COF, AMZN, SPCX, EWZ]
+  # Negociación del spread (caminar el precio):
+  price_walk_step: 0.02            # spread CHICO: $2/contrato por paso ("de 2 en 2")
+  price_walk_wide_step: 0.05       # spread GRANDE: $5/contrato por paso ("de 5 en 5", menos envíos)
+  price_walk_wide_threshold: 0.50  # spread mayor a $0.50 = grande → usa el paso de $5
+  price_walk_interval_seconds: 10  # reemplaza la orden cada 10 segundos (usuario 2026-08-09)
+  price_walk_stop_at_mid: true     # no cruza el mid price (piso al vender / techo al comprar)

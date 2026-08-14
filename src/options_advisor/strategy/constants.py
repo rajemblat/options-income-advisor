@@ -32,6 +32,13 @@ PUT_RATIO_SPREAD = "put_ratio_spread"
 SHORT_CALL_CONDOR = "short_call_condor"
 SHORT_PUT_CONDOR = "short_put_condor"
 
+# Espejo EXACTO de una operación real multi-pata de Schwab que no cae en ninguna forma con
+# nombre propio (usuario 2026-08-12: "la pestaña Operaciones debe replicar exacto lo que hago
+# en Charles Schwab, si vendo dos put y compro uno debe decir exacto"). El payoff se calcula
+# genérico por patas (strategy/payoff.py::_generic_multileg_payoff), así que la etiqueta es solo
+# informativa. Straddles, strangles, mariposas, ratios raros, etc. caen acá.
+CUSTOM_MULTILEG = "custom_multileg"
+
 # Pata CERRADA de un roll detectado vía /orders (pedido 2026-07-30, ver alerts/real_trades.py::
 # _build_and_persist_roll_closed_leg) — NO es una estrategia de ingreso real, es un registro
 # liviano de historial (qué se cerró, a qué precio), por eso queda deliberadamente FUERA de
@@ -58,6 +65,7 @@ ALL_INCOME_STRATEGIES = {
     PUT_RATIO_SPREAD,
     SHORT_CALL_CONDOR,
     SHORT_PUT_CONDOR,
+    CUSTOM_MULTILEG,
 }
 
 # Estrategias donde una pata queda neta corta sin cobertura completa (riesgo grande o no

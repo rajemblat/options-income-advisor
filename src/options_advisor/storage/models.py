@@ -156,6 +156,15 @@ class RealTradeAlert(BaseModel):
     payoff_is_estimate: bool = False
     annualized_return_pct: float | None = None
     early_close_projection: list[dict] = []
+    # Griegas NETAS de la posición combinada (usuario 2026-08-12: detalle completo tipo OptionStrat en la
+    # pestaña Operaciones). Suma de las patas con signo (vendida negativa) — strategy/candidates.py::
+    # _position_greeks/_sum_greeks. Se muestran en la tarjeta y en el bloque que se copia para compartir.
+    net_delta: float | None = None
+    net_gamma: float | None = None
+    net_theta: float | None = None
+    net_vega: float | None = None
+    net_rho: float | None = None
+    greeks_source: str | None = None
     # "Check histórico" (pedido 2026-07-28) — ver CandidateContract, mismo campo/mismo criterio.
     historical_move_occurrences: int | None = None
     historical_move_total_windows: int | None = None

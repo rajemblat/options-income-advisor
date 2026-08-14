@@ -2,10 +2,63 @@ from __future__ import annotations
 
 import logging
 import os
+import smtplib
+import subprocess
+from email.message import EmailMessage
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+
+def send_email(subject: str, body: str) -> bool:
+    """Envía un email por SMTP si está configurado (variables de entorno). No-op y devuelve False si falta
+    config; nunca lanza (una falla de correo jamás debe tumbar el trading). Pensado para avisar cada
+    apertura/cierre REAL (usuario 2026-08-10, roberto@crownsensor.com).
+
+    Config por .env: SMTP_HOST, SMTP_PORT (587), SMTP_USER, SMTP_PASSWORD, EMAIL_TO (destino), EMAIL_FROM
+    (opcional; por defecto = SMTP_USER). Con Gmail: host smtp.gmail.com, user tu-gmail, password un
+    'app password' de Google (no la contraseña normal)."""
+    host = os.environ.get("SMTP_HOST")
+    user = os.environ.get("SMTP_USER")
+    password = os.environ.get("SMTP_PASSWORD")
+    to = os.environ.get("EMAIL_TO") or user
+    frm = os.environ.get("EMAIL_FROM") or user
+    if not (host and user and password and to):
+        return False
+    try:
+        port = int(os.environ.get("SMTP_PORT", "587"))
+    except ValueError:
+        port = 587
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = frm
+        msg["To"] = to
+        msg.set_content(body)
+        with smtplib.SMTP(host, port, timeout=15) as server:
+            server.starttls()
+            server.login(user, password)
+            server.send_message(msg)
+        return True
+    except Exception:
+        logger.exception("Fallo al enviar el email (no afecta el trading)")
+        return False
+
+
+def send_native(message: str, title: str = "Lokshn", subtitle: str = "") -> None:
+    """Notificación NATIVA de macOS (osascript) — llega aunque Telegram no esté configurado. Nunca
+    lanza. `message` lo arma siempre el código interno (sin interpolar input externo), así que no
+    hay inyección de AppleScript posible."""
+    safe = message.replace('"', "'")
+    sub = f' subtitle "{subtitle}"' if subtitle else ""
+    try:
+        subprocess.run(
+            ["osascript", "-e", f'display notification "{safe}" with title "{title}"{sub} sound name "Glass"'],
+            timeout=5, check=False,
+        )
+    except Exception:
+        logger.debug("No se pudo enviar la notificación nativa de macOS", exc_info=True)
 
 _TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 _TELEGRAM_MAX_MESSAGE_LENGTH = 4096

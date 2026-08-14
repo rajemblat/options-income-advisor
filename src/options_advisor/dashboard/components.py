@@ -21,7 +21,7 @@ from options_advisor.alerts.formatting import (
 )
 from options_advisor.broker import get_broker_client
 from options_advisor.broker.base import BrokerClient
-from options_advisor.broker.models import IntradayBar, Mover, Quote
+from options_advisor.broker.models import IntradayBar, Mover, OptionChain, Quote
 from options_advisor.config import PROJECT_ROOT, Settings, load_movers_universe, load_settings, load_symbols
 from options_advisor.dashboard.portfolio_summary import summarize_portfolio
 from options_advisor.scheduler.market_calendar import MarketSession, market_session
@@ -34,17 +34,18 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Paleta oscura premium (Sección "estilo oscuro elegante"). Mismos valores que
 # .streamlit/config.toml — repetidos acá porque el theme.* de config.toml no es legible
 # desde Python en runtime, y estos componentes HTML necesitan los hex directamente.
-SURFACE = "#161615"
-SURFACE_RAISED = "#1e1e1d"
-PAGE_PLANE = "#0d0d0d"
-BORDER = "rgba(255,255,255,0.10)"
-TEXT_PRIMARY = "#ffffff"
-TEXT_SECONDARY = "#c3c2b7"
-TEXT_MUTED = "#898781"
-ACCENT = "#3987e5"
-GOOD = "#0ca30c"
-WARNING = "#fab219"
-CRITICAL = "#d03b3b"
+# Paleta estilo OptionsUp (2026-08): navy profundo + acento CIAN, tonos verde/ámbar/rosa.
+SURFACE = "#0e1a2b"          # tarjeta navy
+SURFACE_RAISED = "#13233a"   # tarjeta elevada
+PAGE_PLANE = "#07101f"       # fondo navy profundo (como el sidebar de OptionsUp)
+BORDER = "rgba(148,163,184,0.16)"  # borde slate suave
+TEXT_PRIMARY = "#f8fafc"     # slate-50
+TEXT_SECONDARY = "#cbd5e1"   # slate-300
+TEXT_MUTED = "#94a3b8"       # slate-400
+ACCENT = "#22d3ee"           # cian-400 (acento OptionsUp)
+GOOD = "#34d399"             # emerald-400
+WARNING = "#fbbf24"          # amber-400
+CRITICAL = "#fb7185"         # rose-400
 
 # Set de íconos outline (trazo 1.75, estilo Lucide) que reemplaza los emojis en todo lo que se
 # renderiza como HTML propio (st.markdown con unsafe_allow_html). Los widgets nativos de
@@ -113,11 +114,61 @@ def get_broker() -> BrokerClient:
     return get_broker_client(get_settings())
 
 
+def render_schwab_reconnect(detail: str | None = None, *, stop: bool = True) -> None:
+    """Cartel amable de 'Reconectá Schwab' cuando el token de ~7 días venció (usuario 2026-08-10,
+    punto 1) — reemplaza el crash rojo con stacktrace por instrucciones claras. Si `stop=True` corta
+    el render de la página (st.stop) para que no siga intentando pegarle a Schwab sin token."""
+    st.error(
+        "🔌 **Se desconectó de Schwab** — el token de acceso venció (dura ~7 días). "
+        "El robot y esta página no pueden leer tu cuenta hasta reconectar.",
+        icon="🔌",
+    )
+    st.markdown(
+        "**Para reconectar (30 segundos, una vez por semana):**\n\n"
+        "1. Abrí la Terminal y corré:\n"
+        "```\ncd ~/options-income-advisor\nsource .venv/bin/activate\npython scripts/schwab_login.py\n```\n"
+        "2. Iniciá sesión en Schwab y pegá la URL que te pide.\n"
+        "3. Reiniciá el robot (doble clic en **Iniciar Robot**) y refrescá esta página (F5)."
+    )
+    if detail:
+        with st.expander("Detalle técnico"):
+            st.caption(str(detail))
+    if stop:
+        st.stop()
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def cached_quotes(symbols: tuple[str, ...]) -> dict[str, Quote]:
     """Cotizaciones para el carrusel estilo CNBC — cacheadas 60s para no pegarle a la API de
     Schwab en cada rerun de Streamlit (cualquier click o widget dispara uno)."""
     return get_broker().get_quotes(list(symbols))
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def cached_all_positions() -> list:
+    """Posiciones reales de Schwab, cacheadas 20s (usuario 2026-08-10: 'tarda mucho en cargar mi operación
+    real, debería ser casi en tiempo real'). Sin cache, CADA interacción del dashboard re-pedía todas las
+    posiciones a Schwab (lento). Con 20s, la página carga al instante y el dato sigue fresco. Nunca lanza."""
+    try:
+        return get_broker().get_all_positions()
+    except Exception:
+        return []
+
+
+@st.cache_data(ttl=180, show_spinner=False)
+def cached_option_chains(symbols: tuple[str, ...], expiration_range_days: tuple[int, int] = (1, 95)) -> dict:
+    """Cadenas de opciones por símbolo, CACHEADAS 60s. Antes el dashboard pedía la cadena en vivo de
+    CADA posición abierta en CADA rerun (y guardar una puntuación recarga toda la página), lo que
+    hacía la recarga lenta de varios segundos (usuario 2026-08-06). Con esto, refrescar usa lo
+    cacheado y es instantáneo; el dato se renueva solo cada 60s. Devuelve None para el que falle."""
+    broker = get_broker()
+    out: dict = {}
+    for s in symbols:
+        try:
+            out[s] = broker.get_option_chain(s, expiration_range_days=expiration_range_days)
+        except Exception:
+            out[s] = None
+    return out
 
 
 # Mismo tamaño de lote ya probado en vivo sin problema (screen_universe en schwab_client.py).
@@ -205,21 +256,40 @@ def inject_theme() -> None:
         }}
 
         [data-testid="stAppViewContainer"] {{
-            background: radial-gradient(120% 120% at 50% -10%, #17181c 0%, {PAGE_PLANE} 55%);
+            background: radial-gradient(130% 130% at 50% -10%, #0d2036 0%, {PAGE_PLANE} 55%);
         }}
 
         h1, h2, h3 {{
             letter-spacing: -0.01em;
             font-weight: 700;
+            color: {TEXT_PRIMARY};
         }}
 
+        /* Tarjetas de métrica estilo OptionsUp: navy elevado, redondeadas, con una línea cian arriba. */
         [data-testid="stMetric"] {{
-            background: {SURFACE};
+            background: linear-gradient(180deg, {SURFACE_RAISED} 0%, {SURFACE} 100%);
             border: 1px solid {BORDER};
             border-radius: 0.75rem;
-            padding: 0.9rem 1.1rem;
+            padding: 0.6rem 0.8rem;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.22);
+            position: relative;
+            overflow: hidden;
+            /* Todas las tarjetas de métrica con la MISMA altura, tengan o no la línea de %/delta
+               abajo (usuario 2026-08-05: "no están todos los cuadrados iguales"). Achicadas y más
+               delicadas (usuario 2026-08-07). */
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-height: 78px;
+            height: 100%;
         }}
-        [data-testid="stMetricLabel"] {{ color: {TEXT_MUTED}; }}
+        [data-testid="stMetric"]::before {{
+            content: "";
+            position: absolute; top: 0; left: 0; right: 0; height: 2px;
+            background: linear-gradient(90deg, {ACCENT}, rgba(34,211,238,0));
+        }}
+        [data-testid="stMetricLabel"] {{ color: {TEXT_MUTED}; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.66rem; }}
+        [data-testid="stMetricValue"] {{ color: {TEXT_PRIMARY}; font-weight: 700; font-size: 1.35rem; }}
 
         .oia-divider {{
             height: 1px;
@@ -330,6 +400,120 @@ def inject_theme() -> None:
             from {{ transform: translateX(0); }}
             to {{ transform: translateX(-50%); }}
         }}
+
+        /* --- Pop-up (tooltip) al pasar el mouse por el ticker en Órdenes/Posiciones --- */
+        .oia-tt {{ position: relative; cursor: help; border-bottom: 1px dotted {TEXT_MUTED}; }}
+        .oia-tt .oia-tt-box {{
+            visibility: hidden; opacity: 0;
+            position: absolute; z-index: 99999;
+            bottom: 145%; left: 0;
+            background: {SURFACE_RAISED}; color: {TEXT_PRIMARY};
+            border: 1px solid {BORDER}; border-radius: 8px;
+            padding: 7px 11px; white-space: nowrap; font-size: 0.82rem; font-weight: 500;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5); transition: opacity 0.12s ease;
+            pointer-events: none;
+        }}
+        .oia-tt:hover .oia-tt-box {{ visibility: visible; opacity: 1; }}
+
+        /* ===================== Rediseño estético "Lokshn" (estilo OptionsUp) ===================== */
+
+        /* Sidebar navy con marca Lokshn arriba */
+        section[data-testid="stSidebar"] {{
+            background: {PAGE_PLANE};
+            border-right: 1px solid {BORDER};
+        }}
+        [data-testid="stSidebarNav"]::before {{
+            content: "LOKSHN";
+            display: block;
+            padding: 0.2rem 0.75rem 0.1rem;
+            color: {ACCENT};
+            font-size: 0.72rem;
+            font-weight: 700;
+            letter-spacing: 0.35em;
+        }}
+        [data-testid="stSidebarNav"]::after {{
+            content: "Trading Desk";
+            display: block;
+            padding: 0 0.75rem 0.75rem;
+            color: {TEXT_PRIMARY};
+            font-size: 1.05rem;
+            font-weight: 700;
+            border-bottom: 1px solid {BORDER};
+            margin-bottom: 0.4rem;
+        }}
+        /* Items del menú redondeados; el activo en cian */
+        [data-testid="stSidebarNav"] a {{
+            border-radius: 0.75rem;
+            margin: 2px 6px;
+        }}
+        [data-testid="stSidebarNav"] a:hover {{ background: rgba(148,163,184,0.10); }}
+        [data-testid="stSidebarNav"] a[aria-current="page"] {{
+            background: rgba(34,211,238,0.14) !important;
+        }}
+        [data-testid="stSidebarNav"] a[aria-current="page"] span {{ color: {ACCENT} !important; }}
+
+        /* Botones: redondeados; el primario en cian */
+        .stButton > button {{
+            border-radius: 0.7rem;
+            border: 1px solid {BORDER};
+            font-weight: 600;
+            transition: transform 0.05s ease, box-shadow 0.15s ease, background 0.15s ease;
+        }}
+        .stButton > button:hover {{ box-shadow: 0 6px 16px rgba(0,0,0,0.35); transform: translateY(-1px); }}
+        .stButton > button[kind="primary"] {{
+            background: linear-gradient(180deg, #2ee6ff 0%, {ACCENT} 100%);
+            color: #07101f; border: none;
+        }}
+
+        /* Tabs: activo con acento cian */
+        [data-testid="stTabs"] [data-baseweb="tab-list"] {{ gap: 0.25rem; border-bottom: 1px solid {BORDER}; }}
+        [data-testid="stTabs"] [data-baseweb="tab"] {{
+            border-radius: 0.6rem 0.6rem 0 0; padding: 0.4rem 0.9rem; color: {TEXT_MUTED};
+        }}
+        [data-testid="stTabs"] [aria-selected="true"] {{ color: {ACCENT} !important; }}
+        [data-testid="stTabs"] [data-baseweb="tab-highlight"] {{ background: {ACCENT} !important; }}
+
+        /* Contenedores con borde (tarjetas): navy elevado y redondeado */
+        [data-testid="stVerticalBlockBorderWrapper"] {{
+            background: {SURFACE};
+            border: 1px solid {BORDER} !important;
+            border-radius: 1rem !important;
+            box-shadow: 0 10px 24px rgba(0,0,0,0.28);
+        }}
+
+        /* Tablas / dataframes redondeadas */
+        [data-testid="stDataFrame"], [data-testid="stTable"] {{
+            border: 1px solid {BORDER}; border-radius: 0.85rem; overflow: hidden;
+        }}
+
+        /* Inputs (radio/textarea/text) con look navy */
+        [data-testid="stTextArea"] textarea, [data-testid="stTextInput"] input {{
+            background: {PAGE_PLANE}; border-radius: 0.6rem; color: {TEXT_PRIMARY};
+        }}
+
+        /* Badges tonales estilo OptionsUp (pills) */
+        .oia-badge {{
+            display: inline-flex; align-items: center; gap: 0.35rem;
+            padding: 0.2rem 0.7rem; border-radius: 999px;
+            font-size: 0.78rem; font-weight: 600; border: 1px solid transparent;
+        }}
+        .oia-badge.success {{ border-color: rgba(52,211,153,0.30); background: rgba(52,211,153,0.12); color: {GOOD}; }}
+        .oia-badge.info    {{ border-color: rgba(34,211,238,0.30); background: rgba(34,211,238,0.12); color: {ACCENT}; }}
+        .oia-badge.warning {{ border-color: rgba(251,191,36,0.30); background: rgba(251,191,36,0.12); color: {WARNING}; }}
+        .oia-badge.danger  {{ border-color: rgba(251,113,133,0.30); background: rgba(251,113,133,0.12); color: {CRITICAL}; }}
+        .oia-badge.neutral {{ border-color: {BORDER}; background: rgba(148,163,184,0.10); color: {TEXT_SECONDARY}; }}
+
+        /* Tarjeta interna reutilizable (para grids de datos) */
+        .oia-tcard {{
+            background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 1rem;
+            padding: 1rem 1.15rem; box-shadow: 0 10px 24px rgba(0,0,0,0.26); margin-bottom: 0.9rem;
+        }}
+        .oia-kicker {{
+            color: {ACCENT}; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.18em;
+            text-transform: uppercase;
+        }}
+        /* Alerts (st.info/success/warning) con bordes redondeados */
+        [data-testid="stAlert"] {{ border-radius: 0.85rem; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -509,7 +693,17 @@ def render_quote_ticker(quotes: dict[str, Quote]) -> None:
         )
 
     row_html = "".join(_item_html(q) for q in items)
-    st.markdown(f"<div class='oia-ticker'><div class='oia-ticker-track'>{row_html}{row_html}</div></div>", unsafe_allow_html=True)
+    # Velocidad CONSTANTE sin importar cuántos símbolos haya (usuario 2026-08-06: "el carrusel está
+    # muy rápido"). La animación recorre un ancho proporcional a la cantidad de ítems; si la duración
+    # fuera fija, más símbolos = recorrido más largo = más rápido visualmente. Escalamos la duración con
+    # la cantidad para que los píxeles/segundo no cambien. Subido a ~1.35s por símbolo (usuario 2026-08-12:
+    # "va muy rápido, un poquito más lento") — más duración = scroll más lento. Con 102 símbolos ≈ 138s/vuelta.
+    dur = max(55, round(len(items) * 1.35))
+    st.markdown(
+        f"<div class='oia-ticker'><div class='oia-ticker-track' style='animation-duration:{dur}s'>"
+        f"{row_html}{row_html}</div></div>",
+        unsafe_allow_html=True,
+    )
 
 
 def split_gainers_losers(movers: list[Mover]) -> tuple[list[Mover], list[Mover]]:
@@ -1056,6 +1250,29 @@ def render_roll_group(
         )
 
 
+def _net_greeks_html(trade: sqlite3.Row) -> str:
+    """Fila de griegas NETAS de la posición combinada (usuario 2026-08-12: detalle tipo OptionStrat en
+    Operaciones). '' si la fila no tiene griegas (operaciones viejas, previas a la columna)."""
+    keys = trade.keys()
+
+    def gv(k):
+        return trade[k] if k in keys else None
+
+    d, t, g, v, r = gv("net_delta"), gv("net_theta"), gv("net_gamma"), gv("net_vega"), gv("net_rho")
+    if all(x is None for x in (d, t, g, v, r)):
+        return ""
+
+    def f(x, dec=2):
+        return f"{x:+.{dec}f}" if isinstance(x, (int, float)) else "N/D"
+
+    src = " (estimadas)" if ("greeks_source" in keys and trade["greeks_source"] == "calculated") else ""
+    return (
+        f"<div style='color:{TEXT_SECONDARY}; font-size:0.82rem; margin-top:0.4rem;'>"
+        f"{icon('bar-chart', size=13, color=ACCENT)} Griegas netas{src}: "
+        f"Δ {f(d)} · Θ {f(t)} · Γ {f(g, 3)} · V {f(v)} · ρ {f(r)}</div>"
+    )
+
+
 def render_real_trade_card(
     trade: sqlite3.Row,
     next_earnings_date: str | None = None,
@@ -1165,6 +1382,10 @@ def render_real_trade_card(
             )
         html.append("</div>")
 
+        _greeks_html = _net_greeks_html(trade)
+        if _greeks_html:
+            html.append(_greeks_html)
+
         early_close_json = trade["early_close_projection_json"]
         early_close_projection = json.loads(early_close_json) if early_close_json else []
         if early_close_projection:
@@ -1180,8 +1401,8 @@ def render_real_trade_card(
                 "máxima y breakeven(s) son una estimación por modelo (vencimientos combinados).</div>"
             )
 
-    html.append(f"<div class='oia-comment'>{icon('lightbulb', size=16, color=WARNING)} <b>Comentario:</b> {comment}</div>")
-    html.append(f"<div style='color:{TEXT_MUTED}; font-size:0.75rem; margin-top:0.6rem;'>fuente de la narración: {trade['narrative_source']}</div>")
+    # Sin comentario de IA en operaciones reales (usuario 2026-08-05: "eliminar comentarios"). La
+    # tarjeta muestra solo los datos estructurados — corta y directa, viejas y nuevas por igual.
     html.append("</div>")
 
     st.markdown("".join(html), unsafe_allow_html=True)
@@ -1482,3 +1703,57 @@ def render_notification_bell(conn: sqlite3.Connection) -> None:
                 title = f"{marker}{notification['title']}"
                 with st.expander(title):
                     st.text(notification["body"])
+
+
+# --- Índice de Miedo y Codicia (CNN Fear & Greed) — usuario 2026-08-07 ---
+@st.cache_data(ttl=3600, show_spinner=False)
+def cached_fear_greed():
+    """Índice de Miedo y Codicia de CNN, cacheado 1 h (cambia una vez por día)."""
+    from options_advisor.market_context.fear_greed import get_fear_greed_index
+    return get_fear_greed_index()
+
+
+def render_fear_greed_gauge(data: dict) -> None:
+    """Dibuja el gauge 0-100 (rojo=miedo → verde=codicia) con la aguja en el valor actual."""
+    import plotly.graph_objects as go
+
+    from options_advisor.market_context.fear_greed import rating_label_es
+
+    score = data["score"]
+    label = rating_label_es(score)
+
+    def _zone_color(s: float) -> str:
+        if s < 25:
+            return "#ff2b2b"   # miedo extremo — rojo vivo
+        if s < 45:
+            return "#ff9f0a"   # miedo — naranja vivo
+        if s < 55:
+            return "#ffe23d"   # neutral — amarillo vivo
+        if s < 75:
+            return "#4ade5a"   # codicia — verde claro vivo
+        return "#12c04a"       # codicia extrema — verde vivo
+
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=score,
+        number={"font": {"size": 34, "color": _zone_color(score)}},
+        gauge={
+            "axis": {"range": [0, 100], "tickvals": [20, 40, 60, 80],
+                     "tickcolor": TEXT_PRIMARY, "tickfont": {"color": TEXT_PRIMARY, "size": 11}},
+            "bar": {"color": "rgba(0,0,0,0)"},
+            "bordercolor": BORDER,
+            "borderwidth": 1,
+            "steps": [
+                {"range": [0, 25], "color": "#ff2b2b"},    # miedo extremo
+                {"range": [25, 45], "color": "#ff9f0a"},   # miedo
+                {"range": [45, 55], "color": "#ffe23d"},   # neutral
+                {"range": [55, 75], "color": "#4ade5a"},   # codicia
+                {"range": [75, 100], "color": "#12c04a"},  # codicia extrema
+            ],
+            "threshold": {"line": {"color": "#0b0b0b", "width": 4}, "thickness": 0.9, "value": score},
+        },
+    ))
+    fig.update_layout(height=185, paper_bgcolor=SURFACE, font=dict(color=TEXT_PRIMARY),
+                      margin=dict(t=30, b=6, l=14, r=14),
+                      title=dict(text=f"Índice de Miedo y Codicia · {label}", font=dict(size=14)))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})

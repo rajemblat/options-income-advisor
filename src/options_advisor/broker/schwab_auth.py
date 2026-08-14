@@ -58,6 +58,7 @@ class SchwabAuth:
             TOKEN_URL,
             headers={**self._basic_auth_header(), "Content-Type": "application/x-www-form-urlencoded"},
             data={"grant_type": "authorization_code", "code": authorization_code, "redirect_uri": self.redirect_uri},
+            timeout=15.0,  # nunca colgar el arranque esperando a Schwab (blindaje 2026-08-05)
         )
         response.raise_for_status()
         self._store_tokens(response.json())
@@ -68,7 +69,17 @@ class SchwabAuth:
             TOKEN_URL,
             headers={**self._basic_auth_header(), "Content-Type": "application/x-www-form-urlencoded"},
             data={"grant_type": "refresh_token", "refresh_token": tokens["refresh_token"]},
+            timeout=15.0,  # nunca colgar por un refresh de token lento (blindaje 2026-08-05)
         )
+        # El refresh_token de Schwab dura ~7 días; cuando vence, Schwab responde 400/401 al refrescar
+        # (usuario 2026-08-10, punto 1). Antes eso tiraba un httpx.HTTPStatusError crudo que reventaba
+        # el dashboard en rojo. Ahora lo convertimos en SchwabAuthError con instrucciones claras para
+        # que la UI muestre "Reconectá Schwab" en vez de un stacktrace.
+        if response.status_code in (400, 401):
+            raise SchwabAuthError(
+                "El token de Schwab venció (dura ~7 días). Reconectá corriendo: "
+                "python scripts/schwab_login.py — después reiniciá el robot y refrescá el dashboard."
+            )
         response.raise_for_status()
         self._store_tokens(response.json())
 

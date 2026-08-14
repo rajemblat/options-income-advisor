@@ -17,7 +17,7 @@ from options_advisor.storage import repository as repo
 
 _STRATEGY_CHOICE_TO_GROUP = {"Naked Put": "naked_put", "Covered Call": "covered_call", "Ambas": None}
 
-st.set_page_config(page_title="Screener", page_icon="🔎", layout="wide")
+st.set_page_config(page_title="Lokshn · Screener", page_icon="🔎", layout="wide", initial_sidebar_state="expanded")
 inject_theme()
 render_header(
     icon("target", size=24, color=ACCENT),

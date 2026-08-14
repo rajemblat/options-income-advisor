@@ -18,7 +18,7 @@ def _cached_search_symbol(symbol: str, as_of_iso: str) -> SymbolSearchResult:
     return search_symbol(get_broker(), symbol, os.environ.get("FINNHUB_API_KEY"), date.fromisoformat(as_of_iso))
 
 
-st.set_page_config(page_title="Noticias", page_icon="📰", layout="wide")
+st.set_page_config(page_title="Lokshn · Noticias", page_icon="📰", layout="wide", initial_sidebar_state="expanded")
 inject_theme()
 render_header(icon("news", size=24, color=ACCENT), "Noticias por símbolo", "Últimas noticias vía Finnhub, más recientes primero")
 

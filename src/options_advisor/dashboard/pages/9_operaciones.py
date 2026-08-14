@@ -24,7 +24,7 @@ from options_advisor.dashboard.components import (
 )
 from options_advisor.storage import repository as repo
 
-st.set_page_config(page_title="Operaciones", page_icon="✅", layout="wide")
+st.set_page_config(page_title="Lokshn · Operaciones", page_icon="✅", layout="wide", initial_sidebar_state="expanded")
 inject_theme()
 render_header(
     icon("check-circle", size=24, color=ACCENT),
@@ -35,6 +35,14 @@ render_header(
 
 conn = get_connection()
 render_notification_bell(conn)
+
+# Botón de refresh (usuario 2026-08-05): las operaciones reales se detectan solas cada 1 min, pero
+# si querés forzar que la página vuelva a leer la base ahora mismo (por si una alerta no te llegó),
+# tocá acá. NO ejecuta la detección (eso lo hace el robot), solo recarga lo que ya hay guardado.
+_rc1, _rc2 = st.columns([4, 1])
+with _rc2:
+    if st.button("🔄 Actualizar", use_container_width=True, help="Vuelve a leer las operaciones reales detectadas."):
+        st.rerun()
 
 # El filtro sale de los símbolos que REALMENTE tienen una operación detectada, no de la
 # watchlist analizada (config/symbols.yaml) — una operación real puede caer sobre cualquier
@@ -75,6 +83,12 @@ if selected_strategy != "Todas":
 if selected_type != "Todos":
     want_roll = selected_type == "Roll"
     groups = [g for g in groups if (len(g) > 1) == want_roll]
+
+# Cartel de transparencia (usuario 2026-08-07): dejá clarísimo qué rango se está mostrando y con qué
+# fecha de referencia, para que "Hoy" nunca se confunda con datos viejos de una vista sin refrescar.
+_hoy = date.today()
+_rango_txt = f"Hoy ({_hoy.strftime('%d/%m')})" if selected_range == "Hoy" else selected_range
+st.caption(f"📅 Mostrando **{len(groups)}** operación(es) · rango: **{_rango_txt}** · fecha de referencia: {_hoy.strftime('%d/%m/%Y')}")
 
 macro = repo.get_latest_macro_snapshot(conn)
 fed_meeting_date = macro["fed_meeting_date"] if macro else None

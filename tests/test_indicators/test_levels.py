@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from options_advisor.broker.models import PriceBar
 from options_advisor.indicators.levels import (
     find_strong_support_resistance,
+    find_strong_supports_with_touches,
     find_support_resistance,
     find_weekly_strong_support_resistance,
     resample_to_weekly,
@@ -36,6 +37,18 @@ def test_insufficient_bars_returns_empty():
     supports, resistances = find_support_resistance(bars, current_price=97)
     assert supports == []
     assert resistances == []
+
+
+def test_strong_supports_with_touches_orders_nearest_first():
+    # Lows repetidos en ~90 y ~80 → dos soportes fuertes; precio 100.
+    pattern = [(100, 90), (95, 80), (100, 90), (95, 80), (100, 90), (95, 80), (105, 95)]
+    bars = [_bar(i, h, l) for i, (h, l) in enumerate(pattern)]
+    sups = find_strong_supports_with_touches(bars, current_price=100, order=1, cluster_pct=0.03, min_touches=2)
+    assert sups, "debería encontrar al menos un soporte fuerte"
+    levels_only = [lvl for lvl, _ in sups]
+    assert levels_only == sorted(levels_only, reverse=True)   # más cercano al precio primero
+    assert all(t >= 2 for _, t in sups)                       # todos "fuertes"
+    assert all(lvl < 100 for lvl, _ in sups)                 # todos por debajo del precio
 
 
 def test_strong_support_requires_at_least_two_touches():

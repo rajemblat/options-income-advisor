@@ -13,19 +13,25 @@ from options_advisor.dashboard.components import ACCENT, get_connection, get_sym
 from options_advisor.market_context import finnhub_client
 from options_advisor.storage import repository as repo
 
-LOOKAHEAD_DAYS = 30
-
-st.set_page_config(page_title="Eventos de riesgo", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Lokshn · Eventos de riesgo", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
 inject_theme()
 render_header(
     icon("zap", size=24, color=ACCENT),
     "Eventos de riesgo",
-    f"Eventos de la Fed en los próximos {LOOKAHEAD_DAYS} días: FOMC, CPI y reporte de empleo (NFP). "
+    "Eventos de la Fed (FOMC, CPI y reporte de empleo/NFP) en la ventana que elijas. "
     "Earnings de símbolos individuales están en el Calendario de earnings, más abajo.",
 )
 
 conn = get_connection()
 render_notification_bell(conn)
+
+# Filtro de TIEMPO de la ventana de eventos macro (usuario 2026-08-12: "poner filtro de tiempo").
+_LOOKAHEAD_OPTS = {"Próximos 7 días": 7, "Próximos 15 días": 15, "Próximos 30 días": 30,
+                   "Próximos 60 días": 60, "Próximos 90 días": 90}
+_lh_col, _ = st.columns([1.3, 3])
+with _lh_col:
+    _lh_label = st.selectbox("⏱️ Ventana de tiempo", list(_LOOKAHEAD_OPTS.keys()), index=2)
+LOOKAHEAD_DAYS = _LOOKAHEAD_OPTS[_lh_label]
 # "Mi watchlist" acá es la unión de la watchlist fija (config/symbols.yaml, 15 símbolos) y la
 # watchlist REAL de thinkorswim (~96 símbolos, config/watchlist_thinkorswim.yaml) — bug real
 # encontrado 2026-07-27 (reportado por el usuario: "AMD y MSFT no aparecen"): esta página

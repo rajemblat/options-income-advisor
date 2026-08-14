@@ -6,7 +6,8 @@ from datetime import date, timedelta
 import pandas as pd
 import streamlit as st
 
-from options_advisor.dashboard.components import ACCENT, get_broker, get_connection, get_settings, icon, inject_theme, render_header, render_notification_bell
+from options_advisor.dashboard.components import ACCENT, get_broker, get_connection, get_settings, icon, inject_theme, render_header, render_notification_bell, render_schwab_reconnect
+from options_advisor.broker.schwab_auth import SchwabAuthError
 from options_advisor.dashboard.portfolio_analysis import (
     compute_concentration,
     compute_earnings_clusters,
@@ -20,7 +21,7 @@ from options_advisor.dashboard.portfolio_narration import narrate_portfolio
 from options_advisor.broker.models import index_quote_symbol
 from options_advisor.market_context import finnhub_client
 
-st.set_page_config(page_title="Portafolio real", page_icon="💼", layout="wide")
+st.set_page_config(page_title="Lokshn · Portafolio real", page_icon="💼", layout="wide", initial_sidebar_state="expanded")
 inject_theme()
 render_header(
     icon("briefcase", size=24, color=ACCENT),
@@ -57,7 +58,17 @@ if settings.broker.mode != "schwab":
     )
 else:
     broker = get_broker()
-    positions = broker.get_all_positions()
+    # Token de Schwab vencido (usuario 2026-08-10, punto 1): en vez de reventar en rojo, mostrar
+    # "Reconectá Schwab" con los pasos. SchwabAuthError = token de ~7 días vencido; cualquier otro
+    # fallo (red, timeout) se muestra como aviso sin tumbar la página.
+    try:
+        positions = broker.get_all_positions()
+    except SchwabAuthError as _e:
+        render_schwab_reconnect(_e)
+        positions = []
+    except Exception as _e:
+        st.warning(f"No se pudo leer Schwab ahora mismo (reintentá en un momento). Detalle: {_e}", icon="⚠️")
+        positions = []
 
     if not positions:
         st.info(

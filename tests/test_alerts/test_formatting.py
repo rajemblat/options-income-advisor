@@ -386,3 +386,25 @@ def test_shorten_for_sharing_noop_when_no_news_or_early_close():
     context = {**_BASE_CONTEXT, "next_earnings_date": None, "recent_news": [], "early_close_projection": []}
     text = format_alert_message(context, "comentario")
     assert shorten_for_sharing(text) == text
+
+
+def test_format_real_trade_message_is_short_naked_bold_and_premium_adjusted():
+    """Alerta de operación real CORTA (usuario 2026-08-05): 'Naked PUT', pata en negrita con
+    cantidad negativa, breakeven/cobertura con la prima descontada, sin comentario de IA."""
+    from datetime import date
+    from options_advisor.alerts import formatting
+    ctx = {
+        "symbol": "GOOGL", "strategy_type": "cash_secured_put", "underlying_price": 363.0,
+        "next_earnings_date": date(2026, 10, 27), "expiration_date": date(2026, 9, 18),
+        "legs": [{"side": "sell", "option_type": "put", "quantity": 2, "strike": 320.0,
+                  "expiration": date(2026, 9, 18), "premium": 3.20}],
+        "net_premium": 640.0, "max_profit": 640.0, "max_loss": 63360.0,
+        "breakevens": [316.80], "probability_of_profit": 0.8633, "dte": 44, "annualized_return_pct": 8.38,
+    }
+    msg = formatting.format_real_trade_message(ctx)
+    assert "Naked PUT" in msg
+    assert "**↓ Venta · -2 Put" in msg              # negrita + cantidad negativa
+    assert "$316.80" in msg                          # breakeven con prima
+    assert "Cobertura: 12.7%" in msg                 # cobertura al breakeven (con prima)
+    assert "Comentario" not in msg                   # sin narración de IA
+    assert "Noticias" not in msg                     # corta

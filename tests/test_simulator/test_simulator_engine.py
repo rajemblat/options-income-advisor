@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timedelta
 
 import pytest
 
 from options_advisor.broker.base import BrokerClient
 from options_advisor.broker.models import Greeks, OptionChain, OptionContract, PriceBar, Quote
+from options_advisor.indicators.pipeline import SymbolAnalysis
 from options_advisor.config import (
     BrokerSettings,
     ConvictionThresholds,
@@ -174,7 +176,30 @@ def test_process_symbol_entry_noop_when_simulator_disabled(conn):
     assert repo.get_simulated_account(conn) is None
 
 
-def test_mark_and_close_positions_records_equity_snapshot(conn):
+def test_process_symbol_entry_blocked_when_puts_paused(conn):
+    """Botón de pausa (usuario 2026-08): pausada, NO abre puts nuevos; al reanudar, vuelve a abrir."""
+    settings = _settings()
+    repo.set_puts_paused(conn, True)
+    engine.process_symbol_entry(conn, "TST", _snapshot(), _eligible_chain(), _price_history_with_support(), settings)
+    assert repo.get_open_simulated_positions(conn) == []
+    repo.set_puts_paused(conn, False)
+    engine.process_symbol_entry(conn, "TST", _snapshot(), _eligible_chain(), _price_history_with_support(), settings)
+    assert len(repo.get_open_simulated_positions(conn)) == 1
+
+
+def test_process_symbol_entry_respects_daily_open_limit(conn):
+    """Tope de N tickets de puts por día (usuario 2026-08): al llegar al tope, no abre más hoy."""
+    settings = _settings()
+    settings.simulator.max_opens_per_day = 1
+    engine.process_symbol_entry(conn, "AAA", _snapshot(), _eligible_chain(), _price_history_with_support(), settings)
+    assert len(repo.get_open_simulated_positions(conn)) == 1
+    engine.process_symbol_entry(conn, "BBB", _snapshot(), _eligible_chain(), _price_history_with_support(), settings)
+    assert len(repo.get_open_simulated_positions(conn)) == 1  # bloqueado por el tope diario
+    assert repo.count_puts_opens_today(conn, AS_OF) == 1
+
+
+def test_mark_and_close_positions_records_equity_snapshot(conn, monkeypatch):
+    monkeypatch.setattr(engine, "market_session", lambda *a, **k: "abierto")
     settings = _settings()
     engine.process_symbol_entry(conn, "TST", _snapshot(), _eligible_chain(), _price_history_with_support(), settings)
 
@@ -193,3 +218,87 @@ def test_mark_and_close_positions_records_equity_snapshot(conn):
     marked = repo.get_open_simulated_positions(conn, "TST")[0]
     assert marked["id"] == open_position["id"]
     assert marked["last_marked_date"] == tomorrow.isoformat()
+
+
+def test_equity_is_continuous_no_premium_double_count(conn, monkeypatch):
+    monkeypatch.setattr(engine, "market_session", lambda *a, **k: "abierto")
+    # Fix CRÍTICO de auditoría: el equity no debe inflarse por la prima cobrada. Abrir strike 75
+    # (garantía 7500, prima 1.80 -> cash 92,680) deja el equity en 100,000, no 100,180.
+    settings = _settings()
+    engine.process_symbol_entry(conn, "TST", _snapshot(), _eligible_chain(), _price_history_with_support(), settings)
+
+    # Marcar sin cerrar (valor 1.60 -> no realizado +20): equity = 100,020, NO 100,200.
+    chain_mark = OptionChain(symbol="TST", as_of=AS_OF, underlying_price=91.0, contracts=[_put(75, 40, 1.60)])
+    engine.mark_and_close_positions(conn, FakeBroker(91.0, chain_mark), settings, AS_OF + timedelta(days=1))
+    assert repo.get_simulated_equity_history(conn)[-1]["equity"] == pytest.approx(100_020.0)
+
+    # Cerrar ganador (valor 1.20 -> ganancia realizada 60): equity continuo en 100,060, sin caída.
+    chain_close = OptionChain(symbol="TST", as_of=AS_OF, underlying_price=91.0, contracts=[_put(75, 40, 1.20)])
+    engine.mark_and_close_positions(conn, FakeBroker(91.0, chain_close), settings, AS_OF + timedelta(days=2))
+    assert repo.get_open_simulated_positions(conn, "TST") == []
+    assert repo.get_simulated_equity_history(conn)[-1]["equity"] == pytest.approx(100_060.0)
+
+
+def test_mark_and_close_skips_when_market_closed(conn, monkeypatch):
+    """Con el mercado cerrado no se re-marca: se conserva la última marca del día (usuario 2026-08-04)."""
+    monkeypatch.setattr(engine, "market_session", lambda *a, **k: "abierto")
+    settings = _settings()
+    engine.process_symbol_entry(conn, "TST", _snapshot(), _eligible_chain(), _price_history_with_support(), settings)
+    # ahora el mercado "cierra"
+    monkeypatch.setattr(engine, "market_session", lambda *a, **k: "cerrado")
+
+    class _BoomBroker:
+        def get_quote(self, symbol):
+            raise AssertionError("no debería pedir cotización con el mercado cerrado")
+        def get_option_chain(self, symbol, expiration_range_days=(1, 95)):
+            raise AssertionError("no debería pedir cadena con el mercado cerrado")
+
+    # no re-marca ni pide datos; no crea snapshot de equity nuevo
+    before = len(repo.get_simulated_equity_history(conn))
+    engine.mark_and_close_positions(conn, _BoomBroker(), settings, AS_OF + timedelta(days=1))
+    assert len(repo.get_simulated_equity_history(conn)) == before
+
+
+def _analysis_for_enrich() -> SymbolAnalysis:
+    return SymbolAnalysis(
+        snapshot=_snapshot(hv_20d=0.28, rsi_14=34.0),
+        chain=_eligible_chain(),
+        quote=Quote(symbol="TST", as_of=AS_OF, last_price=93.0, bid=93.0, ask=93.0, net_change_pct=-1.4),
+        price_history=[],
+    )
+
+
+def test_enrich_open_decision_fills_missing_market_fields(conn):
+    """Una posición abierta por el código viejo (sin datos de mercado) se completa reusando el
+    análisis del scan, sin pisar los parámetros de apertura (usuario 2026-08-05)."""
+    settings = _settings()
+    engine.process_symbol_entry(conn, "TST", _snapshot(), _eligible_chain(), _price_history_with_support(), settings)
+    dec = repo.get_latest_open_decision_for_symbol(conn, "TST")
+    ctx = json.loads(dec["context_json"])
+    delta_at_open = ctx["chosen_delta"]
+    # simular la apertura "vieja": sacar los campos de mercado que el código nuevo sí guarda
+    for k in ("underlying_price", "chosen_bid", "chosen_ask", "chosen_spread_pct",
+              "chosen_open_interest", "chosen_volume", "chosen_pop", "hv_20d", "rsi_14", "day_change_pct"):
+        ctx.pop(k, None)
+    repo.update_decision_context(conn, dec["id"], json.dumps(ctx))
+
+    assert engine.enrich_open_decision(conn, "TST", _analysis_for_enrich()) is True
+    ctx2 = json.loads(repo.get_latest_open_decision_for_symbol(conn, "TST")["context_json"])
+    assert ctx2["underlying_price"] == 93.0
+    assert ctx2["day_change_pct"] == -1.4
+    assert ctx2["chosen_bid"] == 1.75 and ctx2["chosen_ask"] == 1.85
+    assert ctx2["chosen_open_interest"] == 500 and ctx2["chosen_volume"] == 50
+    assert abs(ctx2["chosen_pop"] - (1 - 0.12)) < 1e-6  # 1 − |delta| del contrato
+    assert ctx2["hv_20d"] == 0.28 and ctx2["rsi_14"] == 34.0
+    assert ctx2["chosen_delta"] == delta_at_open  # no pisa lo de apertura
+
+
+def test_enrich_open_decision_noop_when_already_enriched(conn):
+    """Si la decisión ya tiene los datos de mercado (apertura con el código nuevo) no reescribe."""
+    settings = _settings()
+    engine.process_symbol_entry(conn, "TST", _snapshot(), _eligible_chain(), _price_history_with_support(), settings)
+    assert engine.enrich_open_decision(conn, "TST", _analysis_for_enrich()) is False
+
+
+def test_enrich_open_decision_noop_when_no_position(conn):
+    assert engine.enrich_open_decision(conn, "TST", _analysis_for_enrich()) is False

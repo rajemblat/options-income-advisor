@@ -11,6 +11,14 @@ from options_advisor.config import LlmSettings
 
 logger = logging.getLogger(__name__)
 
+# Blindaje anti-cuelgue (usuario 2026-08-05, tras un cuelgue de 33 min que frenó todo el robot):
+# el SDK de Anthropic por defecto espera hasta 10 MINUTOS por request y reintenta 2 veces (~30 min
+# en el peor caso). La narración NO es crítica — si falla hay un comentario de fallback local — así
+# que le ponemos un límite corto y pocos reintentos: peor caso ~1 min en vez de ~30. Nunca más una
+# llamada lenta congela el scheduler.
+_LLM_TIMEOUT_SECONDS = 30.0
+_LLM_MAX_RETRIES = 1
+
 # Sección 6.2: la narración es puramente descriptiva sobre datos ya calculados por el motor
 # de reglas (Sección 6.1) — el LLM nunca decide ni pondera, solo redacta en lenguaje simple.
 # El bloque con patas, prima, beneficio/pérdida máxima, breakevens y probabilidad de beneficio
@@ -65,7 +73,7 @@ def narrate_alert(context: dict, llm_settings: LlmSettings, api_key: str | None)
         comment, source = _fallback_comment(context), "fallback_template"
     else:
         try:
-            client = anthropic.Anthropic(api_key=api_key)
+            client = anthropic.Anthropic(api_key=api_key, timeout=_LLM_TIMEOUT_SECONDS, max_retries=_LLM_MAX_RETRIES)
             response = client.messages.create(
                 model=llm_settings.model,
                 max_tokens=llm_settings.max_tokens,
@@ -136,7 +144,7 @@ def narrate_real_trade(context: dict, llm_settings: LlmSettings, api_key: str | 
         comment, source = _fallback_comment_real_trade(context), "fallback_template"
     else:
         try:
-            client = anthropic.Anthropic(api_key=api_key)
+            client = anthropic.Anthropic(api_key=api_key, timeout=_LLM_TIMEOUT_SECONDS, max_retries=_LLM_MAX_RETRIES)
             response = client.messages.create(
                 model=llm_settings.model,
                 max_tokens=llm_settings.max_tokens,
@@ -176,6 +184,8 @@ def build_real_trade_context(
     annualized_return_pct: float | None = None,
     early_close_projection: list[dict] | None = None,
     capital_available: float | None = None,
+    net_greeks: dict | None = None,
+    greeks_source: str | None = None,
 ) -> dict:
     """Mismo shape que `build_narration_context` sin conviction_score/scoring_breakdown (no
     existen para una operación ya ejecutada, nada se puntuó) y con `quantity`/`entry_price`
@@ -183,6 +193,8 @@ def build_real_trade_context(
     campos nuevos, son solo para que el narrador los mencione si hace falta) y por
     `narrate_real_trade`."""
     return {
+        "net_greeks": net_greeks or {},
+        "greeks_source": greeks_source,
         "symbol": symbol,
         "strategy_type": strategy_type,
         "quantity": quantity,

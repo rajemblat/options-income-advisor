@@ -127,7 +127,29 @@ Ninguno.
 
 ## Pendiente, no empezado
 
-Ninguno. Las 4 tareas confirmadas el 2026-07-31 (rebranding a OptionsUp, modelo de barra
+1. **Ventana de entrada del condor antes del cambio de hora (noviembre 2026).** Encontrado el
+   2026-08-14 auditando el paso del condor a real: `entry_window_start/end` se comparan contra la
+   hora de la BARRA, que Schwab devuelve en UTC — no en hora de Nueva York. Con UTC−4, la ventana
+   "10:00–14:00" del config son en los hechos los primeros 30 minutos de la rueda (mercado abre
+   09:30 ET = 13:30 UTC, la ventana corta a las 14:00 UTC = 10:00 ET). Confirmado contra los datos:
+   los 16 condors ganadores del papel (6, 7, 11 y 12 de agosto, 100%) se abrieron TODOS entre las
+   09:31 y las 09:54 ET. Decisión del usuario (2026-08-14): **dejarlo como está**, porque ese es el
+   horario donde la estrategia está probada, y documentarlo (hecho: comentario en `settings.yaml`,
+   docstring de `evaluate_condor_signal`, y test candado `test_window_is_compared_in_utc_not_new_york`).
+   Lo PENDIENTE es el cambio de hora: con UTC−5 el mercado abre 14:30 UTC, después de
+   `entry_window_end` (14:00), y el condor dejaría de abrir para siempre en silencio y sin error.
+   Hay que mover la ventana (o convertir a ET y reajustarla a 09:30–10:00 ET) antes de noviembre.
+
+2. **7 tests desactualizados** (no son bugs del condor; verificado 2026-08-14, 989 pasan): 3 en
+   `test_positions.py` (la escalera de ganancia de los naked puts ya no cierra al 30% como esperaban),
+   3 en `test_real_trades.py` (el clasificador ahora reconoce bull put spreads a débito y los tests
+   esperan `None`), 1 en `test_candidates.py` (`custom_multileg` no está en el builder).
+
+3. **12 días sin commitear** (al 2026-08-14): el último commit es del 2026-08-02 ("Simulador 5/6 y
+   6/6"). Todo el trading real, el price walker, el condor real y el asesor viven solo en el working
+   tree. Contra lo que dice `CLAUDE.md`, no se está commiteando+pusheando al terminar cada bloque.
+
+Las 4 tareas confirmadas el 2026-07-31 (rebranding a OptionsUp, modelo de barra
 intradía, página de gráfico de velas con VWAP, conectar el gráfico con alertas) están
 terminadas y verificadas — ver ítems #49-52.
 

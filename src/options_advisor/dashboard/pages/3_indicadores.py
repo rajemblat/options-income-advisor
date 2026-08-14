@@ -26,7 +26,7 @@ SERIES_ORANGE = "#d95926"
 SERIES_AQUA = "#199e70"
 SERIES_VIOLET = "#9085e9"
 
-st.set_page_config(page_title="Indicadores", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Lokshn · Indicadores", page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 inject_theme()
 render_header(icon("bar-chart", size=24, color=ACCENT), "Detalle de indicadores por símbolo")
 

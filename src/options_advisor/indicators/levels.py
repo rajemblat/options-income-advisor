@@ -76,6 +76,27 @@ def find_strong_support_resistance(
     return supports, resistances
 
 
+def find_strong_supports_with_touches(
+    price_bars: list[PriceBar],
+    current_price: float,
+    order: int = 3,
+    cluster_pct: float = 0.01,
+    max_levels: int = 5,
+    min_touches: int = 2,
+) -> list[tuple[float, int]]:
+    """Soportes fuertes (tocados ≥ `min_touches`) por DEBAJO del precio, cada uno con su cantidad de
+    toques (= su FUERZA), ordenados del más CERCANO al precio al más profundo. Sirve para elegir un
+    strike más profundo (2º soporte o más abajo) priorizando el más fuerte, y así tener más cobertura
+    (usuario 2026-08-10: "usá el más fuerte, del segundo para abajo — el primero deja muy poca cobertura")."""
+    pivot_levels = _pivot_levels(price_bars, order)
+    if not pivot_levels:
+        return []
+    clustered = _cluster_levels_with_touches(sorted(pivot_levels), cluster_pct)
+    below = [(lvl, touches) for lvl, touches in clustered if touches >= min_touches and lvl < current_price]
+    below.sort(key=lambda lt: lt[0], reverse=True)  # más cercano al precio primero
+    return below[:max_levels]
+
+
 def resample_to_weekly(price_bars: list[PriceBar]) -> list[PriceBar]:
     """Agrega velas diarias a velas semanales (open=primera del período, high=máximo,
     low=mínimo, close=última, volume=suma) — base para evaluar soporte/resistencia en el

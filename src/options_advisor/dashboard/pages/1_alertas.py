@@ -35,7 +35,7 @@ STRATEGY_FILTER_GROUPS = {
 }
 STRATEGY_FILTER_LABELS = {"naked_put": "Naked Put", "covered_call": "Covered Call", "collar": "Collar", "iron_condor": "Iron Condor"}
 
-st.set_page_config(page_title="Alertas", page_icon="🔔", layout="wide")
+st.set_page_config(page_title="Lokshn · Alertas", page_icon="🔔", layout="wide", initial_sidebar_state="expanded")
 inject_theme()
 render_header(icon("bell", size=24, color=ACCENT), "Alertas — Ingreso a Largo Plazo")
 

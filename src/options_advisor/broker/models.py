@@ -174,6 +174,10 @@ class AccountPosition(BaseModel):
     option_type: str | None = None  # "put" | "call", solo si asset_type == "OPTION"
     strike: float | None = None
     expiration: date | None = None
+    # Margen/garantía REAL que exige el broker por esta posición (Schwab: maintenanceRequirement).
+    # Es el colateral verdadero de tu cuenta (portfolio margin) — sirve para calibrar la estimación
+    # del simulador a tu broker (usuario 2026-08-06). None si el broker no lo reporta.
+    maintenance_requirement: float | None = None
 
 
 class OptionChain(BaseModel):

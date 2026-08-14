@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from dataclasses import dataclass
 from datetime import date
@@ -63,3 +64,65 @@ def build_alert_strike_levels(
     # dict.fromkeys preserva el orden de primera aparición (a diferencia de un set) — no
     # importa acá, pero es gratis y evita sorpresas si en algún momento el orden sí importa.
     return list(dict.fromkeys(levels))
+
+
+@dataclass(frozen=True)
+class SimulatorOverlay:
+    """Lo que el SIMULADOR usó para decidir una apertura de put, para dibujarlo sobre el gráfico y
+    que Gráfico y Simulador compartan datos (usuario 2026-08-06): strike elegido, precio del
+    subyacente al abrir, cobertura (colchón), movimiento de 1σ y TODOS los soportes usados."""
+
+    strike: float | None
+    underlying: float | None
+    coverage_pct: float | None       # fracción (0.089 = 8.9%)
+    sigma_move: float | None         # $ del movimiento esperado de 1σ hasta el vencimiento
+    supports: tuple[float, ...]      # todos los soportes (fuerte + diarios), ordenados desc, sin repetir
+    strong_support: float | None     # el soporte "fuerte" que el robot usó
+    dte: int | None
+
+
+def build_simulator_overlay(position_row, ctx: dict | None) -> SimulatorOverlay | None:
+    """Arma el overlay del simulador desde una posición abierta y el contexto de su decisión.
+    Devuelve None si no hay datos útiles. Función pura (recibe fila + ctx ya parseado) para poder
+    testearla sin base ni red."""
+    ctx = ctx or {}
+
+    def _num(v):
+        return v if isinstance(v, (int, float)) else None
+
+    strike = _num(ctx.get("chosen_strike"))
+    if strike is None and position_row is not None:
+        try:
+            strike = _num(position_row["strike"])
+        except (KeyError, IndexError, TypeError):
+            strike = None
+
+    underlying = _num(ctx.get("underlying_price"))
+    coverage = _num(ctx.get("chosen_coverage_pct"))
+    if underlying is None and strike is not None and coverage is not None and coverage < 1:
+        underlying = round(strike / (1 - coverage), 2)   # cobertura = (precio-strike)/precio
+
+    iv = _num(ctx.get("chosen_iv"))
+    dte = _num(ctx.get("chosen_dte"))
+    sigma_move = None
+    if underlying and underlying > 0 and iv and isinstance(dte, (int, float)) and dte >= 0:
+        sigma_move = round(underlying * iv * math.sqrt(max(dte, 0.0) / 365.0), 2)
+
+    strong = _num(ctx.get("support_used"))
+    supports_raw = ctx.get("supports_daily")
+    all_supports = []
+    if strong is not None:
+        all_supports.append(round(strong, 2))
+    if isinstance(supports_raw, list):
+        for s in supports_raw:
+            if isinstance(s, (int, float)):
+                all_supports.append(round(s, 2))
+    supports = tuple(dict.fromkeys(sorted(all_supports, reverse=True)))   # sin repetir, desc
+
+    if strike is None and not supports and sigma_move is None:
+        return None
+    return SimulatorOverlay(
+        strike=strike, underlying=underlying, coverage_pct=coverage, sigma_move=sigma_move,
+        supports=supports, strong_support=(round(strong, 2) if strong is not None else None),
+        dte=int(dte) if isinstance(dte, (int, float)) else None,
+    )

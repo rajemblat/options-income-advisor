@@ -11,7 +11,7 @@ from options_advisor.storage import repository as repo
 
 WARNING_WINDOW_DAYS = 7  # ventana para marcar earnings/reunión Fed como "próximos" (Sección 4 del pedido)
 
-st.set_page_config(page_title="Watchlist", page_icon="👀", layout="wide")
+st.set_page_config(page_title="Lokshn · Watchlist", page_icon="👀", layout="wide", initial_sidebar_state="expanded")
 inject_theme()
 render_header(icon("eye", size=24, color=ACCENT), "Watchlist", "Último snapshot de indicadores por símbolo")
 

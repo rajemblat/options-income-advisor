@@ -11,7 +11,7 @@ from options_advisor.dashboard.inflation_simulator import project_inflation_scen
 from options_advisor.storage import repository as repo
 from options_advisor.storage.models import InvestorProfile
 
-st.set_page_config(page_title="Perfil y Simulación", page_icon="⚙️", layout="wide")
+st.set_page_config(page_title="Lokshn · Perfil y Simulación", page_icon="⚙️", layout="wide", initial_sidebar_state="expanded")
 inject_theme()
 render_header(icon("settings", size=24, color=ACCENT), "Perfil y Simulación")
 

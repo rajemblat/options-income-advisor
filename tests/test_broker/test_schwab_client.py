@@ -822,3 +822,41 @@ def test_get_intraday_bars_returns_empty_on_non_trading_day(client, monkeypatch)
 
     monkeypatch.setattr(httpx.Client, "get", _boom)
     assert client.get_intraday_bars("AAPL", date(2026, 8, 1)) == []  # sábado
+
+
+# --- Reintentos solo en errores transitorios (fix de lentitud, usuario 2026-08) ---
+from options_advisor.broker.schwab_client import _is_retryable_http_error
+
+
+def _status_error(code: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("GET", "https://api.schwabapi.com/marketdata/v1/X/quotes")
+    response = httpx.Response(code, request=request)
+    return httpx.HTTPStatusError(f"HTTP {code}", request=request, response=response)
+
+
+def test_retryable_only_for_429_and_5xx():
+    assert _is_retryable_http_error(_status_error(429)) is True
+    assert _is_retryable_http_error(_status_error(500)) is True
+    assert _is_retryable_http_error(_status_error(503)) is True
+    # 4xx determinísticos: NO se reintentan (antes gastaban ~7s de backoff por símbolo malo)
+    assert _is_retryable_http_error(_status_error(404)) is False
+    assert _is_retryable_http_error(_status_error(400)) is False
+    assert _is_retryable_http_error(_status_error(401)) is False
+    assert _is_retryable_http_error(_status_error(403)) is False
+    # Cualquier otra excepción no HTTP tampoco se reintenta acá
+    assert _is_retryable_http_error(ValueError("x")) is False
+
+
+def test_get_does_not_retry_on_404(client, monkeypatch):
+    """Un 404 (símbolo sin cadena) debe fallar de una, sin gastar reintentos con backoff."""
+    calls = {"n": 0}
+
+    def _get_404(self, path, params=None, headers=None):
+        calls["n"] += 1
+        request = httpx.Request("GET", f"https://api.schwabapi.com/marketdata/v1{path}")
+        return httpx.Response(404, json={"error": "not found"}, request=request)
+
+    monkeypatch.setattr(httpx.Client, "get", _get_404)
+    with pytest.raises(httpx.HTTPStatusError):
+        client.get_quote("NOSUCHSYM")
+    assert calls["n"] == 1  # una sola llamada, sin reintentos

@@ -1,25 +1,136 @@
-# Lista editable de símbolos a monitorear en Fase 1 (escenario Ingreso a Largo Plazo).
-# Agregar o quitar tickers acá no requiere tocar código.
+# Watchlist del usuario (2026-08-05): las empresas que robert sigue todo el tiempo en su
+# plataforma. El robot se enfoca SOLO en estas para buscar entradas y revisar cada día
+# (scan_full_universe: false en settings.yaml). Achica la búsqueda, la hace más rápida y la
+# alinea con lo que realmente opera. Editar acá no requiere tocar código.
+#
+# Excluidos a propósito: SOLO los futuros (/MBT, /ES, /CL, /GC, etc.) — el robot no opera futuros.
+# Los ÍNDICES SÍ van (usuario 2026-08-05): $SPX, $NDX, $RUT, $VIX con prefijo $ (Schwab lo exige
+# para traer la cadena del índice).
+#
+# Nota sobre los irons: el Iron Butterfly y el Iron Condor usan $SPX SIEMPRE (está fijo en su
+# config, intraday_butterfly/intraday_condor.underlying), así que funcionan tengan o no a SPX en
+# esta lista. Tenerlo acá además hace que el robot de PUTS también evalúe el índice (aunque por su
+# tamaño casi siempre lo saltea por buying power).
+#
+# Nota: SQQQ, UVXY, TMF, BITI son ETF inversos/de volatilidad — están porque los seguís, pero
+# vender puts sobre ellos es poco habitual (decaen). Decime si querés sacarlos.
 
 symbols:
-  # ETFs de índice — liquidez altísima, ideales para Iron Condor / Bull Put Spread
-  - SPY
-  - QQQ
-  - IWM
-  # Índices (cash-settled) — sumados 2026-07-26, plazos normales (no 0DTE, ver NOTES.md).
-  # $SPX y $VIX quedan afuera por ahora (SPX: uso real del usuario es 0DTE, incompatible con
-  # este motor de 25-50 DTE; VIX: basado en futuros, griegos por BS quedarían mal calculados).
-  - $RUT
+  # Índices (con prefijo $ para Schwab). $VIX se basa en futuros, así que sus griegos por
+  # Black-Scholes son aproximados — el robot lo evalúa igual pero con ese matiz.
+  - $SPX
   - $NDX
-  # Large caps ultra-líquidos — buenos para Cash-Secured Put / Covered Call
+  - $RUT
+  - $VIX
+  # Large caps / tech
   - AAPL
   - MSFT
   - NVDA
   - AMZN
   - GOOGL
   - META
-  # Blue chips de dividendo — perfil conservador
-  - JPM
-  - KO
-  - JNJ
+  - AMD
+  - TSLA
+  - ORCL
+  - TXN
+  - INTC
+  - NFLX
+  - MSTR
+  - COIN
+  - PLTR
+  # Consumo / retail / servicios
+  - NKE
+  - SBUX
+  - CMG
+  - MCD
+  - WMT
+  - TGT
   - PG
+  - PEP
+  - KSS
+  - COTY
+  - DIS
+  - CCL
+  - NCLH
+  - CAR
+  - GM
+  - F
+  - RIVN
+  - LCID
+  # Aerolíneas / viajes
+  - AAL
+  - UAL
+  - LUV
+  - DAL
+  # Financieras
+  - JPM
+  - BAC
+  - C
+  - WFC
+  - GS
+  - MA
+  - V
+  - AXP
+  - COF
+  - LNC
+  - SOFI
+  - NU
+  - HOOD
+  - DLO
+  # Salud
+  - LLY
+  - UNH
+  # Energía / materiales / industriales
+  - CVX
+  - OXY
+  - USO
+  - AA
+  - MMM
+  - BA
+  - UPS
+  - OKLO
+  - YPF
+  # Semis / tech ETFs
+  - SMH
+  # Cripto / mineras cripto
+  - IBIT
+  - ETHA
+  - BITI
+  - RIOT
+  - HUT
+  # LatAm / internacionales
+  - MELI
+  - ABNB
+  - ARGT
+  - EWW
+  - EWY
+  - EWZ
+  # Metales / oro-plata
+  - GLD
+  - IAUM
+  - GDX
+  - SLV
+  # ETFs de índice / amplios
+  - SPY
+  - QQQ
+  - IWM
+  - DIA
+  - VTI
+  - VNQ
+  - XLF
+  # ETFs de renta / bonos
+  - JEPI
+  - JEPQ
+  - SPYI
+  - TLT
+  - TMF
+  # Otros que seguís
+  - VZ
+  - T
+  - XYZ
+  - FISV
+  - DKNG
+  - SPCX
+  # Inversos / volatilidad (poco habituales para vender puts — ver nota arriba)
+  - SQQQ
+  - UVXY

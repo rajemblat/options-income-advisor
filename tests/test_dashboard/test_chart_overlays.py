@@ -75,3 +75,46 @@ def test_duplicate_levels_are_deduplicated():
 
 def test_no_rows_returns_empty_list():
     assert build_alert_strike_levels([], [], as_of=date(2026, 7, 31)) == []
+
+
+# ---------- Overlay del simulador (usuario 2026-08-06) ----------
+from options_advisor.dashboard.chart_overlays import SimulatorOverlay, build_simulator_overlay
+
+
+class _Row(dict):
+    """Fila tipo sqlite3.Row para test (permite row['strike'])."""
+
+
+def test_simulator_overlay_full_context():
+    ctx = {
+        "chosen_strike": 15.0, "underlying_price": 16.47, "chosen_coverage_pct": 0.089,
+        "chosen_iv": 0.512, "chosen_dte": 43, "support_used": 16.43,
+        "supports_daily": [16.0, 16.0, 15.0, 14.0, 16.43],
+    }
+    ov = build_simulator_overlay(_Row(strike=15.0), ctx)
+    assert ov is not None
+    assert ov.strike == 15.0
+    assert ov.underlying == 16.47
+    assert ov.coverage_pct == 0.089
+    assert ov.strong_support == 16.43
+    # Soportes sin repetir, ordenados desc, incluye el fuerte + los diarios.
+    assert ov.supports == (16.43, 16.0, 15.0, 14.0)
+    # 1σ = precio * IV * sqrt(dte/365) ≈ 16.47*0.512*sqrt(43/365)
+    assert ov.sigma_move is not None and 2.7 < ov.sigma_move < 3.0
+
+
+def test_simulator_overlay_derives_underlying_from_coverage():
+    # Sin underlying_price: se deriva de strike/(1-cobertura).
+    ov = build_simulator_overlay(_Row(strike=100.0), {"chosen_coverage_pct": 0.10})
+    assert ov is not None
+    assert ov.underlying == round(100.0 / 0.9, 2)
+
+
+def test_simulator_overlay_none_when_empty():
+    assert build_simulator_overlay(_Row(strike=None), {}) is None
+
+
+def test_simulator_overlay_falls_back_to_position_strike():
+    ov = build_simulator_overlay(_Row(strike=42.0), {"support_used": 40.0})
+    assert ov.strike == 42.0
+    assert ov.supports == (40.0,)
