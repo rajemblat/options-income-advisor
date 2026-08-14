@@ -1089,17 +1089,41 @@ def set_max_puts_per_day(conn: sqlite3.Connection, n: int) -> None:
 
 
 def count_puts_opens_today(conn: sqlite3.Connection, today: date) -> int:
-    """Cuántos puts abrió el robot HOY — para el tope diario de tickets. Cuenta las decisiones
-    'open' del día EXCLUYENDO el Iron Butterfly (que loguea strategy=iron_butterfly en su contexto)."""
+    """Cuántos puts abrió el robot HOY — para el tope diario de tickets.
+
+    Cuenta SOLO las aperturas de naked puts: las de las estrategias intradía (Iron Condor, Iron
+    Butterfly) guardan `strategy` en su contexto y las de puts no, así que el filtro es "sin strategy".
+
+    Bug real (2026-08-14): la versión anterior excluía solo al butterfly con un LIKE, así que las 10
+    aperturas del Iron Condor de ese día contaron como puts. El contador marcó 10/4, dio el tope por
+    alcanzado y el simulador de puts NO abrió ninguna posición en todo el día — bloqueado por la
+    actividad de otra estrategia. El usuario lo vio al revés ("puse 4 y va 10") porque el número que
+    veía en pantalla era el del condor contado en el casillero de los puts."""
     row = conn.execute(
         """
         SELECT COUNT(*) AS n FROM robot_decisions
         WHERE action = 'open' AND decision_date = ?
-          AND (context_json IS NULL OR context_json NOT LIKE '%iron_butterfly%')
+          AND json_extract(context_json, '$.strategy') IS NULL
         """,
         (today.isoformat(),),
     ).fetchone()
     return row["n"] if row else 0
+
+
+def get_condor_max_per_day(conn: sqlite3.Connection, default: int) -> int:
+    """Tope diario de Iron Condors de PAPEL, ajustable desde el dashboard (usuario 2026-08-14: quería
+    limitarlos a 4 y no encontraba dónde — el único control que había era el de los puts). 0 = sin
+    tope. Sin valor guardado cae al `max_per_day` del config."""
+    raw = get_robot_flag(conn, "sim.max_condors_per_day", "")
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return n if n >= 0 else default
+
+
+def set_condor_max_per_day(conn: sqlite3.Connection, n: int) -> None:
+    set_robot_flag(conn, "sim.max_condors_per_day", str(max(0, int(n))))
 
 
 # --- Iron Butterfly 0DTE (Estrategia 2) ---

@@ -584,3 +584,38 @@ def test_get_intraday_open_decision_by_position_id():
     # otra estrategia o id no matchea
     assert repo.get_intraday_open_decision(conn, "iron_butterfly", 7) is None
     assert repo.get_intraday_open_decision(conn, "iron_condor", 99) is None
+
+
+# ---------------- tope diario de puts vs. condor (bug real 2026-08-14) ----------------
+
+def test_puts_daily_counter_ignores_condor_and_butterfly_opens():
+    """Bug real: `count_puts_opens_today` excluía solo al butterfly con un LIKE, así que las aperturas
+    del Iron Condor contaban como puts. El 14/08 el condor abrió 10, el contador marcó 10 contra un
+    tope de 4, y el simulador de puts no abrió NADA en todo el día por un tope que no era suyo."""
+    import json as _json
+    from datetime import date as _date, datetime as _datetime
+
+    conn = db.connect(":memory:")
+    hoy = _date(2026, 8, 14)
+    for _ in range(10):
+        repo.insert_robot_decision(conn, hoy, "SPX", "open", "Entrada condor abierta",
+                                   _json.dumps({"strategy": "iron_condor", "position_id": 1}), _datetime.now())
+    repo.insert_robot_decision(conn, hoy, "SPX", "open", "Entrada butterfly",
+                               _json.dumps({"strategy": "iron_butterfly"}), _datetime.now())
+    assert repo.count_puts_opens_today(conn, hoy) == 0, "ni condors ni butterflies gastan el cupo de puts"
+
+    # Un put de verdad (sin `strategy` en el contexto) sí cuenta.
+    repo.insert_robot_decision(conn, hoy, "NU", "open", "Venta de put",
+                               _json.dumps({"symbol": "NU", "strike": 12.0}), _datetime.now())
+    assert repo.count_puts_opens_today(conn, hoy) == 1
+
+
+def test_condor_daily_cap_is_configurable_and_separate_from_puts():
+    conn = db.connect(":memory:")
+    assert repo.get_condor_max_per_day(conn, 0) == 0        # sin guardar → default del config
+    repo.set_condor_max_per_day(conn, 4)
+    assert repo.get_condor_max_per_day(conn, 0) == 4
+    # No pisa el tope de puts, que es otra bandera.
+    assert repo.get_max_puts_per_day(conn, 5) == 5
+    repo.set_condor_max_per_day(conn, 0)
+    assert repo.get_condor_max_per_day(conn, 3) == 0        # 0 guardado = SIN tope, no "usá el default"

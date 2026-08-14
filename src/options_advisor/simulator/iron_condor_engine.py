@@ -169,7 +169,9 @@ def process_condor_cycle(conn: sqlite3.Connection, broker: BrokerClient, setting
     # "todos los que quieras"); el freno real pasa a ser cuántos puede tener abiertos a la vez.
     opens_today = repo.count_condor_opens_today(conn, as_of)
     open_now = len(repo.get_open_condor_positions(conn))
-    daily_cap_hit = cfg.max_per_day > 0 and opens_today >= cfg.max_per_day
+    # Tope diario ajustable desde el dashboard (usuario 2026-08-14), con el config como default.
+    _cap_day = repo.get_condor_max_per_day(conn, cfg.max_per_day)
+    daily_cap_hit = _cap_day > 0 and opens_today >= _cap_day
     open_cap_hit = cfg.max_open_positions > 0 and open_now >= cfg.max_open_positions
     if daily_cap_hit or open_cap_hit:
         return

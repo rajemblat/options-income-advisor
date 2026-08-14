@@ -482,8 +482,13 @@ with adj_col:
     with _adj2:
         if st.button("Guardar", use_container_width=True, key="save_max_puts"):
             repo.set_max_puts_per_day(conn, int(_nnew))
-            st.toast(f"✅ Tope diario de naked puts: {int(_nnew)}")
+            # El toast solo dura 4 segundos y encima venía justo antes de un rerun, así que el usuario
+            # apretaba Guardar y no veía nada (2026-08-14). El aviso ahora sobrevive al rerun.
+            st.session_state["_puts_cap_guardado"] = int(_nnew)
             st.rerun()
+if st.session_state.get("_puts_cap_guardado") is not None:
+    st.success(f"✅ Guardado: el robot vende como máximo **{st.session_state.pop('_puts_cap_guardado')}** "
+               "naked puts por día. Este tope es SOLO de puts — el Iron Condor tiene el suyo, en su pestaña.")
 
 # Contadores por pestaña (usuario 2026-08-10: "un número si hay algo sin revisar / actividad de hoy").
 # Posiciones/Cerradas = SIN PUNTUAR (lo que te falta revisar); Órdenes/Irons = actividad de HOY.
@@ -1178,6 +1183,10 @@ with tab_condor:
     # --- Pausa / reanudación de la apertura de Iron Condors (usuario 2026-08) ---
     ic_paused = repo.is_condor_paused(conn)
     ic_opens_today = repo.count_condor_opens_today(conn, date.today())
+    # Tope diario PROPIO del condor de papel (usuario 2026-08-14: "puse guardar 4 operaciones y va como
+    # 10"). Antes el único control visible era el de los puts, que está arriba de las pestañas y parecía
+    # aplicar a todo; el condor corría sin tope (max_per_day=0 en el config).
+    ic_cap = repo.get_condor_max_per_day(conn, ic.max_per_day)
     icp_col, ict_col = st.columns([1, 3])
     with icp_col:
         if ic_paused:
@@ -1197,13 +1206,36 @@ with tab_condor:
         else:
             ic_estado = "🟢 Operando condors en días calmos"
         _open_ct = len(repo.get_open_condor_positions(conn))
-        if ic.max_per_day <= 0:
+        if ic_cap <= 0:
             cupo_ic = f"{ic_opens_today} hoy (sin tope) · {_open_ct}/{ic.max_open_positions} abiertos"
             tope_ic = " · 🚫 llegó al máx. de abiertos a la vez" if _open_ct >= ic.max_open_positions else ""
         else:
-            cupo_ic = f"{ic_opens_today}/{ic.max_per_day} hoy"
-            tope_ic = " · 🚫 tope diario alcanzado" if ic_opens_today >= ic.max_per_day else ""
+            cupo_ic = f"{ic_opens_today}/{ic_cap} hoy"
+            tope_ic = " · 🚫 tope diario alcanzado" if ic_opens_today >= ic_cap else ""
         st.markdown(f"{ic_estado} &nbsp;·&nbsp; {cupo_ic}{tope_ic}")
+
+    # --- Tope diario de condors, ajustable acá mismo (usuario 2026-08-14) ---
+    if st.session_state.pop("_ic_cap_guardado", False):
+        st.success(f"✅ Guardado: el Iron Condor abre como máximo **{ic_cap}** por día"
+                   + (" (0 = sin tope)." if ic_cap == 0 else "."))
+    _icc1, _icc2, _icc3 = st.columns([1, 1, 3])
+    with _icc1:
+        _ic_new = st.number_input(
+            "Condors por día (techo)", min_value=0, max_value=50, value=int(ic_cap), step=1,
+            key="ic_max_per_day",
+            help="Cuántos Iron Condors como MÁXIMO abre el simulador por día. 0 = sin tope. "
+                 "Es SEPARADO del tope de naked puts de arriba.",
+        )
+    with _icc2:
+        st.markdown("<div style='height:1.85rem'></div>", unsafe_allow_html=True)
+        if st.button("Guardar", use_container_width=True, key="ic_save_cap"):
+            repo.set_condor_max_per_day(conn, int(_ic_new))
+            st.session_state["_ic_cap_guardado"] = True
+            st.rerun()
+    with _icc3:
+        st.markdown("<div style='height:1.85rem'></div>", unsafe_allow_html=True)
+        st.caption(f"Hoy lleva **{ic_opens_today}**. Aparte de esto, nunca tiene más de "
+                   f"**{ic.max_open_positions}** abiertos a la vez.")
 
     # Freno del día por racha de stop-loss (usuario 2026-08-08): avisá si hoy quedó frenado.
     _ic_halt = getattr(ic, "stop_loss_streak_halt", 0)
