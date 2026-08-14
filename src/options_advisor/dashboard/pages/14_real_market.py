@@ -435,10 +435,66 @@ else:
         f"<span style='color:{_tcol}; font-size:1.7rem; font-weight:800;'>${_pl_total:+,.2f}</span>"
         f"<span style='color:{_tcol}; font-size:1.05rem; font-weight:700; margin-left:0.5rem;'>"
         f"{('(' + format(_pl_total_pct, '+.2f') + '%)') if _pl_total_pct is not None else ''}</span>"
-        f"<span style='color:{TEXT_MUTED}; font-size:0.86rem; margin-left:0.6rem;'>realizado ${_realized_all:+,.2f} · abierto ${_tot_unreal:+,.2f} · sobre ${CAPITAL_DISPONIBLE:,.0f} de capital{_plazo_txt}</span>"
+        f"<span style='color:{TEXT_MUTED}; font-size:0.86rem; margin-left:0.6rem;'>sobre ${CAPITAL_DISPONIBLE:,.0f} de capital{_plazo_txt}</span>"
         f"</div>",
         unsafe_allow_html=True,
     )
+
+    # --- Cuadro que SEPARA lo realizado de lo abierto (usuario 2026-08-14: "sin mezclar con
+    # operaciones abiertas"). Antes las dos cifras iban apretadas en una sola línea de texto chico
+    # debajo del total, y no se podía leer cuánto está cobrado de verdad y cuánto todavía flota.
+    _dias_op = 0
+    _semanas = 0.0
+    if _first_real:
+        try:
+            _dias_op = max(0, (today - date.fromisoformat(_first_real)).days)
+            _semanas = _dias_op / 7.0
+        except (ValueError, TypeError):
+            pass
+    _pct = lambda v: (v / CAPITAL_DISPONIBLE * 100.0) if CAPITAL_DISPONIBLE > 0 else 0.0
+    _n_cerr = len(_cfg_realiz)
+    _n_abie = len(_robot_open)
+    _sin_pnl = [r for r in _cfg_all_closed if r["realized_pnl"] is None]
+
+    def _fila(icono, titulo, detalle, monto, fuerte=False):
+        col = GOOD if monto >= 0 else BAD
+        peso = "800" if fuerte else "600"
+        borde = f"border-top:2px solid {BORDER};" if fuerte else f"border-top:1px solid {BORDER}44;"
+        return (
+            f"<tr style='{borde}'>"
+            f"<td style='padding:9px 12px;'>{icono} <span style='font-weight:{peso}'>{titulo}</span>"
+            f"<div style='color:{TEXT_MUTED};font-size:0.78rem'>{detalle}</div></td>"
+            f"<td style='padding:9px 12px;text-align:right;color:{col};font-weight:{peso};font-size:1.05rem;white-space:nowrap'>${monto:+,.2f}</td>"
+            f"<td style='padding:9px 12px;text-align:right;color:{col};font-weight:{peso};white-space:nowrap'>{_pct(monto):+.2f}%</td>"
+            f"</tr>"
+        )
+
+    _ritmo = f" · ritmo <b>${(_pl_total / _semanas):+,.0f}</b> por semana" if _semanas >= 0.5 else ""
+    st.markdown(
+        f"<table style='border-collapse:collapse;width:100%;font-size:0.9rem;color:{TEXT_PRIMARY};"
+        f"background:{SURFACE};border:1px solid {BORDER};border-radius:0.6rem;overflow:hidden;margin-bottom:0.5rem'>"
+        f"<thead><tr style='color:{TEXT_MUTED};font-size:0.74rem;text-transform:uppercase;letter-spacing:0.04em'>"
+        f"<th style='padding:8px 12px;text-align:left'>Concepto</th>"
+        f"<th style='padding:8px 12px;text-align:right'>Monto</th>"
+        f"<th style='padding:8px 12px;text-align:right'>% del capital</th></tr></thead><tbody>"
+        + _fila("✅", "Realizado", f"plata ya cobrada · {_n_cerr} operación(es) cerrada(s)", _realized_all)
+        + _fila("🕐", "Abierto (no realizado)", f"todavía flota, puede cambiar · {_n_abie} posición(es) viva(s)", _tot_unreal)
+        + _fila("📊", "TOTAL", f"sobre ${CAPITAL_DISPONIBLE:,.0f} de capital", _pl_total, fuerte=True)
+        + "</tbody></table>"
+        + f"<div style='color:{TEXT_MUTED};font-size:0.82rem;margin-bottom:0.6rem'>"
+        + (f"Operando hace <b>{_dias_op} día(s)</b> = <b>{_semanas:.1f} semana(s)</b>{_ritmo}."
+           if _dias_op else "Todavía sin operaciones reales cerradas.")
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+    if _sin_pnl:
+        # Honestidad del número: una posición que se cerró FUERA del robot (a mano, o porque la
+        # recompra no llenó y la cerraste vos) queda sin precio de salida, así que su ganancia no
+        # entra en el "realizado". Sin este aviso, el total se lee como si estuviera completo.
+        _det = ", ".join(f"{r['symbol']} ${r['strike']:,.0f}" for r in _sin_pnl[:4])
+        st.caption(f"⚠️ Hay **{len(_sin_pnl)}** operación(es) cerrada(s) sin P&L registrado ({_det}"
+                   f"{'…' if len(_sin_pnl) > 4 else ''}) — se cerraron fuera del robot, así que su "
+                   "ganancia NO está sumada arriba. El realizado real es mayor que el que ves.")
     _pa, _pb, _pc, _pd, _pe, _pf = st.columns(6)
     _pa.metric("Posiciones", len(_robot_open))
     _pb.metric("P&L Open total", f"${_tot_unreal:+,.2f}", help="Ganancia/pérdida NO realizada de todo el libro abierto, desde que se abrió cada posición.")
