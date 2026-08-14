@@ -55,12 +55,21 @@ def _real_condor_active(conn, settings) -> bool:
     return True
 
 
+def _occ(contract) -> str | None:
+    """Símbolo OCC de ESTA opción. Es `occ_symbol`, NUNCA `symbol` — `symbol` es el subyacente
+    ("$SPX" para las cuatro patas), y usarlo hacía que la orden combinada se rechazara siempre con
+    "hacen falta 4 símbolos OCC distintos" (bug real 2026-08-14, con el condor ya autorizado).
+    Sin `occ_symbol` devolvemos None y NO se opera: preferimos no abrir antes que mandar una orden
+    sobre un instrumento reconstruido a mano, que en índices (SPX vs. SPXW) es un error caro."""
+    return getattr(contract, "occ_symbol", None) or None
+
+
 def _legs_from_build(build) -> rcs.CondorLegs | None:
     """Saca los 4 símbolos OCC EXACTOS de las patas del condor armado (build.legs trae los
     OptionContract de la cadena en vivo). None si falta alguno."""
     sp = lp = sc = lc = None
     for side, otype, contract in build.legs:
-        sym = getattr(contract, "symbol", None)
+        sym = _occ(contract)
         if not sym:
             continue
         if side == "sell" and otype == "put":
@@ -71,7 +80,7 @@ def _legs_from_build(build) -> rcs.CondorLegs | None:
             sc = sym
         elif side == "buy" and otype == "call":
             lc = sym
-    if not all((sp, lp, sc, lc)):
+    if not all((sp, lp, sc, lc)) or len({sp, lp, sc, lc}) != 4:
         return None
     return rcs.CondorLegs(short_put_symbol=sp, long_put_symbol=lp, short_call_symbol=sc, long_call_symbol=lc)
 
@@ -339,8 +348,16 @@ def _manage_open_position(conn, broker, account_hash, chain, spot, as_of: date, 
         return
     sp, sc, lp, lc = q
     ladder = _close_debit_ladder(sp, sc, lp, lc)
-    legs = rcs.CondorLegs(short_put_symbol=sp.symbol, long_put_symbol=lp.symbol,
-                          short_call_symbol=sc.symbol, long_call_symbol=lc.symbol)
+    # Para CERRAR se recompran exactamente las MISMAS 4 patas: los símbolos OCC guardados al abrir
+    # son la fuente de verdad; la cadena viva es solo el respaldo si la fila es vieja y no los tiene.
+    _cierre = [row["short_put_symbol"] or _occ(sp), row["long_put_symbol"] or _occ(lp),
+               row["short_call_symbol"] or _occ(sc), row["long_call_symbol"] or _occ(lc)]
+    if not all(_cierre) or len(set(_cierre)) != 4:
+        repo.mark_real_condor_position(conn, row["id"], datetime.now(), unrealized)
+        logger.error("Condor-real: id=%s sin los 4 símbolos OCC para recomprar — NO se cierra a ciegas", row["id"])
+        return
+    legs = rcs.CondorLegs(short_put_symbol=_cierre[0], long_put_symbol=_cierre[1],
+                          short_call_symbol=_cierre[2], long_call_symbol=_cierre[3])
     logger.warning("Condor-real: CERRANDO id=%s motivo=%s (débito arranca $%.2f → mid)",
                    row["id"], reason, ladder[0] if ladder else 0.0)
     res = rcs.execute_condor_walk(broker, account_hash, rcs.SIDE_CLOSE, legs, qty, ladder,

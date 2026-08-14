@@ -99,7 +99,18 @@ class Greeks(BaseModel):
 
 
 class OptionContract(BaseModel):
+    # OJO: `symbol` es el símbolo del SUBYACENTE (ej. "$SPX", "AAPL"), NO el de esta opción. Se llama
+    # así desde el principio y media app depende de eso, por eso no se renombra.
     symbol: str
+    # Símbolo OCC de 21 caracteres de ESTA opción, tal cual lo devuelve el broker
+    # (ej. "SPXW  260814P07765000"). Es lo único que sirve para mandar una orden sobre esta pata:
+    # reconstruirlo a mano es un riesgo real en índices, donde el root del semanal (SPXW) no coincide
+    # con el del subyacente (SPX). None en modo mock y en fixtures de tests.
+    # Bug real que motivó el campo (2026-08-14, con el condor real ya autorizado y el mercado
+    # abierto): el motor tomaba `symbol` de las 4 patas para armar la orden combinada y recibía
+    # cuatro "$SPX" idénticos, así que `build_iron_condor_open` la rechazaba cada minuto con
+    # "hacen falta 4 símbolos OCC distintos". El símbolo bueno venía de Schwab y se descartaba al parsear.
+    occ_symbol: str | None = None
     option_type: OptionType
     strike: float
     expiration: date

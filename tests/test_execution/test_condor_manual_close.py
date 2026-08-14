@@ -201,3 +201,66 @@ def test_manual_close_does_not_count_as_a_stop_loss_streak():
     pid = _insert_open_condor(conn)
     repo.close_real_condor_position(conn, pid, AS_OF, 300.0, "manual", -100.0, close_ts=datetime.now())
     assert repo.real_condor_consecutive_stop_losses_today(conn, AS_OF) == 0
+
+
+# ---------------- símbolos OCC de las patas (bug real 2026-08-14) ----------------
+
+def test_legs_use_the_occ_symbol_not_the_underlying():
+    """Bug real encontrado con el mercado abierto y el condor ya autorizado: el motor tomaba
+    `contract.symbol` para armar la orden combinada, pero ese campo es el SUBYACENTE ("$SPX" en las
+    cuatro patas), así que `build_iron_condor_open` la rechazaba cada minuto con "hacen falta 4
+    símbolos OCC distintos". El símbolo bueno viene del broker y ahora se guarda en `occ_symbol`."""
+    class _Build:
+        def __init__(self, legs):
+            self.legs = legs
+
+    def _c(occ):
+        # symbol = subyacente (igual en las 4 patas, como lo devuelve el parser de la cadena real)
+        return type("C", (), {"symbol": "$SPX", "occ_symbol": occ})()
+
+    build = _Build([
+        ("sell", "put", _c("SPXW  260814P07765000")),
+        ("buy", "put", _c("SPXW  260814P07755000")),
+        ("sell", "call", _c("SPXW  260814C07830000")),
+        ("buy", "call", _c("SPXW  260814C07840000")),
+    ])
+    legs = lce._legs_from_build(build)
+    assert legs is not None
+    assert legs.short_put_symbol == "SPXW  260814P07765000"
+    assert legs.long_call_symbol == "SPXW  260814C07840000"
+    # Y con esos símbolos la orden combinada SÍ se arma (es la validación que venía fallando).
+    from options_advisor.execution import schwab_orders as so
+    payload = so.build_iron_condor_open(legs.short_put_symbol, legs.long_put_symbol,
+                                        legs.short_call_symbol, legs.long_call_symbol,
+                                        quantity=1, net_credit_limit=1.80)
+    assert len(payload["orderLegCollection"]) == 4
+
+
+def test_legs_are_none_without_occ_symbols_so_nothing_is_sent():
+    """Sin `occ_symbol` NO se arma nada: preferimos no abrir antes que mandar una orden sobre un
+    símbolo reconstruido a mano (en índices, SPX vs. SPXW, eso es operar otro instrumento)."""
+    class _Build:
+        def __init__(self, legs):
+            self.legs = legs
+
+    def _c():
+        return type("C", (), {"symbol": "$SPX", "occ_symbol": None})()
+
+    build = _Build([("sell", "put", _c()), ("buy", "put", _c()),
+                    ("sell", "call", _c()), ("buy", "call", _c())])
+    assert lce._legs_from_build(build) is None
+
+
+def test_legs_are_none_when_the_four_symbols_are_not_distinct():
+    """Cinturón extra: cuatro símbolos iguales (lo que pasaba con el subyacente) se frenan ACÁ,
+    antes de llegar al validador de la orden."""
+    class _Build:
+        def __init__(self, legs):
+            self.legs = legs
+
+    def _c():
+        return type("C", (), {"symbol": "$SPX", "occ_symbol": "$SPX"})()
+
+    build = _Build([("sell", "put", _c()), ("buy", "put", _c()),
+                    ("sell", "call", _c()), ("buy", "call", _c())])
+    assert lce._legs_from_build(build) is None

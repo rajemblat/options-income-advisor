@@ -429,6 +429,10 @@ class SchwabBrokerClient(BrokerClient):
 
         return OptionContract(
             symbol=symbol,
+            # Símbolo OCC EXACTO de ESTA opción, tal cual lo manda Schwab en la cadena
+            # (ej. "SPXW  260814P07765000"). Es lo único que sirve para mandar una orden sobre esta
+            # pata; antes se descartaba acá y el condor real no podía armar la orden combinada.
+            occ_symbol=(raw.get("symbol") or None),
             option_type=option_type,
             strike=strike,
             expiration=expiration,
