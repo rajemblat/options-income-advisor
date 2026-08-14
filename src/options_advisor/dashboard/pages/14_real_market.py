@@ -618,7 +618,9 @@ else:
     _cond_badge = f"<span style='color:{TEXT_MUTED};font-weight:700'>○ apagado (corre en papel)</span>"
 st.markdown(
     f"{_cond_badge} &nbsp;·&nbsp; 0DTE {_cond_cfg.underlying} · "
-    f"stop \\${_cond_cfg.stop_loss_dollars:,.0f} · mismo cerebro, mismo stop y profit % que el papel. "
+    # OJO: esta línea va con unsafe_allow_html=True, así que el `\$` de Markdown NO se procesa y deja
+    # un "\" a la vista. Se usa la entidad HTML: sale un "$" sin despertar el LaTeX de Streamlit.
+    f"stop &#36;{_cond_cfg.stop_loss_dollars:,.0f} · mismo cerebro, mismo stop y profit % que el papel. "
     "**Autorización y conteo SEPARADOS de los naked.**",
     unsafe_allow_html=True,
 )
