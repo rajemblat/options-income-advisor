@@ -22,3 +22,20 @@ data/app.db-shm
 
 # Logs del scheduler en background (launchd)
 data/logs/
+
+# Bases y archivos de trabajo locales (agregado 2026-08-14 al consolidar 12 días sin commitear)
+data/options_advisor.db
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/.fuse_hidden*
+data/_corrupt*/
+_tmp/
+_to_delete/
+.claude/
+*.tar.gz
+
+# Tokens de Schwab en cualquiera de sus dos nombres históricos
+.schwab-tokens.json
+.schwab-token-request-debug.json
+data/.schwab-tokens.json
