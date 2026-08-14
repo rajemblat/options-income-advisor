@@ -1,0 +1,198 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import time
+
+from options_advisor.broker.models import IntradayBar, OptionChain, OptionContract
+from options_advisor.config import IntradayCondorSettings
+
+# Estrategia 3 (2026-08-05): Iron Condor 0DTE sobre SPX para DÍAS CALMOS. Lógica PURA (sin I/O ni
+# broker) para poder testearla aparte del motor en vivo. Vende put+call OTM a delta <= short_delta_max
+# (donde mejor pague), compra alas `wing_width` puntos afuera; gana con que SPX se quede en rango.
+
+CONTRACT_MULTIPLIER = 100
+
+
+def _parse_hhmm(value: str) -> time:
+    h, m = value.split(":")
+    return time(int(h), int(m))
+
+
+@dataclass
+class CondorSignal:
+    """Señal de entrada: `calm` (día de poco movimiento) e `in_window` (dentro de la ventana horaria
+    de entrada). Solo se abre si ambos son True."""
+
+    calm: bool
+    in_window: bool
+    price: float
+    day_range_pct: float
+
+
+def evaluate_condor_signal(bars: list[IntradayBar], settings: IntradayCondorSettings) -> CondorSignal:
+    """Evalúa si conviene abrir un Iron Condor: el día viene CALMO (rango intradía máx-mín por
+    debajo de `calm_range_pct`) y estamos dentro de la ventana horaria de entrada (hora de la última
+    barra). Usa el timestamp de la última barra como 'ahora' del mercado (testeable).
+
+    ⚠️ HUSO HORARIO (verificado 2026-08-14): la comparación es contra la hora de la barra TAL CUAL
+    viene del broker, y Schwab las devuelve en **UTC** (`schwab_client.get_intraday_bars`). O sea,
+    `entry_window_start/end` del settings se interpretan en UTC, NO en hora de Nueva York. Con UTC−4
+    la ventana "10:00–14:00" del config son, en los hechos, los primeros 30 minutos de la rueda: el
+    mercado abre 09:30 ET (13:30 UTC) y la ventana se corta a las 14:00 UTC (10:00 ET). Es el horario
+    en el que el papel ganó sus 16 condors seguidos, así que se deja A PROPÓSITO — ver el bloque de
+    comentarios en `config/settings.yaml::intraday_condor`. Si algún día se convierte a hora del Este,
+    hay que mover también la ventana o la estrategia cambia de horario sin querer."""
+    if not bars:
+        return CondorSignal(False, False, 0.0, 0.0)
+    price = bars[-1].close
+    hi = max(b.high for b in bars)
+    lo = min(b.low for b in bars)
+    ref = bars[0].open or price or 1.0
+    day_range_pct = (hi - lo) / ref if ref else 1.0
+    now = bars[-1].timestamp.time()
+    in_window = _parse_hhmm(settings.entry_window_start) <= now <= _parse_hhmm(settings.entry_window_end)
+    calm = day_range_pct <= settings.calm_range_pct
+    return CondorSignal(calm, in_window, price, round(day_range_pct, 5))
+
+
+@dataclass
+class CondorBuild:
+    """Un Iron Condor armado: put y call vendidos (OTM, delta <= tope) y sus alas compradas
+    `wing_width` puntos afuera. `legs` = lista de (side, option_type, contract)."""
+
+    short_put_strike: float
+    short_call_strike: float
+    long_put_strike: float
+    long_call_strike: float
+    legs: list[tuple[str, str, OptionContract]] = field(default_factory=list)
+    net_credit: float = 0.0
+    max_profit: float = 0.0
+    max_loss: float = 0.0
+    lower_breakeven: float = 0.0
+    upper_breakeven: float = 0.0
+
+
+def _leg_at(chain: OptionChain, option_type: str, strike: float, tol: float = 0.01) -> OptionContract | None:
+    for c in chain.contracts:
+        if c.option_type == option_type and abs(c.strike - strike) < tol:
+            return c
+    return None
+
+
+def _best_short(chain: OptionChain, option_type: str, spot: float, settings: IntradayCondorSettings) -> OptionContract | None:
+    """El strike OTM con |delta| <= short_delta_max que MEJOR paga (mayor prima mid). Put por debajo
+    del spot, call por encima."""
+    cands = []
+    for c in chain.contracts:
+        if c.option_type != option_type or c.greeks is None or c.greeks.delta is None:
+            continue
+        if option_type == "put" and c.strike >= spot:
+            continue
+        if option_type == "call" and c.strike <= spot:
+            continue
+        if abs(c.greeks.delta) <= settings.short_delta_max:
+            cands.append(c)
+    if not cands:
+        return None
+    return max(cands, key=lambda c: c.mid_price)   # "donde mejor pague"
+
+
+def build_iron_condor(chain: OptionChain, spot: float, settings: IntradayCondorSettings) -> CondorBuild | None:
+    """Arma el Iron Condor: vende put+call OTM a delta <= tope (mejor prima), compra alas a
+    `wing_width` puntos. Devuelve None si faltan strikes, si el crédito no es positivo / no llega al
+    mínimo, o si la pérdida máxima supera `max_collateral`."""
+    if spot <= 0:
+        return None
+    short_put = _best_short(chain, "put", spot, settings)
+    short_call = _best_short(chain, "call", spot, settings)
+    if short_put is None or short_call is None:
+        return None
+    long_put = _leg_at(chain, "put", short_put.strike - settings.wing_width)
+    long_call = _leg_at(chain, "call", short_call.strike + settings.wing_width)
+    if long_put is None or long_call is None:
+        return None
+    # Las alas tienen que estar donde corresponde (long put por debajo del short put, etc.).
+    if long_put.strike >= short_put.strike or long_call.strike <= short_call.strike:
+        return None
+
+    credit_ps = (short_put.mid_price + short_call.mid_price) - (long_put.mid_price + long_call.mid_price)
+    if credit_ps <= 0:
+        return None
+    net_credit = credit_ps * CONTRACT_MULTIPLIER
+    if settings.min_credit > 0 and net_credit < settings.min_credit:
+        return None
+    put_wing = short_put.strike - long_put.strike
+    call_wing = long_call.strike - short_call.strike
+    max_loss = max(put_wing, call_wing) * CONTRACT_MULTIPLIER - net_credit
+    if settings.max_collateral > 0 and max_loss > settings.max_collateral:
+        return None
+
+    return CondorBuild(
+        short_put_strike=short_put.strike,
+        short_call_strike=short_call.strike,
+        long_put_strike=long_put.strike,
+        long_call_strike=long_call.strike,
+        legs=[
+            ("sell", "put", short_put),
+            ("sell", "call", short_call),
+            ("buy", "put", long_put),
+            ("buy", "call", long_call),
+        ],
+        net_credit=round(net_credit, 2),
+        max_profit=round(net_credit, 2),
+        max_loss=round(max_loss, 2),
+        lower_breakeven=round(short_put.strike - credit_ps, 2),
+        upper_breakeven=round(short_call.strike + credit_ps, 2),
+    )
+
+
+def condor_close_value(
+    chain: OptionChain, short_put_strike: float, short_call_strike: float,
+    long_put_strike: float, long_call_strike: float,
+) -> float | None:
+    """Costo en dólares de CERRAR el condor ahora (recomprar los cortos, vender las alas), a precios
+    mid. None si falta alguna pata en la cadena en vivo (hueco de datos)."""
+    sp = _leg_at(chain, "put", short_put_strike)
+    sc = _leg_at(chain, "call", short_call_strike)
+    lp = _leg_at(chain, "put", long_put_strike)
+    lc = _leg_at(chain, "call", long_call_strike)
+    if None in (sp, sc, lp, lc):
+        return None
+    net = (sp.mid_price + sc.mid_price) - (lp.mid_price + lc.mid_price)
+    return round(net * CONTRACT_MULTIPLIER, 2)
+
+
+def condor_intrinsic_close_value(
+    spot: float, short_put_strike: float, short_call_strike: float,
+    long_put_strike: float, long_call_strike: float,
+) -> float:
+    """Valor de cierre al VENCIMIENTO (0DTE) por valor intrínseco, cuando las patas ya no están en la
+    cadena en vivo porque venció."""
+    net = (
+        (max(short_put_strike - spot, 0.0) + max(spot - short_call_strike, 0.0))
+        - (max(long_put_strike - spot, 0.0) + max(spot - long_call_strike, 0.0))
+    )
+    return round(net * CONTRACT_MULTIPLIER, 2)
+
+
+def condor_unrealized(entry_net_credit: float, close_value: float) -> float:
+    """P&L no realizado en dólares: crédito cobrado al abrir − costo de cerrar ahora."""
+    return round(entry_net_credit - close_value, 2)
+
+
+def should_close_condor(
+    unrealized_pnl: float, entry_net_credit: float, expired: bool, settings: IntradayCondorSettings,
+    age_minutes: float | None = None,
+) -> tuple[bool, str | None]:
+    """Regla de salida (usuario 2026-08-07): si YA está a +profit_target_early_pct (40%) dentro de los
+    primeros `early_window_minutes` (20 min) de vida, cerrar temprano para poder reentrar; pasada esa
+    ventana, cerrar al +profit_target_pct (50%). También −stop_loss_dollars o vencimiento (0DTE)."""
+    if expired:
+        return True, "expired"
+    early = age_minutes is not None and age_minutes <= settings.early_window_minutes
+    target = settings.profit_target_early_pct if early else settings.profit_target_pct
+    if target > 0 and unrealized_pnl >= target * entry_net_credit:
+        return True, "profit_target"
+    if settings.stop_loss_dollars > 0 and unrealized_pnl <= -settings.stop_loss_dollars:
+        return True, "stop_loss"
+    return False, None
