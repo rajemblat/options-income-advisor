@@ -21,7 +21,7 @@ class _Fila(dict):
 
 
 def _condor(**over):
-    base = dict(entry_spot=7800.0, short_put_strike=7770.0, short_call_strike=7835.0,
+    base = dict(entry_date="2026-08-14", entry_spot=7800.0, short_put_strike=7770.0, short_call_strike=7835.0,
                 long_put_strike=7760.0, long_call_strike=7845.0, entry_net_credit=165.0,
                 max_loss=835.0, lower_breakeven=7768.35, upper_breakeven=7836.65,
                 status="closed", close_reason="profit_target", realized_pnl=33.5,
@@ -132,3 +132,26 @@ def test_the_grid_pairs_the_rows_in_two_columns():
     assert lineas[0].count("|") == 5      # cabecera de 4 columnas
     assert len(lineas) == 2 + 2           # cabecera + separador + 2 filas
     assert "Uno" in lineas[2] and "Tres" in lineas[2]
+
+
+# ---------------- datos que en su momento no se guardaban ----------------
+
+def test_an_old_operation_says_the_data_was_not_recorded_yet():
+    """Los condors anteriores al 14/08 no tienen delta ni VIX guardados. Mostrar solo "—" hacía
+    pensar que el panel estaba roto (el usuario abrió uno del 12/08 y creyó que faltaba un dato)."""
+    filas = condor_data_rows({}, _condor())   # contexto vacío = decisión vieja
+    assert _valor(filas, "delta_put") == "no se guardaba aún"
+    assert _valor(filas, "delta_call") == "no se guardaba aún"
+    assert _valor(filas, "vix") == "no se guardaba aún"
+
+
+def test_a_recent_operation_without_greeks_shows_a_plain_dash():
+    """Distinto caso: la clave SÍ está pero el broker no mandó griegas. Ahí es un dato faltante."""
+    filas = condor_data_rows({"short_put_delta": None, "vix_change_pct": None}, _condor())
+    assert _valor(filas, "delta_put") == "—"
+    assert _valor(filas, "vix") == "—"
+
+
+def test_the_row_shows_the_date_and_time_it_was_opened():
+    filas = condor_data_rows({}, _condor())
+    assert _valor(filas, "fecha_hora") == "2026-08-14 09:35:02"

@@ -94,6 +94,13 @@ def condor_data_rows(ctx: dict, r) -> list[tuple[str, str, str]]:
         v = ctx.get(k)
         return v if isinstance(v, (int, float)) else None
 
+    def viejo(k: str) -> str:
+        """Texto para un dato que NO se guardaba cuando se abrió esa operación. Distinto de un dato
+        que falta: acá el robot nunca lo tuvo. Sin esta distinción parecía un bug (usuario 2026-08-14:
+        "no tengo los delta de los cortos" — estaba mirando una operación del 12/08, de antes de que
+        se guardaran)."""
+        return "no se guardaba aún" if k not in ctx else "—"
+
     spot = g("entry_spot") or d("spot")
     sp, sc = g("short_put_strike"), g("short_call_strike")
     lp, lc = g("long_put_strike"), g("long_call_strike")
@@ -129,8 +136,10 @@ def condor_data_rows(ctx: dict, r) -> list[tuple[str, str, str]]:
          f"{ala_put:,.0f} pts  ({sp:,.0f} → {lp:,.0f})" if ala_put else "—"),
         ("ala_call", "Ancho del ala CALL (vendido → comprado)",
          f"{ala_call:,.0f} pts  ({sc:,.0f} → {lc:,.0f})" if ala_call else "—"),
-        ("delta_put", "Delta del put corto", f"{d('short_put_delta'):.3f}" if d("short_put_delta") else "—"),
-        ("delta_call", "Delta del call corto", f"{d('short_call_delta'):.3f}" if d("short_call_delta") else "—"),
+        ("delta_put", "Delta del put corto",
+         f"{d('short_put_delta'):.3f}" if d("short_put_delta") else viejo("short_put_delta")),
+        ("delta_call", "Delta del call corto",
+         f"{d('short_call_delta'):.3f}" if d("short_call_delta") else viejo("short_call_delta")),
         ("credito", "Crédito cobrado", money(credito)),
         ("riesgo", "Riesgo máximo", money(riesgo)),
         ("credito_riesgo", "Crédito / riesgo", pct(credito / riesgo, 1) if riesgo else "—"),
@@ -138,8 +147,10 @@ def condor_data_rows(ctx: dict, r) -> list[tuple[str, str, str]]:
          f"{be_lo:,.0f} – {be_hi:,.0f}" + (f"  ({rango_pts:,.0f} pts = {rango_pts / spot * 100:.2f}%)"
                                            if rango_pts and spot else "") if (be_lo and be_hi) else "—"),
         ("dia_rango", "Rango del día al entrar", pct(d("day_range_pct"))),
-        ("vix", "VIX ese día", f"{d('vix_change_pct'):+.2f}%" if d("vix_change_pct") is not None else "—"),
-        ("hora", "Hora de apertura", str(g("entry_ts") or "")[11:19] or "—"),
+        ("vix", "VIX ese día",
+         f"{d('vix_change_pct'):+.2f}%" if d("vix_change_pct") is not None else viejo("vix_change_pct")),
+        ("fecha_hora", "Abierta el", (f"{g('entry_date')} " if g("entry_date") else "")
+         + (str(g("entry_ts") or "")[11:19] or "")),
         ("resultado", "Resultado", resultado),
     ]
 

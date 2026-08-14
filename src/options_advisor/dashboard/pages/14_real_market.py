@@ -703,7 +703,7 @@ if _co_open or _co_cerrados_rate:
     _render_intraday_ratings(
         conn, "iron_condor", _co_open, _co_cerrados_rate,
         # "$" escapados: en el título de un expander Streamlit interpreta un par de $ como LaTeX.
-        lambda r: (f"REAL · SP {r['short_put_strike']:.0f} / SC {r['short_call_strike']:.0f} · "
+        lambda r: (f"REAL · {r['entry_date']} · SP {r['short_put_strike']:.0f} / SC {r['short_call_strike']:.0f} · "
                    f"alas {r['short_put_strike'] - r['long_put_strike']:.0f}/"
                    f"{r['long_call_strike'] - r['short_call_strike']:.0f} pts · "
                    f"crédito \\${r['entry_net_credit']:.2f} · "
