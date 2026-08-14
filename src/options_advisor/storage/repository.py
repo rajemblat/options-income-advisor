@@ -1005,14 +1005,73 @@ def get_open_real_put_positions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def mark_real_position_closed(
     conn: sqlite3.Connection, open_id: int, *, close_ts: datetime, close_fill_price: float | None,
     close_reason: str, realized_pnl: float | None, close_schwab_order_id: str | None,
+    pnl_is_estimate: bool = False,
 ) -> None:
-    """Marca la apertura real como CERRADA con su P&L realizado (usuario 2026-08-10)."""
+    """Marca la apertura real como CERRADA con su P&L realizado (usuario 2026-08-10).
+    `pnl_is_estimate`: el P&L no salió del fill exacto de Schwab sino del valor de mercado al detectar
+    el cierre (posición cerrada por fuera del robot). Se guarda igual — un número aproximado y marcado
+    como tal sirve para el control; un NULL desaparecía de todos los totales (usuario 2026-08-14)."""
     conn.execute(
         "UPDATE live_order_log SET closed = 1, close_ts = ?, close_fill_price = ?, close_reason = ?, "
-        "realized_pnl = ?, close_schwab_order_id = ? WHERE id = ?",
-        (close_ts.isoformat(), close_fill_price, close_reason, realized_pnl, close_schwab_order_id, open_id),
+        "realized_pnl = ?, close_schwab_order_id = ?, pnl_is_estimate = ? WHERE id = ?",
+        (close_ts.isoformat(), close_fill_price, close_reason, realized_pnl, close_schwab_order_id,
+         1 if pnl_is_estimate else 0, open_id),
     )
     conn.commit()
+
+
+def bump_real_close_attempt(conn: sqlite3.Connection, open_id: int, error: str | None) -> int:
+    """Registra UN intento de cierre que no llegó a llenar, con su motivo. Devuelve cuántos van.
+    Existe porque el robot podía intentar cerrar, fallar y volver a fallar sin dejar rastro visible:
+    NU y NVDA quedaron abiertas al 75% y 45% de ganancia hasta que el usuario las cerró a mano."""
+    conn.execute(
+        "UPDATE live_order_log SET close_attempts = COALESCE(close_attempts, 0) + 1, last_close_error = ? "
+        "WHERE id = ?",
+        ((error or "")[:500], open_id),
+    )
+    conn.commit()
+    row = conn.execute("SELECT close_attempts FROM live_order_log WHERE id = ?", (open_id,)).fetchone()
+    return (row["close_attempts"] or 0) if row else 0
+
+
+def set_real_close_price_manual(conn: sqlite3.Connection, open_id: int, close_price: float) -> float | None:
+    """El usuario carga a mano el precio al que SALIÓ una posición que se cerró fuera del robot, y el
+    P&L se calcula solo (usuario 2026-08-14: "que todas las ganancias se ingresen, para llevar un
+    control"). Devuelve el P&L calculado. Queda marcada como NO estimada: el número lo puso él.
+    Solo aplica a filas ya cerradas — no reabre ni toca nada vivo."""
+    row = conn.execute(
+        "SELECT fill_price, filled_contracts, final_contracts, closed FROM live_order_log WHERE id = ?",
+        (open_id,),
+    ).fetchone()
+    if row is None or not row["closed"] or row["fill_price"] is None:
+        return None
+    contratos = row["filled_contracts"] or row["final_contracts"] or 1
+    realizado = round((float(row["fill_price"]) - float(close_price)) * 100.0 * contratos, 2)
+    conn.execute(
+        "UPDATE live_order_log SET close_fill_price = ?, realized_pnl = ?, pnl_is_estimate = 0 WHERE id = ?",
+        (float(close_price), realizado, open_id),
+    )
+    conn.commit()
+    return realizado
+
+
+def reset_real_close_attempts(conn: sqlite3.Connection, open_id: int) -> None:
+    """La posición se cerró bien: limpia el contador de intentos fallidos y el aviso pendiente."""
+    conn.execute(
+        "UPDATE live_order_log SET close_attempts = 0, last_close_error = NULL, close_fail_email_sent = 0 "
+        "WHERE id = ?", (open_id,)
+    )
+    conn.commit()
+
+
+def mark_close_fail_email_sent(conn: sqlite3.Connection, open_id: int) -> None:
+    conn.execute("UPDATE live_order_log SET close_fail_email_sent = 1 WHERE id = ?", (open_id,))
+    conn.commit()
+
+
+def close_fail_email_pending(conn: sqlite3.Connection, open_id: int) -> bool:
+    row = conn.execute("SELECT close_fail_email_sent FROM live_order_log WHERE id = ?", (open_id,)).fetchone()
+    return not (row and row["close_fail_email_sent"])
 
 
 def get_open_decision_for(conn: sqlite3.Connection, symbol: str, day: str, strike: float | None = None) -> sqlite3.Row | None:

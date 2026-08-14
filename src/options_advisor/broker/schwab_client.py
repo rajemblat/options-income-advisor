@@ -612,11 +612,30 @@ class SchwabBrokerClient(BrokerClient):
             return None
         return location.rstrip("/").split("/")[-1]
 
+    @staticmethod
+    def _raise_with_reason(response: httpx.Response, que: str) -> None:
+        """`raise_for_status()` solo dice "400 Bad Request": el MOTIVO de Schwab viene en el cuerpo, y se
+        perdía. Sin él, un rechazo se veía en el log como "no llenó (estado REJECTED)" y no había forma de
+        saber por qué (usuario 2026-08-14: NU/SPCX/NVDA rechazadas sin explicación)."""
+        if response.status_code < 400:
+            return
+        detalle = ""
+        try:
+            body = response.json()
+            detalle = (body.get("message") or body.get("error")
+                       or (body.get("errors") or [{}])[0].get("message", "") if isinstance(body.get("errors"), list)
+                       else "") or str(body)[:300]
+        except Exception:
+            detalle = (response.text or "")[:300]
+        raise RuntimeError(f"Schwab rechazó {que} (HTTP {response.status_code}): {detalle}")
+
     def place_order(self, account_hash: str, order_payload: dict) -> str:
-        """POST de la orden. Devuelve el orderId (del header Location). Lanza si Schwab la rechaza."""
+        """POST de la orden. Devuelve el orderId (del header Location). Lanza si Schwab la rechaza,
+        incluyendo el MOTIVO que devuelve Schwab en el cuerpo."""
         response = self._trader_client.post(
             f"/accounts/{account_hash}/orders", json=order_payload, headers=self._trader_headers()
         )
+        self._raise_with_reason(response, "la orden")
         response.raise_for_status()
         order_id = self._order_id_from_location(response)
         if not order_id:
@@ -637,6 +656,7 @@ class SchwabBrokerClient(BrokerClient):
         response = self._trader_client.put(
             f"/accounts/{account_hash}/orders/{order_id}", json=order_payload, headers=self._trader_headers()
         )
+        self._raise_with_reason(response, "el reemplazo de la orden")
         response.raise_for_status()
         return self._order_id_from_location(response) or order_id
 

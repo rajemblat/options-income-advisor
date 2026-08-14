@@ -115,6 +115,15 @@ _NEW_COLUMNS_BY_TABLE = {
         # DEFAULT 1 a propósito: las órdenes que YA existían en la base se marcan como 'email ya mandado'
         # para no re-mandarles email al agregar la columna. Las nuevas (insert_live_order_log) arrancan en 0.
         "open_email_sent": "INTEGER DEFAULT 1",
+        # Cierre de posiciones reales (usuario 2026-08-14, tras NU/SPCX/NVDA: la regla disparaba el cierre
+        # pero la recompra no llenaba y el robot dejaba de intentar EN SILENCIO).
+        "close_attempts": "INTEGER DEFAULT 0",     # cuántas veces intentó cerrarla sin lograrlo
+        "last_close_error": "TEXT",               # por qué falló el último intento (motivo de Schwab incluido)
+        "close_fail_email_sent": "INTEGER DEFAULT 0",
+        # 1 = el P&L de esta operación es una ESTIMACIÓN (se cerró fuera del robot y no se encontró el
+        # precio de salida exacto en Schwab; se usó el valor de mercado del momento). Antes esas
+        # operaciones quedaban con realized_pnl NULL y su ganancia no entraba en ningún total.
+        "pnl_is_estimate": "INTEGER DEFAULT 0",
     },
     # Asesor AI (usuario 2026-08-11): la sugerencia puede ser abrir o CERRAR una posición ('close'),
     # un cierre manual pedido por chat aunque no toque la regla. Columna nueva sobre la tabla ya creada.

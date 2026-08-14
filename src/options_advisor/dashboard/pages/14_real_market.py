@@ -491,10 +491,36 @@ else:
         # Honestidad del número: una posición que se cerró FUERA del robot (a mano, o porque la
         # recompra no llenó y la cerraste vos) queda sin precio de salida, así que su ganancia no
         # entra en el "realizado". Sin este aviso, el total se lee como si estuviera completo.
-        _det = ", ".join(f"{r['symbol']} ${r['strike']:,.0f}" for r in _sin_pnl[:4])
-        st.caption(f"⚠️ Hay **{len(_sin_pnl)}** operación(es) cerrada(s) sin P&L registrado ({_det}"
-                   f"{'…' if len(_sin_pnl) > 4 else ''}) — se cerraron fuera del robot, así que su "
-                   "ganancia NO está sumada arriba. El realizado real es mayor que el que ves.")
+        # Y como el usuario quiere llevar el control completo (2026-08-14), acá mismo puede cargar
+        # el precio de salida real y el P&L se calcula solo.
+        with st.expander(f"⚠️ {len(_sin_pnl)} operación(es) cerrada(s) SIN P&L — cargá el precio de salida",
+                         expanded=False):
+            st.caption("Se cerraron fuera del robot, así que su ganancia no está sumada arriba y el "
+                       "realizado real es MAYOR que el que ves. Poné a cuánto recompraste cada una "
+                       "(el precio de la opción, no el total) y se calcula solo.")
+            for _r in _sin_pnl:
+                _c = _r["filled_contracts"] or _r["final_contracts"] or 1
+                _e1, _e2, _e3 = st.columns([2.4, 1, 1])
+                _e1.markdown(
+                    f"**{_r['symbol']} put ${_r['strike']:,.2f}** × {_c} · entrada **${_r['fill_price']:.2f}** · "
+                    f"cerrada {str(_r['close_ts'] or '')[:16].replace('T', ' ')}")
+                with _e2:
+                    _px = st.number_input("Salida $", min_value=0.0, max_value=999.0, step=0.01, value=0.0,
+                                          format="%.2f", key=f"salida_{_r['id']}", label_visibility="collapsed")
+                with _e3:
+                    if st.button("Guardar", key=f"guardar_salida_{_r['id']}", use_container_width=True):
+                        _pnl = repo.set_real_close_price_manual(conn, _r["id"], float(_px))
+                        st.session_state["_pnl_cargado"] = (_r["symbol"], _pnl)
+                        st.rerun()
+                _prev = round((_r["fill_price"] - float(_px)) * 100.0 * _c, 2) if _px else None
+                if _prev is not None:
+                    st.caption(f"   → quedaría en **${_prev:+,.2f}** de ganancia")
+    if st.session_state.get("_pnl_cargado"):
+        _sym, _pnl = st.session_state.pop("_pnl_cargado")
+        if _pnl is None:
+            st.warning(f"No se pudo guardar el P&L de {_sym}.")
+        else:
+            st.success(f"✅ {_sym}: P&L de **${_pnl:+,.2f}** cargado y sumado al realizado.")
     _pa, _pb, _pc, _pd, _pe, _pf = st.columns(6)
     _pa.metric("Posiciones", len(_robot_open))
     _pb.metric("P&L Open total", f"${_tot_unreal:+,.2f}", help="Ganancia/pérdida NO realizada de todo el libro abierto, desde que se abrió cada posición.")

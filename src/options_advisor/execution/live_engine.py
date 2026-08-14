@@ -472,6 +472,34 @@ def close_real_positions(conn, broker, settings, as_of: date) -> None:
             logger.exception("Live-close: fallo evaluando el cierre de %s (se continúa)", pos["symbol"])
 
 
+# Piso de precio para recomprar un put que ya no tiene bid (vale casi nada). Sin esto el robot no
+# podía cerrar justo las posiciones más ganadoras (usuario 2026-08-14).
+_MIN_TICK = 0.01
+# A partir de este número de intentos fallidos seguidos sobre la MISMA posición, avisa por mail.
+_CLOSE_FAIL_ALERT_AFTER = 3
+
+
+def _market_value_now(broker, symbol, strike, expiration) -> float | None:
+    """Valor de mercado del put AHORA (mid de la cadena, o intrínseco si no aparece). Se usa para
+    ESTIMAR el precio de salida de una posición que se cerró por fuera del robot y cuyo fill exacto no
+    aparece en Schwab — así su ganancia entra igual en los totales, marcada como estimación, en vez de
+    perderse como un P&L NULL (usuario 2026-08-14: "que todas las ganancias se ingresen")."""
+    try:
+        from datetime import date as _d
+        dte = max(0, (expiration - _d.today()).days)
+        chain = broker.get_option_chain(symbol, expiration_range_days=(0, max(dte + 5, 7)))
+        for c in chain.contracts:
+            if c.option_type == "put" and abs(c.strike - strike) < 0.01 and c.expiration == expiration:
+                if c.mid_price and c.mid_price > 0:
+                    return round(float(c.mid_price), 2)
+        spot = getattr(chain, "underlying_price", None)
+        if spot:
+            return round(max(float(strike) - float(spot), 0.0), 2)
+    except Exception:
+        logger.debug("Live-close: no se pudo estimar el valor de %s put %s", symbol, strike, exc_info=True)
+    return None
+
+
 def _find_close_fill_price(broker, symbol, strike, expiration) -> float | None:
     """Busca el precio REAL al que se cerró (recompró) este put en las órdenes llenadas recientes de
     Schwab, para poder calcular el P&L realizado cuando la posición se cerró por fuera del robot (usuario
@@ -479,8 +507,11 @@ def _find_close_fill_price(broker, symbol, strike, expiration) -> float | None:
     try:
         from datetime import timedelta, timezone
         from options_advisor.broker.models import parse_occ_option_symbol
-        orders = broker.get_recent_filled_orders(datetime.now(timezone.utc) - timedelta(days=4))
+        # 4 días era corto: una posición abierta el viernes y cerrada a mano el lunes siguiente ya
+        # quedaba fuera de la ventana y su P&L se perdía. 10 días cubre un fin de semana largo.
+        orders = broker.get_recent_filled_orders(datetime.now(timezone.utc) - timedelta(days=10))
     except Exception:
+        logger.debug("Live-close: no se pudieron leer las órdenes llenadas recientes", exc_info=True)
         return None
     best = None
     try:
@@ -524,12 +555,23 @@ def _maybe_close_one_real(conn, broker, account_hash, pos, sim, as_of: date, wal
     # buscamos el precio REAL de cierre en las órdenes llenadas de Schwab y calculamos el P&L.
     if open_at_broker is not None and (symbol, round(float(strike), 2), expiration) not in open_at_broker:
         _close_px = _find_close_fill_price(broker, symbol, strike, expiration)
+        _estimado = False
+        if _close_px is None:
+            # No apareció el fill exacto en Schwab (cierre a mano viejo, asignación, o la orden no quedó
+            # en el rango consultado). Antes se guardaba P&L NULL y esa ganancia DESAPARECÍA de todos los
+            # totales — pasó con NU y NVDA (usuario 2026-08-14: "que todas las ganancias se ingresen").
+            # Ahora se estima con el valor de mercado del put en el momento de detectar el cierre, que es
+            # lo más cercano al precio de salida real, y queda MARCADO como estimación.
+            _close_px = _market_value_now(broker, symbol, strike, expiration)
+            _estimado = _close_px is not None
         _realized = (round((entry_premium - _close_px) * 100.0 * contracts, 2)
                      if _close_px is not None else None)
         repo.mark_real_position_closed(conn, pos["id"], close_ts=datetime.now(), close_fill_price=_close_px,
-                                       close_reason="closed_in_broker", realized_pnl=_realized, close_schwab_order_id=None)
-        logger.info("Live-close: %s put %.2f ya no está en Schwab — cerrada (reconciliación, P&L %s)",
-                    symbol, strike, f"${_realized:+.2f}" if _realized is not None else "s/d")
+                                       close_reason="closed_in_broker", realized_pnl=_realized,
+                                       close_schwab_order_id=None, pnl_is_estimate=_estimado)
+        logger.warning("Live-close: %s put %.2f ya no está en Schwab — cerrada (reconciliación, P&L %s%s)",
+                       symbol, strike, f"${_realized:+.2f}" if _realized is not None else "s/d",
+                       " ESTIMADO" if _estimado else "")
         return
 
     # Vencida: no se recompra; marcar cerrada (el P&L exacto se reconcilia en Schwab).
@@ -541,8 +583,12 @@ def _maybe_close_one_real(conn, broker, account_hash, pos, sim, as_of: date, wal
     try:
         chain = broker.get_option_chain(symbol, expiration_range_days=(0, max(dte + 5, 7)))
         quote = broker.get_quote(symbol)
-    except Exception:
-        logger.debug("Live-close: sin cadena/quote de %s hoy; se reintenta", symbol, exc_info=True)
+    except Exception as exc:
+        # Antes esto era logger.debug y el robot NO registra DEBUG: se abandonaba el cierre sin dejar
+        # rastro (usuario 2026-08-14). Ahora queda visible y cuenta como intento.
+        logger.warning("Live-close: %s — sin cadena/quote (%s); NO se pudo evaluar el cierre, se reintenta",
+                       symbol, exc)
+        repo.bump_real_close_attempt(conn, pos["id"], f"sin cadena/quote: {exc}")
         return
 
     ct = None
@@ -551,7 +597,11 @@ def _maybe_close_one_real(conn, broker, account_hash, pos, sim, as_of: date, wal
             ct = c
             break
     if ct is None:
-        return  # hueco de datos: no cerramos a ciegas
+        # Hueco de datos: no cerramos a ciegas, pero AVISAMOS. Esta rama no logueaba absolutamente nada.
+        logger.warning("Live-close: %s put %.2f vto %s no aparece en la cadena; no se cierra a ciegas",
+                       symbol, strike, expiration)
+        repo.bump_real_close_attempt(conn, pos["id"], "el contrato no aparece en la cadena")
+        return
 
     current_value = ct.mid_price if ct.mid_price and ct.mid_price > 0 else max(strike - quote.last_price, 0.0)
     try:
@@ -567,10 +617,21 @@ def _maybe_close_one_real(conn, broker, account_hash, pos, sim, as_of: date, wal
         if not do_close:
             return
 
+    # Bid en CERO no puede frenar el cierre (usuario 2026-08-14). Un put que ya casi no vale suele
+    # quedar con bid 0.00 — que es exactamente cuando MÁS conviene recomprarlo: pagás centavos y te
+    # quedás con casi toda la prima. Antes esta rama abandonaba el cierre en silencio (logger.debug, y
+    # el robot no registra DEBUG), y es la explicación más probable de por qué NU se quedó abierta al
+    # 75% de ganancia sin que el robot volviera a intentar.
     bid, ask = ct.bid, ct.ask
-    if bid <= 0 or ask <= 0 or ask < bid:
-        logger.debug("Live-close: %s sin bid/ask válidos para recomprar; se reintenta", symbol)
+    if ask <= 0 or ask < max(bid, 0.0):
+        logger.warning("Live-close: %s put %.2f sin ask válido (bid %.2f / ask %.2f); no se puede recomprar",
+                       symbol, strike, bid, ask)
+        repo.bump_real_close_attempt(conn, pos["id"], f"sin ask válido (bid {bid} / ask {ask})")
         return
+    if bid <= 0:
+        bid = _MIN_TICK   # piso: recomprar al tick mínimo en vez de no cerrar nunca
+        logger.info("Live-close: %s put %.2f tiene bid 0.00 — se usa el piso de $%.2f para poder salir",
+                    symbol, strike, _MIN_TICK)
 
     step = walk.step_for(bid, ask)
     ladder = pw.build_price_ladder(pw.SIDE_BUY, bid, ask, step=step, stop_at_mid=walk.stop_at_mid)
@@ -607,9 +668,30 @@ def _maybe_close_one_real(conn, broker, account_hash, pos, sim, as_of: date, wal
             notifier.send_email(_subj, _body)
         except Exception:
             logger.debug("Live-close: no se pudo mandar el email de cierre", exc_info=True)
+        repo.reset_real_close_attempts(conn, pos["id"])
     else:
-        logger.info("Live-close: la recompra de %s no llenó (estado %s); se reintenta en el próximo escaneo",
-                    symbol, res.status)
+        # No llenó. Antes esto era una línea de INFO y nada más: el robot podía fallar el cierre una vez
+        # tras otra sin que nadie se enterara (NU al 75%, NVDA al 45%). Ahora se cuenta el intento, se
+        # guarda el motivo REAL de Schwab, y a partir del 3er fallo llega un mail.
+        _motivo = res.error or (f"estado {res.status}" if res.status else "el broker no devolvió estado")
+        _n = repo.bump_real_close_attempt(conn, pos["id"], _motivo)
+        logger.warning("Live-close: la recompra de %s put %.2f NO llenó (intento %d) — %s",
+                       symbol, strike, _n, _motivo)
+        if _n >= _CLOSE_FAIL_ALERT_AFTER and repo.close_fail_email_pending(conn, pos["id"]):
+            try:
+                from options_advisor.alerts import notifier
+                _pnl_now = round((entry_premium - current_value) * 100.0 * contracts, 2)
+                notifier.send_email(
+                    f"⚠️ Lokshn no puede cerrar {symbol} put ${strike:,.2f} ({_n} intentos)",
+                    f"El robot quiere cerrar esta posición por {reason} pero la recompra no llena.\n\n"
+                    f"Posición: {contracts} put(s) {symbol} ${strike:,.2f} vto {expiration}\n"
+                    f"Entrada ${entry_premium:.2f} · valor ahora ${current_value:.2f} · "
+                    f"ganancia sin realizar ${_pnl_now:+,.2f}\n"
+                    f"Último motivo del broker: {_motivo}\n\n"
+                    f"Van {_n} intentos fallidos. Revisalo en Schwab: puede que haya que cerrarla a mano.")
+                repo.mark_close_fail_email_sent(conn, pos["id"])
+            except Exception:
+                logger.debug("Live-close: no se pudo mandar el aviso de cierre fallido", exc_info=True)
 
 
 def _build_ai_open_context(conn, broker, symbol, contract, underlying, strike, premium, margin, dte, rationale) -> dict:
