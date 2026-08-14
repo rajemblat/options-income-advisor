@@ -110,3 +110,25 @@ def test_every_row_has_a_key_so_it_can_be_voted():
     claves = [k for k, _, _ in filas]
     assert len(claves) == len(set(claves))
     assert "cobertura_call" in claves and "ala_put" in claves
+
+
+# ---------------- la tabla que se ve en pantalla ----------------
+
+def test_the_grid_leaves_an_empty_cell_empty_not_four_asterisks():
+    """Con un número impar de datos la última fila queda a medias: `**{''}**` dejaba un literal
+    '****' a la vista (visto en pantalla el 2026-08-14)."""
+    from options_advisor.dashboard.rating import _condor_grid_md
+
+    md = _condor_grid_md([("a", "Uno", "1"), ("b", "Dos", "2"), ("c", "Tres", "3")])
+    assert "****" not in md
+    assert md.strip().endswith("|")
+
+
+def test_the_grid_pairs_the_rows_in_two_columns():
+    from options_advisor.dashboard.rating import _condor_grid_md
+
+    md = _condor_grid_md([("a", "Uno", "1"), ("b", "Dos", "2"), ("c", "Tres", "3"), ("d", "Cuatro", "4")])
+    lineas = md.splitlines()
+    assert lineas[0].count("|") == 5      # cabecera de 4 columnas
+    assert len(lineas) == 2 + 2           # cabecera + separador + 2 filas
+    assert "Uno" in lineas[2] and "Tres" in lineas[2]

@@ -702,11 +702,12 @@ _co_cerrados_rate = repo.get_closed_real_condor_positions(conn, limit=30)
 if _co_open or _co_cerrados_rate:
     _render_intraday_ratings(
         conn, "iron_condor", _co_open, _co_cerrados_rate,
+        # "$" escapados: en el título de un expander Streamlit interpreta un par de $ como LaTeX.
         lambda r: (f"REAL · SP {r['short_put_strike']:.0f} / SC {r['short_call_strike']:.0f} · "
                    f"alas {r['short_put_strike'] - r['long_put_strike']:.0f}/"
                    f"{r['long_call_strike'] - r['short_call_strike']:.0f} pts · "
-                   f"crédito ${r['entry_net_credit']:.2f} · "
-                   + (f"{r['close_reason']} ${r['realized_pnl']:+,.2f}"
+                   f"crédito \\${r['entry_net_credit']:.2f} · "
+                   + (f"{r['close_reason']} \\${r['realized_pnl']:+,.2f}"
                       if r["status"] == "closed" and r["realized_pnl"] is not None
                       else ("abierto" if r["status"] == "open" else str(r["status"])))),
         "icreal", data_rows_fn=condor_data_rows, book="real",

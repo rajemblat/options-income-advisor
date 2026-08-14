@@ -151,8 +151,11 @@ def _condor_grid_md(rows: list[tuple[str, str, str]]) -> str:
     lineas = ["| Dato | Valor | Dato | Valor |", "|---|---|---|---|"]
     for i in range(mitad):
         a = izq[i]
-        b = der[i] if i < len(der) else ("", "", "")
-        lineas.append(f"| {a[1]} | **{a[2]}** | {b[1]} | **{b[2] if b[1] else ''}** |")
+        b = der[i] if i < len(der) else None
+        # Ojo con la celda vacía: `**{''}**` deja un literal "****" a la vista.
+        der_dato = b[1] if b else ""
+        der_valor = f"**{b[2]}**" if b else ""
+        lineas.append(f"| {a[1]} | **{a[2]}** | {der_dato} | {der_valor} |")
     return "\n".join(lineas)
 
 
