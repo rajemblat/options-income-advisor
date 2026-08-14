@@ -1,0 +1,1000 @@
+from __future__ import annotations
+
+from datetime import date, timedelta as _timedelta
+
+import streamlit as st
+
+from options_advisor.config import load_settings
+from options_advisor.dashboard.components import (
+    ACCENT,
+    BORDER,
+    SURFACE,
+    TEXT_MUTED,
+    TEXT_PRIMARY,
+    cached_all_positions,
+    cached_option_chains,
+    cached_quotes,
+    get_broker,
+    get_connection,
+    icon,
+    inject_theme,
+    render_header,
+    render_notification_bell,
+)
+from options_advisor.storage import repository as repo
+
+st.set_page_config(page_title="Lokshn · Real Market", page_icon="🔴", layout="wide", initial_sidebar_state="expanded")
+inject_theme()
+render_header(
+    icon("zap", size=24, color="#ff3b3b"),
+    "Real Market",
+    "Trading REAL en tu cuenta Schwab. Réplica del Simulador pero con órdenes de verdad — protegido por el "
+    "guardián de seguridad, con START diario y kill switch. El Simulador sigue corriendo aparte, en paper.",
+)
+
+conn = get_connection()
+render_notification_bell(conn)
+
+settings = load_settings()
+lt = settings.live_trading
+today = date.today()
+armed = repo.is_live_armed(conn, today)
+
+
+def _status_of(row) -> str:
+    try:
+        return (row["order_status"] or "").upper() if "order_status" in row.keys() else ""
+    except Exception:
+        return ""
+
+
+# Estados de Schwab en los que la orden sigue viva esperando fill (la "puesta al mid").
+_RESTING_STATES = {"WORKING", "QUEUED", "ACCEPTED", "PENDING_ACTIVATION", "NEW", "PENDING_RECALL", "AWAITING_MANUAL_REVIEW"}
+kill = repo.is_live_kill_switch(conn)
+
+GOOD = "#00e676"   # verde más intenso/vivo (usuario 2026-08-12)
+# Capital disponible para invertir (usuario 2026-08-13: "calculá el % de utilidad con el dinero que tengo
+# para invertir, 50K"). El % del P&L total se mide sobre este monto. Cambiá el número si cambia tu capital.
+CAPITAL_DISPONIBLE = 50_000
+BAD = "#ff3b3b"
+WARN = "#f59e0b"
+
+
+def _fmt_money(v):
+    return f"${v:,.2f}" if isinstance(v, (int, float)) else "—"
+
+
+def _fmt_pct(v):
+    return f"{v:+.1f}%" if isinstance(v, (int, float)) else "—"
+
+
+def _fmt_plain(v):
+    return "—" if v is None else str(v)
+
+
+def _render_symbol_tooltip_table(rows: list[dict], col_specs: list[tuple], bg_fn) -> None:
+    """Misma tabla que el Simulador (usuario 2026-08-10, punto 7): al pasar el MOUSE por el símbolo
+    aparece un tooltip con el precio actual y el % del día del subyacente, verde/rojo. `col_specs` =
+    lista de (encabezado, key, formateador). Cada fila espera 'Precio ahora' y '% día' para el tooltip."""
+    thead = "".join(f"<th style='text-align:left;padding:6px 10px;border-bottom:1px solid {BORDER};"
+                    f"color:{TEXT_MUTED};font-weight:600;white-space:nowrap'>{h}</th>" for h, _, _ in col_specs)
+    body = []
+    for r in rows:
+        bg = bg_fn(r)
+        price_now = r.get("Precio ahora")
+        pct_now = r.get("% día")
+        pct_color = "#3fb950" if isinstance(pct_now, (int, float)) and pct_now > 0 else ("#f85149" if isinstance(pct_now, (int, float)) and pct_now < 0 else TEXT_MUTED)
+        tds = []
+        for _h, key, fmt in col_specs:
+            val = fmt(r.get(key))
+            if key == "Symbol":
+                box = (
+                    f"<span class='oia-tt-box'>Precio ahora: {_fmt_money(price_now)} · "
+                    f"Día: <span style='color:{pct_color};font-weight:700'>{_fmt_pct(pct_now)}</span></span>"
+                )
+                tds.append(
+                    f"<td style='padding:6px 10px;white-space:nowrap'>"
+                    f"<span class='oia-tt' style='font-weight:600'>{val}{box}</span></td>"
+                )
+            else:
+                tds.append(f"<td style='padding:6px 10px;white-space:nowrap'>{val}</td>")
+        body.append(f"<tr style='background:{bg}'>{''.join(tds)}</tr>")
+    html = (
+        f"<table style='border-collapse:collapse;width:100%;font-size:0.86rem;color:{TEXT_PRIMARY}'>"
+        f"<thead><tr>{thead}</tr></thead><tbody>{''.join(body)}</tbody></table>"
+        f"<div style='color:{TEXT_MUTED};font-size:0.78rem;margin-top:6px'>"
+        f"💡 Pasá el mouse por el símbolo (subrayado punteado) y aparece su precio y % del día en vivo.</div>"
+    )
+    st.markdown(html, unsafe_allow_html=True)
+
+# ------------------------- Semáforo (rojo apagado / verde trabajando) -------------------------
+working = armed and not kill and (lt.enabled or lt.dry_run)
+# Panel de estado MINIMALISTA (usuario 2026-08-12: "más lindo, cuadrados y botones"): 4 cuadrados uniformes.
+if kill:
+    _est_txt, _est_col = "FRENADO", BAD
+elif not armed:
+    _est_txt, _est_col = "APAGADO", TEXT_MUTED
+elif lt.enabled and not lt.dry_run:
+    _est_txt, _est_col = "TRABAJANDO", GOOD
+elif working:
+    _est_txt, _est_col = "DRY-RUN", ACCENT
+else:
+    _est_txt, _est_col = "APAGADO", TEXT_MUTED
+
+if not lt.enabled:
+    _modo_txt, _modo_col = "OFF", TEXT_MUTED
+elif lt.dry_run:
+    _modo_txt, _modo_col = "DRY-RUN", ACCENT
+else:
+    _modo_txt, _modo_col = "REAL", GOOD
+
+_dot = (f"<span style='display:inline-block;width:7px;height:7px;border-radius:50%;background:{_est_col};"
+        f"margin-right:5px;vertical-align:middle;{'animation:oiapulse 1.8s infinite;' if _est_col == GOOD else ''}'></span>")
+
+
+def _status_tile(label: str, value: str, col: str, dot: str = "") -> str:
+    # Cuadros CHICOS y ordenados (usuario 2026-08-12): poco padding, tipografía compacta, borde superior de color.
+    return (f"<div style='flex:1 1 90px; background:{SURFACE}; border:1px solid {BORDER}; border-top:2px solid {col}; "
+            f"border-radius:0.5rem; padding:0.5rem 0.45rem; text-align:center;'>"
+            f"<div style='color:{TEXT_MUTED}; font-size:0.6rem; text-transform:uppercase; letter-spacing:0.04em;'>{label}</div>"
+            f"<div style='color:{col}; font-size:0.98rem; font-weight:700; margin-top:0.18rem; line-height:1;'>{dot}{value}</div>"
+            f"</div>")
+
+st.markdown(
+    f"<style>@keyframes oiapulse{{0%{{box-shadow:0 0 0 0 {GOOD}66}}70%{{box-shadow:0 0 0 6px {GOOD}00}}100%{{box-shadow:0 0 0 0 {GOOD}00}}}}</style>"
+    "<div style='display:flex; gap:0.45rem; flex-wrap:wrap; margin:0.1rem 0 0.7rem;'>"
+    + _status_tile("Estado", _est_txt, _est_col, dot=_dot)
+    + _status_tile("Modo", _modo_txt, _modo_col)
+    + _status_tile("Armado hoy", "SÍ" if armed else "No", GOOD if armed else TEXT_MUTED)
+    + _status_tile("Kill switch", "ACTIVO" if kill else "Off", BAD if kill else TEXT_MUTED)
+    + "</div>",
+    unsafe_allow_html=True,
+)
+
+st.divider()
+
+# ------------------------- Acciones: START / desarmar / kill (minimalista, con doble confirmación) -------------------------
+if kill:
+    st.error("🛑 Kill switch activo — desactivalo para poder armar el día.", icon="🛑")
+
+_ac1, _ac2 = st.columns(2)
+with _ac1:
+    if armed:
+        if st.button("⏸️  Desarmar el día", use_container_width=True,
+                     help=f"Armado para hoy ({today.strftime('%d/%m/%Y')}). Frena NUEVAS órdenes; lo abierto se sigue gestionando."):
+            repo.disarm_live(conn)
+            st.rerun()
+    else:
+        _conf = st.checkbox("Confirmo habilitar el trading real de HOY")
+        if st.button("🚀  START del día", type="primary", use_container_width=True, disabled=(not _conf) or kill,
+                     help="Cada mañana hay que dar START para que el robot opere hoy. Se resetea a la medianoche."):
+            st.session_state["_arm_pending"] = True
+with _ac2:
+    if kill:
+        if st.button("▶️  Desactivar kill switch", type="primary", use_container_width=True):
+            repo.set_live_kill_switch(conn, False)
+            st.rerun()
+    else:
+        if st.button("🛑  Kill switch (frenar todo)", use_container_width=True,
+                     help="Corta TODAS las órdenes reales al instante, aun con el día armado. Lo abierto se sigue gestionando."):
+            repo.set_live_kill_switch(conn, True)
+            st.rerun()
+
+# Segunda confirmación del START (seguridad — plata real, no se toca).
+if st.session_state.get("_arm_pending"):
+    st.warning("Segunda confirmación: ¿seguro que querés armar el trading real de hoy?")
+    _cc1, _cc2 = st.columns(2)
+    if _cc1.button("Sí, armar", type="primary", use_container_width=True):
+        repo.arm_live_today(conn, today)
+        st.session_state["_arm_pending"] = False
+        st.rerun()
+    if _cc2.button("Cancelar", use_container_width=True):
+        st.session_state["_arm_pending"] = False
+        st.rerun()
+
+st.divider()
+
+# ------------------------- Configuración de la Fase 1 -------------------------
+st.markdown("### ⚙️ Configuración activa (Fase 1)")
+_eff_max_day = repo.get_max_live_orders_per_day(conn, lt.max_orders_per_day, today)  # override en vivo (resetea a la medianoche)
+_live_used = repo.count_live_approved_opens_today(conn, today)
+# Métricas EN VIVO del libro real (usuario 2026-08-12: agregar win rate / exposición / colateral; sacar "órdenes/semana").
+_cfg_open = repo.get_open_real_put_positions(conn)
+_cfg_col_usado = sum((r["collateral"] or 0.0) for r in _cfg_open)
+_cfg_exp_real = sum(float(r["strike"]) * 100.0 * (r["filled_contracts"] or r["final_contracts"] or 1) for r in _cfg_open)
+_cfg_all_closed = repo.get_closed_real_positions_between(conn, date(2000, 1, 1), today)
+_cfg_realiz = [r for r in _cfg_all_closed if r["realized_pnl"] is not None]
+_cfg_wr = (100.0 * sum(1 for r in _cfg_realiz if (r["realized_pnl"] or 0) > 0) / len(_cfg_realiz)) if _cfg_realiz else None
+g1, g2, g3, g4, g5, g6 = st.columns(6)
+g1.metric("Contratos / orden", lt.max_contracts_per_order)
+g2.metric("Órdenes / día", f"{_live_used}/{_eff_max_day}")
+g3.metric("Colateral máx.", f"${lt.max_total_deployed:,.0f}")
+g4.metric("Win rate (real)", f"{_cfg_wr:.0f}%" if _cfg_wr is not None else "—",
+          help="% de posiciones reales cerradas que terminaron en ganancia (histórico).")
+g5.metric("Exposición real", f"${_cfg_exp_real:,.0f}", help="Strike × 100 × contratos de las posiciones reales abiertas.")
+g6.metric("Colateral usado", f"${_cfg_col_usado:,.0f}", help="Margen comprometido HOY por las posiciones reales abiertas.")
+
+# Control DIRECTO del tope de HOY (usuario 2026-08-10: "¿y si solo quiero UNA operación?"). Reemplaza el
+# botón aditivo "abrir más" por un casillero donde ponés el TOTAL que querés que abra hoy (1, 2, 3…). El
+# robot se para exactamente en ese número. Vale solo para hoy; a la medianoche vuelve al tope de config.
+# 0 = no abrir ninguna hoy (pero seguir gestionando/cerrando lo que ya está abierto).
+st.markdown("**Cuántas operaciones querés que abra HOY** — poné el total y guardá. El robot se para justo ahí.")
+_od1, _od2, _od3 = st.columns([1, 1, 3])
+with _od1:
+    _hoy_tope = st.number_input("Órdenes hoy", min_value=0, max_value=20, value=int(_eff_max_day), step=1,
+                                label_visibility="collapsed", key="live_today_cap",
+                                help="Total de aperturas reales para HOY. Poné 1 si solo querés una. "
+                                     "El robot igual solo abre si hay oportunidad (caída ≥1%, delta ≤0.21, etc.) — "
+                                     "es un TECHO, no una obligación. 0 = no abrir ninguna hoy.")
+with _od2:
+    if st.button("Guardar", use_container_width=True, key="save_live_today_cap", type="primary"):
+        repo.set_max_live_orders_per_day(conn, int(_hoy_tope), today)
+        st.session_state["_live_more_msg"] = f"✅ Tope de hoy: {int(_hoy_tope)} (llevás {int(_live_used)} abiertas)."
+        st.rerun()
+    if st.session_state.get("_live_more_msg"):
+        st.success(st.session_state.pop("_live_more_msg"))
+with _od3:
+    _quedan = max(0, _eff_max_day - _live_used)
+    st.caption(f"Hoy llevás **{_live_used}** abiertas · tope de hoy **{_eff_max_day}** · le quedan **{_quedan}** por abrir. "
+               "Aplica en el próximo escaneo (no hace falta reiniciar). Una posición que llenó ocupa el cupo; "
+               "una rechazada/cancelada no. A la medianoche vuelve al tope base de config.")
+
+st.markdown(
+    f"**Símbolos permitidos:** {', '.join(lt.allowed_symbols) if lt.allowed_symbols else '(todos)'}  \n"
+    f"**Exentos del tope de precio (\\${lt.max_underlying_price:,.0f}):** "
+    f"{', '.join(lt.price_cap_exempt_symbols) if lt.price_cap_exempt_symbols else '(ninguno)'}  \n"
+    f"**Caminar el precio:** paso según el spread — spread chico **\\$2/contrato**, spread grande "
+    f"(> \\${lt.price_walk_wide_threshold:.2f}) **\\$5/contrato** (menos envíos). Reemplazo cada "
+    f"{lt.price_walk_interval_seconds}s, sin cruzar el mid. Vender: arranca bajo el ask y baja; "
+    f"recomprar: arranca sobre el bid y sube."
+)
+
+# ------------------------- Avisos por email (apertura/cierre real) -------------------------
+with st.expander("📧 Avisos por email — te aviso en cada apertura y cierre REAL"):
+    st.caption("El robot manda un email cada vez que ABRE y cada vez que CIERRA una operación real. "
+               "Necesita configurar SMTP en el archivo `.env` del proyecto (una vez):")
+    st.code("SMTP_HOST=smtp.gmail.com\nSMTP_PORT=587\nSMTP_USER=tu-cuenta@gmail.com\n"
+            "SMTP_PASSWORD=tu_app_password_de_google\nEMAIL_TO=roberto@crownsensor.com", language="bash")
+    st.caption("Con Gmail, el `SMTP_PASSWORD` es un **App Password** (Google → Seguridad → Verificación en 2 "
+               "pasos → Contraseñas de aplicaciones), NO tu contraseña normal. Después reiniciá el robot.")
+    if st.button("📨 Probar email ahora", key="test_email"):
+        from options_advisor.alerts import notifier
+        if notifier.send_email("✅ Lokshn — prueba de email",
+                               "Si recibís esto, los avisos de apertura/cierre real están funcionando."):
+            st.success("Email de prueba enviado ✅ — revisá tu casilla (y spam).")
+        else:
+            st.error("No se pudo enviar: falta config SMTP en el .env (SMTP_HOST/USER/PASSWORD/EMAIL_TO) o falló el envío.")
+
+st.divider()
+
+# ------------------------- Registro de operaciones REALES (control aparte, como el simulador) -------------------------
+st.markdown("### 📒 Registro de operaciones reales")
+st.caption("Tu control de lo REAL, separado del Simulador (que es papel). Filtrá por período. El robot ABRE reales "
+           "en tu cuenta Schwab; el P&L en vivo de las abiertas se lee de Schwab.")
+
+_lg1, _lg2 = st.columns([1, 3])
+_ledger_periodo = _lg1.selectbox("Período", ["Hoy", "Semana", "Mes", "Año", "Todo"], key="rm_ledger_periodo")
+if _ledger_periodo == "Hoy":
+    _ldesde = today
+elif _ledger_periodo == "Semana":
+    _ldesde = today - _timedelta(days=today.weekday())
+elif _ledger_periodo == "Mes":
+    _ldesde = today.replace(day=1)
+elif _ledger_periodo == "Año":
+    _ldesde = today.replace(month=1, day=1)
+else:
+    _ldesde = date(2000, 1, 1)
+
+_ledger = repo.get_live_orders_between(conn, _ldesde, today)
+_fills = [r for r in _ledger if _status_of(r) == "FILLED" and r["action"] == "SELL_TO_OPEN"]
+# (Las métricas de resumen se consolidaron en el panel único de "Abiertas ahora" — usuario 2026-08-12.
+# El selector de período de arriba sigue filtrando el detalle de aperturas/cerradas.)
+
+# --- Posiciones abiertas por el ROBOT (solo las suyas, no tus trades manuales), con P&L de Schwab ---
+st.markdown("#### 📈 Abiertas ahora — SOLO las que abrió el robot")
+st.caption("Solo las que abrió el robot y siguen abiertas (no tus operaciones manuales de la cuenta). "
+           "El P&L en vivo se lee de Schwab si está disponible.")
+_robot_open = repo.get_open_real_put_positions(conn)
+# A nivel de módulo (usuario 2026-08-12: el indicador de retorno anualizado se movió al FINAL de la página):
+# se inicializan acá para que existan aunque no haya posiciones, y el loop de abajo los llena.
+_ann_num = {1.0: 0.0}   # numerador (retorno $ anualizado) por fracción de captura
+_ann_den = 0.0          # denominador (margen total trabado)
+if not _robot_open:
+    st.caption("El robot no tiene posiciones reales abiertas ahora mismo.")
+else:
+    import json as _json
+
+    # Índice de posiciones de Schwab para enriquecer con P&L (match por símbolo/strike/vto).
+    # Match robusto (usuario 2026-08-10, punto 7): se indexa con clave por fecha `date` Y por string
+    # ISO, y el símbolo normalizado en mayúsculas/sin espacios — así el Mark/P&L no queda vacío por
+    # una diferencia boba de tipo/format entre lo guardado y lo que devuelve Schwab.
+    _sch = {}
+    if settings.broker.mode == "schwab":
+        try:
+            for p in cached_all_positions():
+                if p.option_type == "put" and (p.quantity or 0) < 0 and p.strike and p.expiration:
+                    _sym = (p.underlying_symbol or "").strip().upper()
+                    _stk = round(float(p.strike), 2)
+                    _sch[(_sym, _stk, p.expiration)] = p
+                    _sch[(_sym, _stk, p.expiration.isoformat())] = p
+        except Exception:
+            _sch = {}
+
+    # Quotes del subyacente EN VIVO para el tooltip (precio ahora + % del día), como en el Simulador.
+    _syms = tuple(sorted({(r["symbol"] or "").strip().upper() for r in _robot_open}))
+    try:
+        _quotes = cached_quotes(_syms)
+    except Exception:
+        _quotes = {}
+
+    _tot_unreal = 0.0
+    _tot_exp = 0.0
+    _tot_premium = 0.0   # crédito total cobrado en las ABIERTAS (denominador del P&L Open total %)
+    _rows = []
+    for r in _robot_open:
+        _sym = (r["symbol"] or "").strip().upper()
+        _exp = date.fromisoformat(r["expiration"])
+        _n = r["filled_contracts"] or r["final_contracts"] or 1
+        _cred = r["fill_price"] or 0.0
+        _days = (_exp - today).days
+        try:
+            _ctx = _json.loads(r["open_context_json"]) if r["open_context_json"] else {}
+        except (ValueError, TypeError):
+            _ctx = {}
+        _tot_exp += float(r["strike"]) * 100.0 * _n
+        _p = _sch.get((_sym, round(float(r["strike"]), 2), _exp))
+        if _p is not None:
+            _qty = int(_p.quantity)
+            _mark = abs(_p.market_value) / (100.0 * abs(_p.quantity)) if _p.quantity else None
+            _bp = getattr(_p, "maintenance_requirement", None)
+        else:
+            _qty, _mark, _bp = -_n, None, None
+        _premium = _cred * 100.0 * _n
+        _tot_premium += _premium   # acumula la prima cobrada (para el P&L Open total %)
+        # P&L calculado NOSOTROS desde el crédito de entrada y el mark actual (usuario 2026-08-11: "me sale
+        # P/L en 0"). El unrealized_pnl de Schwab llega en 0 recién abierta la posición, pero el mark ya es
+        # real — así que el P&L verdadero es (crédito − mark). Put corto: ganás cuando el mark baja del crédito.
+        if _mark is not None and _cred > 0:
+            _pnl = round((_cred - _mark) * 100.0 * _n, 2)
+            _pnlpct = round((_cred - _mark) / _cred * 100.0, 1)
+        elif _p is not None and getattr(_p, "unrealized_pnl", None):
+            _pnl = _p.unrealized_pnl
+            _pnlpct = (_pnl / _premium * 100.0) if _premium > 0 else None
+        else:
+            _pnl, _pnlpct = None, None
+        if _pnl is not None:
+            _tot_unreal += _pnl
+        _estado = "—" if _pnl is None else ("🟢 Ganando" if _pnl >= 0 else "🔴 Perdiendo")
+
+        # --- Anualizado del libro abierto (usuario 2026-08-10): "si dejo expirar, ¿cuánto rinde al
+        # año?", y lo mismo si cerrás capturando un % objetivo de la prima. Consistente con el
+        # Simulador: (prima_capturada / margen) × (365 / DTE del trade). DTE = el del trade (entrada
+        # a vencimiento) para que sea la tasa con que se diseñó, no una foto del día.
+        _dte_ann = _ctx.get("chosen_dte")
+        if not isinstance(_dte_ann, (int, float)) or _dte_ann <= 0:
+            try:
+                _dte_ann = (_exp - date.fromisoformat(r["log_date"])).days
+            except Exception:
+                _dte_ann = None
+        if not isinstance(_dte_ann, (int, float)) or _dte_ann <= 0:
+            _dte_ann = max(_days, 1)
+        _margin = _bp if isinstance(_bp, (int, float)) and _bp > 0 else (r["collateral"] or float(r["strike"]) * 100.0 * _n)
+        if _margin and _margin > 0 and _premium > 0:
+            _ann_den += _margin
+            _ann_num[1.0] += _premium * (365.0 / _dte_ann)
+
+        _q = _quotes.get(_sym)
+        _rows.append({
+            "ID": r["id"],   # ID único de la posición (usuario 2026-08-11): decíselo a Moshe para cerrar la exacta
+            "Symbol": _sym,
+            "Strike": float(r["strike"]) if r["strike"] is not None else None,   # strike vendido (usuario 2026-08-12)
+            "Cant": _qty,
+            "Days": _days,   # días que FALTAN para vencer, actualizado a hoy (_exp - today)
+            "Trade Price": _cred,
+            "Mark": _mark,
+            "P/L %": _pnlpct,
+            "P/L Open": _pnl,
+            "BP Effect": _bp,
+            "Estado": _estado,
+            "Precio ahora": getattr(_q, "last_price", None),
+            "% día": getattr(_q, "net_change_pct", None),
+            "_premium": _premium,
+            "_dte_ann": _dte_ann,
+        })
+
+    # Panel de indicadores CONSOLIDADO (usuario 2026-08-12: "todos juntos") con P&L Open total $ y % —
+    # "desde el día 0" = ganancia/pérdida no realizada desde que se abrió cada posición, sobre la prima cobrada.
+    _tot_pct = (_tot_unreal / _tot_premium * 100.0) if _tot_premium > 0 else None
+    _col_usado = sum((r["collateral"] or 0.0) for r in _robot_open)
+    # P&L TOTAL desde el INICIO del real (usuario 2026-08-12: "el P&L total desde que empezamos"):
+    # realizado histórico (todas las cerradas) + abierto no realizado. _cfg_realiz viene de la config de arriba.
+    _realized_all = sum((r["realized_pnl"] or 0.0) for r in _cfg_realiz)
+    _pl_total = _realized_all + _tot_unreal
+    # % de utilidad = P&L total (realizado + abierto) sobre el CAPITAL DISPONIBLE (usuario 2026-08-13: "con
+    # el dinero que tengo para invertir, 50K"), no sobre la prima. Rendimiento sobre el capital.
+    _pl_total_pct = (_pl_total / CAPITAL_DISPONIBLE * 100.0) if CAPITAL_DISPONIBLE > 0 else None
+    # Plazo del rendimiento (usuario 2026-08-13: "cuántas semanas se refiere ese %"): desde el PRIMER trade
+    # real (día 0) hasta hoy.
+    _first_real = conn.execute(
+        "SELECT MIN(substr(COALESCE(sent_ts, log_ts), 1, 10)) FROM live_order_log "
+        "WHERE action = 'SELL_TO_OPEN' AND dry_run = 0 AND sent = 1 AND order_status = 'FILLED'"
+    ).fetchone()[0]
+    _plazo_txt = ""
+    if _first_real:
+        try:
+            _d0 = date.fromisoformat(_first_real)
+            _dias0 = max(0, (today - _d0).days)
+            _plazo_txt = f" · en {_dias0} día(s) = {_dias0 / 7.0:.1f} semana(s) (desde el {_d0.strftime('%d/%m/%Y')})"
+        except (ValueError, TypeError):
+            _plazo_txt = ""
+    _tcol = GOOD if _pl_total >= 0 else BAD
+    st.markdown(
+        f"<div style='background:{_tcol}1a; border:1px solid {_tcol}55; border-radius:0.6rem; padding:0.75rem 1rem; margin:0.1rem 0 0.7rem;'>"
+        f"<span style='color:{TEXT_MUTED}; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em;'>P&amp;L total desde el inicio del real (día 0)</span><br>"
+        f"<span style='color:{_tcol}; font-size:1.7rem; font-weight:800;'>${_pl_total:+,.2f}</span>"
+        f"<span style='color:{_tcol}; font-size:1.05rem; font-weight:700; margin-left:0.5rem;'>"
+        f"{('(' + format(_pl_total_pct, '+.2f') + '%)') if _pl_total_pct is not None else ''}</span>"
+        f"<span style='color:{TEXT_MUTED}; font-size:0.86rem; margin-left:0.6rem;'>realizado ${_realized_all:+,.2f} · abierto ${_tot_unreal:+,.2f} · sobre ${CAPITAL_DISPONIBLE:,.0f} de capital{_plazo_txt}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    _pa, _pb, _pc, _pd, _pe, _pf = st.columns(6)
+    _pa.metric("Posiciones", len(_robot_open))
+    _pb.metric("P&L Open total", f"${_tot_unreal:+,.2f}", help="Ganancia/pérdida NO realizada de todo el libro abierto, desde que se abrió cada posición.")
+    _pc.metric("P&L Open total %", f"{_tot_pct:+.1f}%" if _tot_pct is not None else "—",
+               help="P&L Open total sobre la prima total cobrada en las posiciones abiertas.")
+    _pd.metric("Crédito cobrado", f"${_tot_premium:,.0f}", help="Prima total cobrada en las posiciones abiertas.")
+    _pe.metric("Exposición (strike×100)", f"${_tot_exp:,.0f}")
+    _pf.metric("Colateral usado", f"${_col_usado:,.0f}")
+
+    _pos_cols = [
+        ("ID", "ID", _fmt_plain), ("Símbolo", "Symbol", _fmt_plain),
+        ("Strike", "Strike", _fmt_money),   # strike vendido (usuario 2026-08-12)
+        ("Cant", "Cant", _fmt_plain),
+        ("Días p/ vencer", "Days", _fmt_plain),   # días que faltan para el vencimiento, actualizado a hoy
+        ("Trade Price", "Trade Price", _fmt_money),
+        ("Mark", "Mark", _fmt_money), ("P/L %", "P/L %", _fmt_pct),
+        ("P/L Open", "P/L Open", _fmt_money), ("BP Effect", "BP Effect", _fmt_money),
+        ("Estado", "Estado", _fmt_plain),
+    ]
+    _render_symbol_tooltip_table(
+        _rows, _pos_cols,
+        bg_fn=lambda r: "rgba(63,185,80,0.14)" if (r["P/L Open"] or 0) > 0 else ("rgba(248,81,73,0.14)" if (r["P/L Open"] or 0) < 0 else "transparent"),
+    )
+    st.caption("🟢 ganando · 🔴 perdiendo. Mark = precio actual de la opción · Trade Price = crédito cobrado · "
+               "P/L Open = ganancia/pérdida no realizada · BP Effect = margen que traba en la cuenta. Mirar acá NO cierra nada.")
+
+# --- REPORTE DIARIO (usuario 2026-08-12: "reporte diario, se resetea todos los días") — SOLO HOY. ---
+st.markdown("#### 📅 Reporte diario (ganancia realizada · se resetea cada día)")
+_closed = repo.get_closed_real_positions_between(conn, today, today)
+_realizadas = [r for r in _closed if r["realized_pnl"] is not None]
+_realized_pnl = sum((r["realized_pnl"] or 0.0) for r in _realizadas)
+_wins = sum(1 for r in _realizadas if (r["realized_pnl"] or 0) > 0)
+# P&L % = ganancia realizada sobre la PRIMA que se había cobrado en esas operaciones (qué % de la prima capturó).
+_prem_cobrada = sum((r["fill_price"] or 0.0) * 100.0 * (r["filled_contracts"] or r["final_contracts"] or 1) for r in _realizadas)
+_realized_pct = (100.0 * _realized_pnl / _prem_cobrada) if _prem_cobrada > 0 else None
+_cw1, _cw2, _cw3, _cw4, _cw5 = st.columns(5)
+_cw1.metric("Cerradas hoy", len(_closed))
+_cw2.metric("P&L realizado", f"${_realized_pnl:+,.2f}")
+_cw3.metric("P&L realizado %", f"{_realized_pct:+.1f}%" if _realized_pct is not None else "—")
+_cw4.metric("Win rate", f"{(100.0 * _wins / len(_realizadas)):.0f}%" if _realizadas else "—")
+_cw5.metric("Abiertas ahora", len(_robot_open))
+if _closed:
+    with st.expander(f"📋 Ver las {len(_closed)} cerrada(s) de hoy"):
+        _reason_es = {"profit_target": "objetivo de ganancia", "stop_loss": "stop-loss", "dte_close": "cerca del vencimiento",
+                      "news_close": "noticia importante", "expired": "vencida", "closed_in_broker": "cerrada en Schwab",
+                      "manual_ai": "cierre manual (pedido por chat)"}
+        for r in _closed:
+            _pnl = r["realized_pnl"]
+            _pnl_txt = f"**P&L \\${_pnl:+,.2f}**" if _pnl is not None else "P&L (reconciliar en Schwab)"
+            _emoji = "🟢" if (_pnl or 0) >= 0 else "🔴"
+            _cx = f"recompró a \\${r['close_fill_price']:.2f}" if r["close_fill_price"] is not None else "sin recompra"
+            st.markdown(f"{_emoji} **{r['symbol']} put {r['strike']}** · crédito \\${r['fill_price']:.2f} → {_cx} · "
+                        f"{_pnl_txt} · motivo: {_reason_es.get(r['close_reason'], r['close_reason'] or '—')} · "
+                        f"{(r['close_ts'] or '')[:10]}")
+else:
+    st.caption("Todavía no hay operaciones reales cerradas hoy.")
+
+# --- Aperturas del período (detalle) ---
+if _fills:
+    with st.expander(f"📋 Ver las {len(_fills)} apertura(s) real(es) del período"):
+        for r in _fills:
+            _cred_r = (r["fill_price"] or 0.0) * 100.0 * (r["filled_contracts"] or r["final_contracts"] or 1)
+            st.markdown(f"- **{r['symbol']} put {r['strike']}** · llenó a **\\${r['fill_price']:.2f}** "
+                        f"({r['filled_contracts'] or r['final_contracts']} contrato/s = \\${_cred_r:,.0f} de crédito) · "
+                        f"colateral \\${r['collateral'] or 0:,.0f} · {r['log_date']} · vto {r['expiration']}")
+else:
+    st.caption("Todavía no hay aperturas reales llenadas en este período.")
+
+st.caption("El robot **cierra solo** sus posiciones reales con las mismas reglas del Simulador (objetivo de ganancia "
+           "escalonado, stop-loss, DTE) recomprando y caminando el precio. Las vencidas/asignadas se reconcilian "
+           "contra tu cuenta Schwab.")
+
+st.divider()
+
+# ------------------------- Iron Condors REALES (usuario 2026-08-13) -------------------------
+# El condor real "el mismo cerebro del papel pero con plata real". Se muestra como las órdenes de naked
+# (misma info + estética), pero al pasar el MOUSE por el recuadro sale un pop con las alas VENDIDAS, las
+# alas COMPRADAS y el crédito obtenido — todo en el tooltip del mismo cuadro.
+st.markdown("### 🦅 Iron Condors reales")
+_cond_cfg = settings.intraday_condor
+_cond_system_on = _cond_cfg.enabled and getattr(_cond_cfg, "live_enabled", False) and lt.enabled and not lt.dry_run
+_cond_armed = repo.is_condor_live_armed(conn, today)
+_cond_paused = repo.is_condor_real_paused(conn)
+_cond_live_on = _cond_system_on and _cond_armed and not kill and not _cond_paused
+if kill:
+    _cond_badge = f"<span style='color:{BAD};font-weight:700'>● FRENADO (kill)</span>"
+elif _cond_paused:
+    _cond_badge = f"<span style='color:{ACCENT};font-weight:700'>⏸ PAUSADO por vos</span>"
+elif _cond_live_on:
+    _cond_badge = f"<span style='color:{GOOD};font-weight:700'>● OPERANDO EN REAL</span>"
+elif _cond_system_on and not _cond_armed:
+    _cond_badge = f"<span style='color:{ACCENT};font-weight:700'>○ sistema listo — falta autorizar HOY</span>"
+else:
+    _cond_badge = f"<span style='color:{TEXT_MUTED};font-weight:700'>○ apagado (corre en papel)</span>"
+st.markdown(
+    f"{_cond_badge} &nbsp;·&nbsp; 0DTE {_cond_cfg.underlying} · "
+    f"stop \\${_cond_cfg.stop_loss_dollars:,.0f} · mismo cerebro, mismo stop y profit % que el papel. "
+    "**Autorización y conteo SEPARADOS de los naked.**",
+    unsafe_allow_html=True,
+)
+
+# --- Métricas de utilidad / P&L del condor real, TODO por separado de los naked (usuario 2026-08-13) ---
+_cond_stats = repo.get_real_condor_performance_stats(conn, today)
+_co_open = repo.get_open_real_condor_positions(conn)
+_cond_pl_total = round(_cond_stats["total_realized_pnl"] + _cond_stats["open_unrealized_pnl"], 2)
+_cond_pl_pct = (_cond_pl_total / CAPITAL_DISPONIBLE * 100.0) if CAPITAL_DISPONIBLE > 0 else None
+_cc1, _cc2, _cc3, _cc4, _cc5, _cc6 = st.columns(6)
+_cc1.metric("Abiertos ahora", _cond_stats["open_count"])
+_cc2.metric("P&L abierto", _fmt_money(_cond_stats["open_unrealized_pnl"]))
+_cc3.metric("Ganancia de hoy", _fmt_money(_cond_stats["realized_pnl_today"]),
+            help=f"P&L realizado de los condors reales cerrados hoy ({_cond_stats['closed_count_today']}).")
+_cc4.metric("P&L total (día 0)", _fmt_money(_cond_pl_total),
+            help="Realizado histórico + abierto de TODOS los condors reales, desde el primero.")
+_cc5.metric("P&L % / 50K", f"{_cond_pl_pct:+.2f}%" if _cond_pl_pct is not None else "—",
+            help=f"P&L total del condor sobre ${CAPITAL_DISPONIBLE:,.0f} de capital disponible.")
+_cc6.metric("Win rate", f"{_cond_stats['win_rate_pct']:.0f}%" if _cond_stats["win_rate_pct"] is not None else "—",
+            help=f"Histórico real: {_cond_stats['closed_count']} cerrados · realizado {_fmt_money(_cond_stats['total_realized_pnl'])}.")
+
+# --- Autorización PROPIA del condor (botón aparte de los naked) + cuántos por día autoriza ---
+_cond_cap_default = getattr(_cond_cfg, "live_max_per_day", 1)
+_cond_cap_hoy = repo.get_condor_live_max_per_day(conn, _cond_cap_default, today)
+_cond_abiertos_hoy = repo.count_real_condor_opens_today(conn, today)
+_ca1, _capa, _ca2, _ca3 = st.columns([1.3, 1.2, 1, 2.2])
+with _ca1:
+    if _cond_armed:
+        if st.button("⏸️  Desautorizar condor hoy", use_container_width=True, key="condor_disarm",
+                     help="Frena NUEVOS condors reales hoy. Lo abierto se sigue gestionando/cerrando igual."):
+            repo.disarm_condor_live(conn)
+            st.rerun()
+    else:
+        _cond_conf = st.checkbox("Confirmo operar el condor en REAL hoy", key="condor_arm_conf")
+        if st.button("🦅  Autorizar condor HOY", type="primary", use_container_width=True, key="condor_arm",
+                     disabled=(not _cond_conf) or kill or not _cond_system_on,
+                     help="Botón SEPARADO del START de los naked. Autoriza solo al condor a abrir hoy en real."):
+            repo.arm_condor_live_today(conn, today)
+            st.rerun()
+with _capa:
+    # Pausa PROPIA del condor real (usuario 2026-08-14: "solo al real"). No toca el Simulador, que sigue
+    # operando en papel. Frena SOLO aperturas nuevas: lo que ya está abierto se sigue gestionando y
+    # cerrando — de una posición viva siempre tenés que poder salir.
+    if _cond_paused:
+        if st.button("▶️  Reanudar el condor real", type="primary", use_container_width=True,
+                     key="condor_real_resume",
+                     help="Vuelve a habilitar aperturas nuevas del condor REAL (sigue haciendo falta la "
+                          "autorización del día)."):
+            repo.set_condor_real_paused(conn, False)
+            st.rerun()
+    else:
+        if st.button("⏸️  Pausar el condor real", use_container_width=True, key="condor_real_pause",
+                     help="Frena aperturas NUEVAS del condor real hasta que lo reanudes — sin vencimiento "
+                          "diario, queda pausado hasta que aprietes Reanudar. El Simulador sigue en papel "
+                          "y lo que ya está abierto se sigue gestionando y cerrando igual."):
+            repo.set_condor_real_paused(conn, True)
+            st.rerun()
+with _ca2:
+    _cond_cap_new = st.number_input("Condors/día", min_value=0, max_value=10, value=int(_cond_cap_hoy), step=1,
+                                    key="condor_cap_hoy", label_visibility="visible",
+                                    help="Cuántos condors reales autorizás POR DÍA (aparte de los naked). "
+                                         "0 = ninguno hoy. Un condor mandado ocupa el cupo del día.")
+    if st.button("Guardar", use_container_width=True, key="condor_cap_save"):
+        repo.set_condor_live_max_per_day(conn, int(_cond_cap_new), today)
+        st.rerun()
+with _ca3:
+    _cond_quedan = max(0, _cond_cap_hoy - _cond_abiertos_hoy)
+    st.caption(f"Hoy llevás **{_cond_abiertos_hoy}** condor(s) mandado(s) · autorizás **{_cond_cap_hoy}**/día · "
+               f"quedan **{_cond_quedan}**. Se resetea a la medianoche. "
+               + ("⏸️ **PAUSADO** — no abre condors nuevos hasta que lo reanudes (lo abierto se sigue "
+                  "gestionando). " if _cond_paused else "")
+               + ("" if _cond_system_on else "⚠️ El sistema real del condor está apagado en el settings "
+                  "(`intraday_condor.live_enabled`) o el trading real no está en modo REAL."))
+
+
+def _render_condor_card(row) -> str:
+    """Una tarjeta de condor real como las de naked (info + estética), con POP al pasar el mouse:
+    alas vendidas (put/call cortos), alas compradas (put/call largos) y crédito obtenido."""
+    _st = row["status"]
+    _st_txt = {"working": "NEGOCIANDO", "open": "ABIERTO", "closed": "CERRADO"}.get(_st, _st.upper())
+    _st_col = GOOD if _st == "open" else (ACCENT if _st == "working" else TEXT_MUTED)
+    _cred = row["entry_net_credit"] or 0.0
+    _unreal = row["last_unrealized_pnl"]
+    _unreal_txt = _fmt_money(_unreal) if _unreal is not None else "—"
+    _unreal_col = GOOD if (isinstance(_unreal, (int, float)) and _unreal >= 0) else BAD
+    _qty = row["quantity"] or 1
+    # Contenido visible del recuadro (como las de naked): subyacente + strikes cortos + crédito + estado.
+    _visible = (
+        f"<span style='font-weight:700;color:{TEXT_PRIMARY}'>{row['underlying']} Iron Condor</span> "
+        f"<span style='color:{TEXT_MUTED}'>· vto {row['expiration_date']} · {_qty}x</span><br>"
+        f"<span style='color:{TEXT_MUTED};font-size:0.82rem'>vende "
+        f"<b style='color:{TEXT_PRIMARY}'>{row['short_put_strike']:.0f}P</b> / "
+        f"<b style='color:{TEXT_PRIMARY}'>{row['short_call_strike']:.0f}C</b> · "
+        f"crédito <b style='color:{GOOD}'>${_cred:,.0f}</b> · "
+        f"P&amp;L <b style='color:{_unreal_col}'>{_unreal_txt}</b> · "
+        f"<b style='color:{_st_col}'>{_st_txt}</b></span>"
+    )
+    # POP (tooltip del mismo recuadro): alas vendidas / alas compradas / crédito.
+    _pop = (
+        f"<span class='oia-tt-box' style='width:250px;text-align:left;white-space:normal'>"
+        f"<b style='color:{GOOD}'>Alas VENDIDAS (cobrás)</b><br>"
+        f"• Put corto: <b>{row['short_put_strike']:.0f}</b><br>"
+        f"• Call corto: <b>{row['short_call_strike']:.0f}</b><br>"
+        f"<b style='color:{ACCENT};display:inline-block;margin-top:5px'>Alas COMPRADAS (protección)</b><br>"
+        f"• Put largo: <b>{row['long_put_strike']:.0f}</b><br>"
+        f"• Call largo: <b>{row['long_call_strike']:.0f}</b><br>"
+        f"<span style='display:inline-block;margin-top:5px'>💰 Crédito obtenido: "
+        f"<b style='color:{GOOD}'>${_cred:,.2f}</b></span><br>"
+        f"<span style='color:{TEXT_MUTED};font-size:0.78rem'>Rango de ganancia: "
+        f"{row['lower_breakeven']:.0f} – {row['upper_breakeven']:.0f} · riesgo máx ${row['max_loss']:,.0f}</span>"
+        f"</span>"
+    )
+    return (
+        f"<div style='background:{SURFACE};border:1px solid {BORDER};border-left:3px solid {_st_col};"
+        f"border-radius:0.6rem;padding:0.6rem 0.8rem;margin-bottom:0.5rem;'>"
+        f"<span class='oia-tt' style='display:block'>{_visible}{_pop}</span></div>"
+    )
+
+
+if _co_open:
+    # Una tarjeta POR posición, cada una con su propio botón de cierre manual (usuario 2026-08-14: "si hay
+    # más operaciones y quiero cerrar manual una en específico"). El dashboard NO manda la orden: deja la
+    # bandera y el scheduler la ejecuta en el próximo tick, con la misma escalera de precio que el cierre
+    # automático (nunca cruza el mid). Mirar una página nunca debe operar en tu cuenta.
+    for _r in _co_open:
+        st.markdown(_render_condor_card(_r), unsafe_allow_html=True)
+        _rid = _r["id"]
+        _pedido = ("manual_close_requested" in _r.keys()) and bool(_r["manual_close_requested"])
+        _etiqueta = (f"#{_rid} · {_r['underlying']} "
+                     f"{(_r['short_put_strike'] or 0):.0f}P/{(_r['short_call_strike'] or 0):.0f}C")
+        _mc1, _mc2 = st.columns([1.5, 2.5])
+        if _pedido:
+            with _mc1:
+                if st.button("↩️  Anular el cierre manual", use_container_width=True, key=f"cond_close_undo_{_rid}",
+                             help="Vuelve a la gestión automática (objetivo de ganancia y stop-loss del papel)."):
+                    repo.cancel_real_condor_manual_close(conn, _rid)
+                    st.rerun()
+            _mc2.caption(f"⏳ **Cierre manual pedido** para {_etiqueta} — el robot manda la recompra en el "
+                         f"próximo tick y camina el precio hasta el mid. Si no llena, reintenta; podés anularlo "
+                         f"hasta que llene.")
+        else:
+            with _mc1:
+                _cerrar_ok = st.checkbox("Confirmo cerrar esta", key=f"cond_close_conf_{_rid}")
+                if st.button("🔻  Cerrar ESTA operación ahora", use_container_width=True, key=f"cond_close_{_rid}",
+                             disabled=not _cerrar_ok,
+                             help="Ordena recomprar el condor YA, aunque no haya llegado al objetivo de "
+                                  "ganancia (o esté en pérdida). Lo ejecuta el scheduler en el próximo tick."):
+                    repo.request_real_condor_manual_close(conn, _rid)
+                    st.rerun()
+            _mc2.caption(f"Cierre manual de {_etiqueta}: recompra al precio de mercado caminando hasta el mid, "
+                         f"sin esperar al objetivo de ganancia. El resto de las posiciones no se toca.")
+    st.caption("💡 Pasá el mouse por el recuadro y aparece el pop con las alas vendidas, las compradas y el crédito.")
+else:
+    if _cond_live_on:
+        st.caption("Sin condors reales abiertos ahora. El robot abre 1 por día en días CALMOS dentro de la ventana (10–14 ET).")
+    elif _cond_paused:
+        st.caption("Sin condors reales abiertos. El condor real está **pausado por vos** — no abre nuevos "
+                   "hasta que aprietes Reanudar.")
+    elif _cond_system_on:
+        # El sistema SÍ está encendido en el settings: lo único que falta es la autorización del día. Antes
+        # este cartel decía "apagado, para pasarlo a real poné live_enabled: true" incluso con live_enabled
+        # ya en true, contradiciendo al badge de arriba (bug de copy encontrado 2026-08-14).
+        st.caption("Sin condors reales abiertos. El sistema está listo — falta **autorizar el condor HOY** "
+                   "con el botón de arriba para que pueda abrir.")
+    else:
+        st.caption("El condor real está **apagado** — corre en papel (Simulador). Para pasarlo a real: "
+                   "`intraday_condor.live_enabled: true` en el settings + trading real encendido y armado.")
+
+# Cerrados de hoy (reporte diario del condor real).
+_co_closed_today = [r for r in repo.get_closed_real_condor_positions(conn, limit=50)
+                    if (r["close_ts"] or "")[:10] == today.isoformat() and r["realized_pnl"] is not None]
+if _co_closed_today:
+    with st.expander(f"📅 Condors reales cerrados hoy ({len(_co_closed_today)})"):
+        for r in _co_closed_today:
+            _emoji = "🟢" if (r["realized_pnl"] or 0) >= 0 else "🔴"
+            st.markdown(f"{_emoji} **{r['underlying']} {r['short_put_strike']:.0f}P/{r['short_call_strike']:.0f}C** · "
+                        f"crédito \\${r['entry_net_credit'] or 0:,.0f} · motivo {r['close_reason']} · "
+                        f"P&L **\\${r['realized_pnl']:+,.2f}**")
+
+st.divider()
+
+# ------------------------- Órdenes reales (con filtros) -------------------------
+st.markdown("### 📋 Órdenes que armó el robot")
+
+# Filtro por PERÍODO y por ESTADO (usuario 2026-08-10: "mostrar las que alcanzó a entrar y las que no,
+# por día/semana/mes"). "Entraron" = aprobadas por el guardián (se volvieron orden real); "Frenadas" = las
+# que el guardián no dejó pasar.
+_fc1, _fc2 = st.columns(2)
+_periodo = _fc1.selectbox("Período", ["Hoy", "Semana", "Mes", "Año", "Todo"], key="rm_periodo")
+_estado_filtro = _fc2.selectbox("Mostrar", ["Todas", "Las que entraron (llenaron)", "Enviadas al broker",
+                                            "Frenadas por el guardián"], key="rm_estado_filtro")
+
+# --- Placa de votación IGUAL a la del Simulador (usuario 2026-08-10): voto general + nota + voto por
+#     cada parámetro, con TODO el detalle de la decisión desplegado. Alimenta el mismo aprendizaje. ---
+_VOTE_OPTS_RM = ["—", "👍", "😐", "👎"]
+_VOTE_TO_FB_RM = {"👍": "good", "😐": "normal", "👎": "bad", "—": None}
+_FB_TO_IDX_RM = {"good": 1, "normal": 2, "bad": 3}
+
+
+def _live_param_rows(ctx, live_row):
+    """(param_key, etiqueta, valor) con TODOS los datos de la decisión detrás de la orden real. Mismos
+    param_keys que el Simulador, para que el voto por casillero alimente el mismo cerebro."""
+    def f(v, fmt="{}", pct=False, money=False):
+        if not isinstance(v, (int, float)):
+            return "—"
+        if pct:
+            return f"{v*100:.1f}%"
+        if money:
+            return f"${v:,.2f}"
+        return fmt.format(v)
+
+    pop = ctx.get("chosen_pop")
+    if not isinstance(pop, (int, float)):
+        dl = ctx.get("chosen_delta")
+        if isinstance(dl, (int, float)):
+            pop = round(1 - abs(dl), 4)
+    _lim = live_row["start_limit_price"] if "start_limit_price" in live_row.keys() else None
+    # Bid/Ask REALES de la orden (lo que de verdad usó al mandarla), no el del contexto de la decisión — que
+    # puede ser de otro momento/strike (usuario 2026-08-10: "el bid/ask decía otro número que el fill").
+    _obid = live_row["bid"] if "bid" in live_row.keys() else None
+    _oask = live_row["ask"] if "ask" in live_row.keys() else None
+    _bidask = f"{f(_obid, money=True)} / {f(_oask, money=True)}" if (_obid is not None and _oask is not None) \
+        else f"{f(ctx.get('chosen_bid'), money=True)} / {f(ctx.get('chosen_ask'), money=True)}"
+    _spread = None
+    if _obid is not None and _oask is not None and ((_obid + _oask) / 2) > 0:
+        _spread = (_oask - _obid) / ((_obid + _oask) / 2)
+    return [
+        ("delta", "Delta", f(ctx.get("chosen_delta"), "{:.2f}")),
+        ("pop", "POP (prob. OTM)", f(pop, pct=True)),
+        ("dte", "DTE", f(ctx.get("chosen_dte"))),
+        ("cobertura", "Cobertura", f(ctx.get("chosen_coverage_pct"), pct=True)),
+        ("iv_hv", "IV / HV", f"{f(ctx.get('chosen_iv'), pct=True)} / {f(ctx.get('hv_20d'), pct=True)}"),
+        ("iv_rank", "IV Rank", f(ctx.get("iv_rank"), "{:.0f}")),
+        ("dia_pct", "% del día", f(ctx.get("day_change_pct"), "{:+.1f}%") if isinstance(ctx.get("day_change_pct"), (int, float)) else "—"),
+        ("anualizado", "Anualizado", f(ctx.get("chosen_annualized_return"), pct=True)),
+        ("bid_ask", "Bid / Ask (de la orden)", _bidask),
+        ("spread", "Spread", f(_spread, pct=True) if _spread is not None else f(ctx.get("chosen_spread_pct"), pct=True)),
+        ("open_interest", "Open Interest", f(ctx.get("chosen_open_interest"), "{:,}")),
+        ("volumen", "Volumen", f(ctx.get("chosen_volume"), "{:,}")),
+        ("rsi", "RSI", f(ctx.get("rsi_14"), "{:.0f}")),
+        ("prima", "Prima (límite)", f"${_lim:.2f}" if isinstance(_lim, (int, float)) else "—"),
+    ]
+
+
+@st.fragment
+def _render_live_rating(conn, live_row):
+    """Placa de votación completa de una orden real: detalle desplegado + voto general + nota + voto por
+    parámetro (idéntica al Simulador). Guarda en la orden real Y en la decisión del robot (aprendizaje)."""
+    import json as _j
+    lid = live_row["id"]
+    dec = repo.get_open_decision_for(conn, live_row["symbol"], live_row["log_date"], strike=live_row["strike"])
+    ctx = {}
+    # 1º: el contexto EXACTO guardado en la propia orden al abrir (el dato real de ESTA orden). 2º (órdenes
+    # viejas sin ese dato): la decisión del robot del MISMO strike. Así el % del día, delta, etc. son los del
+    # momento en que abrió la orden, no de otra evaluación (usuario 2026-08-10).
+    _octx = live_row["open_context_json"] if "open_context_json" in live_row.keys() else None
+    if _octx:
+        try:
+            ctx = _j.loads(_octx)
+        except Exception:
+            ctx = {}
+    elif dec is not None and dec["context_json"]:
+        try:
+            ctx = _j.loads(dec["context_json"])
+        except Exception:
+            ctx = {}
+    prows = _live_param_rows(ctx, live_row)
+
+    # Detalle read-only (todos los datos, dos columnas) — "que despliegue todo detallado igual".
+    _half = (len(prows) + 1) // 2
+    _left, _right = prows[:_half], prows[_half:]
+    _lines = ["| Dato | Valor | Dato | Valor |", "|---|---|---|---|"]
+    for i in range(_half):
+        l = _left[i]
+        rr = _right[i] if i < len(_right) else ("", "", "")
+        _lines.append(f"| {l[1]} | **{l[2]}** | {rr[1]} | **{rr[2] if rr[1] else ''}** |")
+    st.markdown("\n".join(_lines))
+
+    _cur_fb = live_row["user_feedback"] if "user_feedback" in live_row.keys() else None
+    _cur_idx = _FB_TO_IDX_RM.get(_cur_fb, 0)
+    _stored = repo.get_decision_param_feedback(conn, dec["id"]) if dec is not None else {}
+    with st.form(key=f"rmrate_{lid}"):
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            choice = st.radio("¿La IA operó BIEN esta orden?", ["Sin marcar", "👍 Bien", "😐 Normal", "👎 Mal"],
+                              index=_cur_idx, key=f"rmfb_{lid}")
+        with c2:
+            note = st.text_area("📝 Tu nota (enseñale con tus palabras)",
+                                value=(live_row["user_note"] if "user_note" in live_row.keys() and live_row["user_note"] else ""),
+                                key=f"rmnote_{lid}", height=90,
+                                placeholder="Ej: buena entrada, venía cayendo y con IV alta / se cerró tarde…")
+        pw = {}
+        with st.expander("🗳️ Votar cada parámetro (opcional) — enseñale casillero por casillero"):
+            for pk, pl, pv in prows:
+                pc1, pc2 = st.columns([3, 2])
+                with pc1:
+                    st.markdown(f"**{pl}:** {pv}")
+                with pc2:
+                    idx = _FB_TO_IDX_RM.get(_stored.get(pk), 0)
+                    pw[pk] = st.radio(pl, _VOTE_OPTS_RM, index=idx, horizontal=True,
+                                      key=f"rmpv_{lid}_{pk}", label_visibility="collapsed")
+        if st.form_submit_button("💾 Guardar puntuación"):
+            fb = {"👍 Bien": "good", "😐 Normal": "normal", "👎 Mal": "bad"}.get(choice)
+            repo.set_live_order_feedback(conn, lid, fb, note or None)
+            if dec is not None:
+                repo.set_decision_feedback(conn, dec["id"], fb)
+                repo.set_decision_note(conn, dec["id"], note)
+                votes = {k: _VOTE_TO_FB_RM[v] for k, v in pw.items() if _VOTE_TO_FB_RM.get(v)}
+                repo.set_decision_param_feedback(conn, dec["id"], votes)
+            _marca = {"good": "👍 Bien", "normal": "😐 Normal", "bad": "👎 Mal"}.get(fb, "sin marcar")
+            st.success(f"Guardado ✅ ({_marca}). Refrescá para actualizar la lista.")
+
+if _periodo == "Hoy":
+    _desde = today
+elif _periodo == "Semana":
+    _desde = today - _timedelta(days=today.weekday())
+elif _periodo == "Mes":
+    _desde = today.replace(day=1)
+elif _periodo == "Año":
+    _desde = today.replace(month=1, day=1)
+else:
+    _desde = date(2000, 1, 1)
+
+_rows = repo.get_live_orders_between(conn, _desde, today)
+if _estado_filtro.startswith("Las que entraron"):
+    _rows = [r for r in _rows if _status_of(r) == "FILLED"]        # ENTRÓ = llenó de verdad
+elif _estado_filtro.startswith("Enviadas"):
+    _rows = [r for r in _rows if r["sent"] == 1]
+elif _estado_filtro.startswith("Frenadas"):
+    _rows = [r for r in _rows if r["approved"] == 0]
+
+if not _rows:
+    if armed:
+        st.caption("No hay órdenes para este filtro. Cuando una entrada de la whitelist califique, va a "
+                   "aparecer acá con el precio que arrancaría a negociar. (Requiere que el robot esté corriendo.)")
+    else:
+        st.caption("Armá el día con START para que el robot empiece a registrar lo que haría.")
+else:
+    import json as _json
+
+    _llenaron = sum(1 for r in _rows if _status_of(r) == "FILLED")
+    _enviadas = sum(1 for r in _rows if r["sent"] == 1)
+    _frenadas = sum(1 for r in _rows if r["approved"] == 0)
+    st.caption(f"{len(_rows)} decisión(es) · ✅ {_llenaron} ENTRARON (llenaron) · 📤 {_enviadas} enviadas al broker · "
+               f"🚫 {_frenadas} frenadas. Tocá cada orden para ver la negociación y puntuarla 👍/👎.")
+
+    def _keys(row):  # sqlite3.Row → set de columnas presentes (por si la migración aún no corrió)
+        try:
+            return set(row.keys())
+        except Exception:
+            return set()
+
+    for r in _rows:
+        _cols = _keys(r)
+        # Resultado REAL de la orden (usuario 2026-08-10: "aprobada" no es lo mismo que "entró"). Mostramos
+        # lo que de verdad pasó: entró/llenó, se canceló, la rechazó el broker, o quedó puesta esperando.
+        _st = _status_of(r)
+        if r["approved"] != 1:
+            _estado = "🚫 Frenada por el guardián"
+        elif r["dry_run"] == 1:
+            _estado = "🧪 Aprobada (simulacro, no enviada)"
+        elif _st == "FILLED":
+            _estado = f"✅ ENTRÓ · llenó a ${r['fill_price']:.2f}" if r["fill_price"] else "✅ ENTRÓ (llenó)"
+        elif _st == "REJECTED":
+            _estado = "❌ Rechazada por el broker"
+        elif _st == "CANCELED":
+            _estado = "🚫 Cancelada (no llenó)"
+        elif _st in _RESTING_STATES:
+            _estado = "⏳ Puesta al mid, esperando fill"
+        elif r["sent"] == 1:
+            _estado = "📤 Enviada al broker"
+        else:
+            _estado = "✅ Aprobada"
+        _acc = "Vender put" if r["action"] == "SELL_TO_OPEN" else "Recomprar put"
+        _fb = r["user_feedback"] if "user_feedback" in _cols else None
+        _fb_icon = " · 👍" if _fb == "good" else (" · 👎" if _fb == "bad" else "")
+        _precio = f"${r['start_limit_price']:.2f}" if r["start_limit_price"] else "—"
+        _hdr = (f"{(r['log_ts'] or '')[11:19]} · {r['symbol']} put {r['strike']} · {r['final_contracts']} contrato(s) "
+                f"@ {_precio} · {_estado}{_fb_icon}")
+        with st.expander(_hdr):
+            # --- Negociación: cómo caminaría el precio y dónde queda vs el mid ---
+            _ladder = []
+            if "ladder_json" in _cols and r["ladder_json"]:
+                try:
+                    _ladder = _json.loads(r["ladder_json"])
+                except Exception:
+                    _ladder = []
+            _bid = r["bid"] if "bid" in _cols else None
+            _ask = r["ask"] if "ask" in _cols else None
+            _mid = _ladder[-1] if _ladder else None
+            _line = ""
+            if _bid is not None and _ask is not None:
+                _line = f"**Bid {_bid:.2f} / Ask {_ask:.2f}**"
+                if _mid is not None:
+                    _line += f" · mid {_mid:.2f}"
+            elif _mid is not None:
+                _line = f"mid {_mid:.2f}"
+            if _line:
+                st.markdown("🤝 **Negociación** — " + _line)
+            if _ladder:
+                _dir = "baja hasta el mid (vende alto)" if r["action"] == "SELL_TO_OPEN" else "sube hasta el mid (recompra bajo)"
+                _steps = "  →  ".join(f"**{p:.2f}**" for p in _ladder)
+                _iv = lt.price_walk_interval_seconds
+                st.markdown(f"Arranca en **{_ladder[0]:.2f}** y {_dir}, un paso cada {_iv}s:\n\n{_steps}")
+                if _mid is not None:
+                    st.caption(f"El último precio ({_mid:.2f}) es el **mid** — el peor precio que aceptaría (no lo cruza).")
+            else:
+                st.caption("Esta orden no tiene escalera guardada (es de antes de esta actualización).")
+            if r["collateral"]:
+                st.markdown(f"💵 Colateral (margen) que comprometería: **\\${r['collateral']:,.0f}** · Vto {r['expiration']}")
+            if r["reasons"]:
+                st.markdown(f"ℹ️ {r['reasons']}")
+
+            # --- Puntuar: MISMA placa que el Simulador (voto general + nota + voto por parámetro) ---
+            if "user_feedback" in _cols:
+                st.markdown("**⭐ Puntuar esta orden** (le enseña al robot — igual que en el Simulador):")
+                _render_live_rating(conn, r)
+            else:
+                st.caption("Reiniciá el dashboard para habilitar la puntuación (falta correr la migración de la base).")
+
+st.divider()
+
+st.info(
+    "El guardián, el START diario, el kill switch, el armado de órdenes y el caminar-el-precio están listos y "
+    "probados. Cuando el robot corre con el día armado, registra acá las órdenes que armaría (dry-run) para que "
+    "las revises. **Nada se envía** mientras `enabled` esté en false o en modo DRY-RUN — el paso a real lo damos "
+    "juntos cuando digas que está todo OK.",
+    icon="🛡️",
+)
+
+# --- Indicador de retorno anualizado del libro abierto (usuario 2026-08-10) — movido al FINAL de la página
+#     (usuario 2026-08-12: "ponerlo abajo de todo"). Usa _ann_num/_ann_den/_robot_open calculados más arriba. ---
+if _ann_den > 0:
+    st.divider()
+    st.markdown("##### 📐 Retorno anualizado de lo que tenés abierto")
+    _ai1, _ai2, _ai3 = st.columns([1.1, 1.1, 1.4])
+    _ann_expire = _ann_num[1.0] / _ann_den * 100.0
+    _ai1.metric("Si dejás expirar (100% de la prima)", f"{_ann_expire:.1f}%",
+                help="Anualizado del libro completo si todas las posiciones expiran sin valor (te quedás con toda la prima). "
+                     "Fórmula igual al Simulador: (prima / margen) × (365 / DTE del trade), ponderado por el margen de cada una.")
+    with _ai3:
+        _preset = st.radio("Objetivo de cierre", [35, 45, 55], horizontal=True, index=1,
+                           format_func=lambda x: f"{x}%",
+                           help="Tu estrategia: cerrás cada put cuando ya ganaste este % de la prima, y con el capital "
+                                "liberado abrís otra. Suponiendo que todas terminan ganadoras.")
+        _tgt = st.number_input("…o poné otro %", min_value=1, max_value=100, value=int(_preset), step=5,
+                               help="Cualquier objetivo entre 1% y 100%.")
+    _cap = _tgt / 100.0
+    # Anualizado de la ESTRATEGIA de cerrar al X% y REABRIR (usuario 2026-08-11): capturás X% de la prima
+    # en una FRACCIÓN del tiempo y reusás el capital para otra operación. Con decaimiento tipo raíz-del-
+    # tiempo (regla estándar de theta) el tiempo hasta el objetivo es f(X)=1-(1-X)²=X(2-X), así que
+    # anualizado = expira × X/f(X) = expira / (2-X). Suponiendo TODAS ganadoras (sin pérdidas).
+    _ann_tgt = _ann_expire / (2.0 - _cap)
+    _ai2.metric(f"Si cerrás siempre al {_tgt}% (y reabrís)", f"{_ann_tgt:.1f}%",
+                help="Anualizado si tu estrategia es cerrar cada put al capturar ese % de la prima y reinvertir el "
+                     "capital liberado en otra, TODO el año, suponiendo que todas ganan. Cerrar antes libera el "
+                     "capital y sube las vueltas al año, pero dejás algo de prima en la mesa: por eso rinde menos "
+                     "que aguantar al vencimiento, pero con MENOS riesgo (no aguantás el tramo final). Estimación "
+                     "con decaimiento típico de la prima (raíz del tiempo).")
+    st.caption(f"Con las **{len(_robot_open)}** posición(es) abiertas y suponiendo TODAS ganadoras: dejándolas expirar "
+               f"rinden **{_ann_expire:.1f}%** anual; con la estrategia de **cerrar siempre al {_tgt}%** y reabrir, "
+               f"**{_ann_tgt:.1f}%** anual. Cerrar antes baja un poco el anualizado pero también el riesgo (soltás el "
+               f"tramo final, que decae lento). Es una estimación sobre el margen trabado hoy.")
