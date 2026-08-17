@@ -208,7 +208,19 @@ _cfg_all_closed = repo.get_closed_real_positions_between(conn, date(2000, 1, 1),
 _cfg_realiz = [r for r in _cfg_all_closed if r["realized_pnl"] is not None]
 _cfg_wr = (100.0 * sum(1 for r in _cfg_realiz if (r["realized_pnl"] or 0) > 0) / len(_cfg_realiz)) if _cfg_realiz else None
 g1, g2, g3, g4, g5, g6 = st.columns(6)
-g1.metric("Contratos / orden", lt.max_contracts_per_order)
+# Mostrar el techo del guardián acá sería engañoso: lo que el robot PIDE es el base, y solo sube a la
+# cantidad de strikes baratos cuando corresponde (usuario 2026-08-17). Se muestran las dos cosas.
+_c_base = getattr(lt, "base_contracts_per_order", 1)
+_c_barato = getattr(lt, "cheap_strike_contracts", 0)
+_c_umbral = getattr(lt, "cheap_strike_max", 0.0)
+g1.metric("Contratos / orden",
+          f"{_c_base} · {_c_barato}" if (_c_barato and _c_umbral) else str(_c_base),
+          help=(f"Normalmente {_c_base} contrato(s). Si el strike es menor a ${_c_umbral:,.0f}, pide "
+                f"{_c_barato} — un put barato traba mucho menos colateral, así los tamaños quedan "
+                f"parejos. El guardián nunca manda más de {lt.max_contracts_per_order} por orden y "
+                "recorta si no entra por colateral o cash."
+                if (_c_barato and _c_umbral) else
+                f"El guardián nunca manda más de {lt.max_contracts_per_order} por orden."))
 g2.metric("Órdenes / día", f"{_live_used}/{_eff_max_day}")
 g3.metric("Colateral máx.", f"${lt.max_total_deployed:,.0f}")
 g4.metric("Win rate (real)", f"{_cfg_wr:.0f}%" if _cfg_wr is not None else "—",

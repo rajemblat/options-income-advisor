@@ -335,7 +335,18 @@ live_trading:
   dry_run: false                   # false = MANDA la orden de verdad al broker (ya no es simulacro)
   kill_switch: false               # freno de emergencia (corta todo, aun estando armado)
   require_manual_arm: true         # el usuario da START cada mañana (doble confirmación) para operar ese día
-  max_contracts_per_order: 1       # Fase 1: 1 contrato por orden
+  # TECHO del guardián: nunca manda más que esto por orden, pase lo que pase. Subido de 1 a 4 el
+  # 2026-08-17 para que quepa la regla de strikes baratos de abajo — NO es que ahora todo abra 4:
+  # lo que se PIDE lo fija `base_contracts_per_order` / `cheap_strike_*`. Este número es solo el freno.
+  max_contracts_per_order: 4
+  base_contracts_per_order: 1      # lo normal sigue siendo 1 contrato (Fase 1)
+  # "Cuando el strike es menos de $30 debe abrir más cantidad, mínimo 4" (usuario 2026-08-17).
+  # Con los números reales del 17/08: AAL strike $13 traba $88 de colateral por contrato y NCLH $17
+  # traba $144, contra los ~$2.500 de AAPL $285. A 1 contrato, el put barato cobraba $22 y era una
+  # posición 28 veces más chica que las caras. Con 4 quedan en $351 y $574 — comparables entre sí.
+  # El guardián sigue mandando: si 4 no entran por colateral, cash o notional, recorta o frena.
+  cheap_strike_max: 30.0           # strike por debajo de $30 = "barato"
+  cheap_strike_contracts: 4        # ...y ahí pide 4 contratos
   max_notional_per_order: 0        # Fase 1: sin tope de EXPOSICIÓN por orden (el freno real es el colateral;
                                    #         el cap por exposición diaria lo agregamos "más adelante", usuario)
   max_orders_per_day: 2            # 2 posiciones reales por día (usuario 2026-08-10: "quiero una operación más hoy")

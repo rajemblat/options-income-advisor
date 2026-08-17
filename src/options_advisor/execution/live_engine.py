@@ -157,6 +157,28 @@ def _limits_with_runtime_flags(settings, conn, day: date):
     return lim
 
 
+def contracts_for_strike(strike: float | None, lt) -> int:
+    """Cuántos contratos PEDIR para este strike (usuario 2026-08-17: "cuando el strike es menos de $30
+    debe abrir más cantidad, mínimo 4").
+
+    Por qué existe: un put de strike $13 traba ~$88 de colateral por contrato y uno de $285 traba ~$2.500.
+    Pidiendo 1 contrato siempre, la operación barata quedaba 28 veces más chica que la cara — cobraba $22
+    y no movía la aguja. Con 4 contratos los tamaños quedan comparables.
+
+    Esto es lo que se PIDE, no lo que se manda: el guardián después solo puede RECORTAR (por colateral,
+    notional, cash de la cuenta o el techo `max_contracts_per_order`), nunca subir. Decisión del usuario
+    2026-08-17: "el guardián manda" — la escala es un objetivo, no un permiso para saltear los frenos.
+
+    Sin `cheap_strike_max`/`cheap_strike_contracts` configurados, devuelve el base de siempre: la regla
+    nace apagada y no cambia el comportamiento de nadie que no la configure."""
+    base = max(1, int(getattr(lt, "base_contracts_per_order", 1) or 1))
+    umbral = float(getattr(lt, "cheap_strike_max", 0.0) or 0.0)
+    minimo = int(getattr(lt, "cheap_strike_contracts", 0) or 0)
+    if umbral > 0 and minimo > 0 and strike is not None and float(strike) < umbral:
+        return max(base, minimo)
+    return base
+
+
 def maybe_log_live_order(conn, symbol, result, snapshot, settings, as_of: date, day_change_pct=None,
                          broker=None) -> None:
     """Hook llamado por el simulador cuando una entrada PASA. Si el símbolo está en la whitelist real y
@@ -177,7 +199,7 @@ def maybe_log_live_order(conn, symbol, result, snapshot, settings, as_of: date, 
         margin = rules.per_contract_cost(snapshot.price, contract.strike, result.premium, settings.simulator)
         opp = Opportunity(
             symbol=symbol, action=live_guard.ACTION_OPEN, expiration=contract.expiration,
-            strike=contract.strike, requested_contracts=lt.max_contracts_per_order,
+            strike=contract.strike, requested_contracts=contracts_for_strike(contract.strike, lt),
             bid=contract.bid, ask=contract.ask, underlying_price=snapshot.price,
             collateral_per_contract=margin,
         )

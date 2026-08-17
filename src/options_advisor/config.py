@@ -413,7 +413,16 @@ class LiveTradingSettings(BaseModel):
     dry_run: bool = True                     # True = construye y loguea la orden pero NO la manda
     kill_switch: bool = False                # freno de emergencia (corta todo, incluso armado)
     require_manual_arm: bool = True          # exige "armar" el trading real de HOY desde el dashboard
-    max_contracts_per_order: int = 4         # tope duro de contratos por orden (= tramo máximo)
+    max_contracts_per_order: int = 4         # TECHO duro del guardián: jamás manda más que esto por orden
+    # Cuántos contratos PIDE el robot automático. Separado del techo de arriba a propósito: el techo es
+    # el freno de seguridad (solo recorta), esto es la estrategia (cuánto se quiere operar).
+    base_contracts_per_order: int = 1        # lo normal
+    # "Cuando el strike es menos de $30 debe abrir más cantidad, mínimo 4" (usuario 2026-08-17). Un put
+    # de strike $13 traba ~$88 de colateral por contrato contra los ~$2.500 de uno de $285: a 1 contrato
+    # la posición barata era 28 veces más chica que las caras y casi no movía la aguja. Con 4 contratos
+    # queda un tamaño comparable. 0 en cualquiera de los dos = regla apagada.
+    cheap_strike_max: float = 0.0            # strike POR DEBAJO de esto = "barato"
+    cheap_strike_contracts: int = 0          # ...y ahí se piden estos contratos
     max_notional_per_order: float = 40_000.0 # tope duro de notional (strike×100×contratos) por orden
     max_orders_per_day: int = 5              # tope duro de órdenes reales por día
     max_orders_per_week: int = 0             # tope duro por semana (0 = sin tope; Fase 1 = 5, usuario 2026-08-09)

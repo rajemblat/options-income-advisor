@@ -73,8 +73,44 @@ def test_logs_dry_run_plan_when_armed():
     r = rows[0]
     assert r["symbol"] == "AAL" and r["action"] == "SELL_TO_OPEN"
     assert r["approved"] == 1 and r["dry_run"] == 1 and r["sent"] == 0
-    assert r["final_contracts"] == 1
+    # Strike $11 < $30 → 4 contratos por la regla de strikes baratos (usuario 2026-08-17).
+    assert r["final_contracts"] == 4
     assert r["payload_json"] is not None
+
+
+# ------------------- cantidad según el strike (usuario 2026-08-17) -------------------
+
+def test_a_cheap_strike_asks_for_four_contracts_and_an_expensive_one_stays_at_one():
+    """"Cuando el strike es menos de $30 debe abrir más cantidad, mínimo 4" (usuario 2026-08-17).
+    Un put de strike $13 traba ~$88 de colateral por contrato y uno de $285 ~$2.500: a 1 contrato la
+    operación barata era 28 veces más chica. La regla toca SOLO a los baratos — los caros siguen en 1."""
+    lt = _settings().live_trading
+    assert live_engine.contracts_for_strike(13.0, lt) == 4, "strike barato → 4"
+    assert live_engine.contracts_for_strike(29.99, lt) == 4, "justo por debajo del umbral → 4"
+    assert live_engine.contracts_for_strike(30.0, lt) == 1, "el umbral NO entra: $30 exacto ya es caro"
+    assert live_engine.contracts_for_strike(285.0, lt) == 1, "el caro no cambia"
+    assert live_engine.contracts_for_strike(None, lt) == 1, "sin strike, el base de siempre"
+
+
+def test_the_cheap_strike_rule_is_off_until_it_is_configured():
+    """Nace apagada: sin umbral o sin cantidad configurados devuelve el base y no cambia el comportamiento."""
+    base = _settings().live_trading
+    assert live_engine.contracts_for_strike(13.0, base.model_copy(update={"cheap_strike_max": 0.0})) == 1
+    assert live_engine.contracts_for_strike(13.0, base.model_copy(update={"cheap_strike_contracts": 0})) == 1
+
+
+def test_the_guard_still_wins_over_the_cheap_strike_rule():
+    """Decisión del usuario 2026-08-17: "el guardián manda". La escala es lo que se PIDE; si no entra
+    por el techo de contratos, el guardián RECORTA — la regla nunca puede saltear un freno."""
+    s = _settings()
+    lt = s.live_trading.model_copy(update={"max_contracts_per_order": 2})
+    s = s.model_copy(update={"live_trading": lt})
+    conn = db.connect(":memory:")
+    repo.arm_live_today(conn, AS_OF)
+    live_engine.maybe_log_live_order(conn, "AAL", _Result(_contract(), 1.50), _Snap(12.0), s, AS_OF)
+    r = repo.get_live_orders_today(conn, AS_OF)[0]
+    assert r["final_contracts"] == 2, "pidió 4 pero el techo del guardián es 2"
+    assert "Recortado" in (r["reasons"] or "")
 
 
 def test_skips_when_not_armed():
