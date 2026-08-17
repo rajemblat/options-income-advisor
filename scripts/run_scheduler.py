@@ -51,6 +51,10 @@ def main() -> None:
     # Conexión dedicada para el hilo del job rápido del chat (executor propio, cada 15s) — mismo patrón
     # seguro que el butterfly: dos conexiones en WAL en el mismo proceso, SQLite serializa las escrituras.
     chat_conn = db.connect(settings.database.resolved_path())
+    # Conexión dedicada del hilo que DETECTA las operaciones reales (executor propio) — antes
+    # compartía worker con el escaneo pesado de puts y quedaba minutos atrás (usuario 2026-08-17:
+    # "demora más de 5 minutos y debe demorar menos de 10 segundos"). Mismo patrón que los de arriba.
+    trades_conn = db.connect(settings.database.resolved_path())
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     finnhub_api_key = os.environ.get("FINNHUB_API_KEY")
     fred_api_key = os.environ.get("FRED_API_KEY")
@@ -58,7 +62,7 @@ def main() -> None:
     scheduler = build_scheduler(
         broker, conn, symbols, settings, api_key,
         finnhub_api_key=finnhub_api_key, fred_api_key=fred_api_key, butterfly_conn=butterfly_conn,
-        chat_conn=chat_conn,
+        chat_conn=chat_conn, trades_conn=trades_conn,
     )
     print(f"Scheduler iniciado (broker.mode={settings.broker.mode}, {len(symbols)} símbolos). Ctrl+C para salir.")
     scheduler.start()

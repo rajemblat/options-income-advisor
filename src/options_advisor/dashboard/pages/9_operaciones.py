@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import itertools
+import logging
 from datetime import date
 
 import streamlit as st
 
 from options_advisor.alerts.formatting import strategy_label
+from options_advisor.alerts.real_trades import detect_and_alert_real_trades
 from options_advisor.dashboard.components import (
     ACCENT,
     DATE_RANGE_OPTIONS,
     GOOD,
     TEXT_MUTED,
     filter_by_date_range,
+    get_broker,
     get_connection,
+    get_settings,
     group_roll_pairs,
     icon,
     inject_theme,
@@ -36,13 +40,41 @@ render_header(
 conn = get_connection()
 render_notification_bell(conn)
 
-# Botón de refresh (usuario 2026-08-05): las operaciones reales se detectan solas cada 1 min, pero
-# si querés forzar que la página vuelva a leer la base ahora mismo (por si una alerta no te llegó),
-# tocá acá. NO ejecuta la detección (eso lo hace el robot), solo recarga lo que ya hay guardado.
+# Botón de refresh. ANTES solo recargaba la base: si el robot todavía no había detectado la operación,
+# apretarlo no servía de nada y había que esperar (usuario 2026-08-17: "demora más de 5 minutos y debe
+# demorar menos de 10 segundos"). Ahora VA A BUSCARLAS A SCHWAB en el momento: le pregunta por las
+# órdenes llenadas de la última hora y guarda las que falten. Es la misma función que corre el robot
+# (`detect_and_alert_real_trades`), así que no hay dos lógicas que puedan divergir.
+#
+# Es seguro apretarlo muchas veces: la detección es idempotente — se saltea las patas ya alertadas
+# (`get_alerted_order_leg_keys`), así que no duplica nada. Y si Schwab falla, la página sigue
+# mostrando lo que ya estaba guardado en vez de romperse.
+_REFRESH_LOOKBACK_MIN = 60   # 1 hora: cubre de sobra cualquier operación que el robot no haya visto aún
 _rc1, _rc2 = st.columns([4, 1])
 with _rc2:
-    if st.button("🔄 Actualizar", use_container_width=True, help="Vuelve a leer las operaciones reales detectadas."):
+    if st.button("🔄 Actualizar", use_container_width=True,
+                 help="Le pregunta a Schwab AHORA por las operaciones de la última hora y actualiza la lista."):
+        with st.spinner("Buscando en Schwab…"):
+            try:
+                _br = get_broker()
+                _nuevas = detect_and_alert_real_trades(
+                    _br, conn, get_settings(), date.today(),
+                    share_positions=_br.get_all_share_positions(),
+                    anthropic_api_key=None, finnhub_api_key=None,
+                    lookback_minutes=_REFRESH_LOOKBACK_MIN,
+                )
+                st.session_state["_ops_refresh"] = ("ok", len(_nuevas))
+            except Exception as _exc:
+                logging.getLogger(__name__).exception("Operaciones: fallo el refresh manual")
+                st.session_state["_ops_refresh"] = ("error", str(_exc)[:180])
         st.rerun()
+
+_msg = st.session_state.pop("_ops_refresh", None)
+if _msg and _msg[0] == "ok":
+    st.success(f"✅ Encontré **{_msg[1]}** operación(es) nueva(s) en Schwab." if _msg[1]
+               else "✅ Al día — Schwab no tiene ninguna operación que falte acá.")
+elif _msg:
+    st.warning(f"No pude consultar Schwab ahora ({_msg[1]}). Abajo está lo último que el robot guardó.")
 
 # El filtro sale de los símbolos que REALMENTE tienen una operación detectada, no de la
 # watchlist analizada (config/symbols.yaml) — una operación real puede caer sobre cualquier

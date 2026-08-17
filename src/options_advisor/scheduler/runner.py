@@ -35,6 +35,7 @@ def build_scheduler(
     fred_api_key: str | None = None,
     butterfly_conn: sqlite3.Connection | None = None,
     chat_conn: sqlite3.Connection | None = None,
+    trades_conn: sqlite3.Connection | None = None,
 ) -> BlockingScheduler:
     """Arma el scheduler con los disparos de la Sección 6 del plan de Fase 1 (apertura, chequeo
     periódico, cierre) MÁS el escaneo rápido del robot que lo hace operar solo.
@@ -64,6 +65,14 @@ def build_scheduler(
             # WAL en el mismo proceso son seguras (SQLite serializa escrituras con su lock + busy_timeout),
             # y el lock `_LIVE_ORDER_LOCK` de live_engine serializa la LÓGICA de órdenes reales entre hilos.
             "chat": {"type": "threadpool", "max_workers": 1},
+            # Hilo propio para la DETECCIÓN de operaciones reales (usuario 2026-08-17: "demora más de
+            # 5 minutos y debe demorar menos de 10 segundos"). Compartía el worker 'default' con el
+            # escaneo pesado de puts, que tarda varios minutos, así que APScheduler la salteaba
+            # ("maximum number of running instances reached") y el log mostraba textual "Run time of
+            # job run_real_trade_detection was missed by 0:04:39". Resultado real del 17/08: una
+            # operación llenada a las 11:28 apareció en la página recién a las 11:39. Mismo patrón
+            # seguro que butterfly/chat: executor propio + conexión propia.
+            "trades": {"type": "threadpool", "max_workers": 1},
         },
         job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 60},
     )
@@ -76,6 +85,9 @@ def build_scheduler(
     # Conexión dedicada del job rápido del chat (su executor es otro hilo). En tests no se pasa y cae a la
     # compartida (inocuo: el job del chat no se ejecuta en los tests, solo se registra).
     chat_conn = chat_conn if chat_conn is not None else conn
+    # Conexión dedicada de la detección de operaciones reales (su executor es otro hilo). En tests no se
+    # pasa y cae a la compartida (inocuo: el job no se ejecuta en los tests, solo se registra).
+    trades_conn = trades_conn if trades_conn is not None else conn
 
     def run_job() -> None:
         job_poll_and_analyze(broker, conn, symbols, settings, anthropic_api_key, finnhub_api_key=finnhub_api_key, fred_api_key=fred_api_key)
@@ -105,7 +117,8 @@ def build_scheduler(
         job_premarket_digest(broker, conn, symbols, settings, anthropic_api_key, finnhub_api_key=finnhub_api_key, fred_api_key=fred_api_key)
 
     def run_real_trade_detection() -> None:
-        job_detect_real_trades(broker, conn, settings, anthropic_api_key, finnhub_api_key=finnhub_api_key)
+        # Conexión propia: corre en el executor 'trades', un hilo distinto del escaneo pesado.
+        job_detect_real_trades(broker, trades_conn, settings, anthropic_api_key, finnhub_api_key=finnhub_api_key)
 
     digest_h, digest_m = _hh_mm(settings.scheduler.premarket_digest_time)
     open_h, open_m = _hh_mm(settings.scheduler.market_open_snapshot_time)
@@ -179,6 +192,7 @@ def build_scheduler(
             timezone=settings.scheduler.timezone,
         ),
         id="real_trade_detection",
+        executor="trades",   # hilo propio: no lo frena el escaneo pesado de puts (usuario 2026-08-17)
     )
     # Estrategia 2 — Iron Butterfly 0DTE intradía (usuario 2026-08): tick de 1 minuto durante el
     # mercado. El job no hace nada si la estrategia está apagada, así que siempre se registra;
