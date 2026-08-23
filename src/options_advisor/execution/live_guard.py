@@ -27,6 +27,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 CONTRACT_MULTIPLIER = 100
 
 ACTION_OPEN = "SELL_TO_OPEN"
@@ -211,6 +215,18 @@ def evaluate(
             final = fit
 
     # 4) Colchón de cash libre mínimo (contra el MARGEN que se traba).
+    # AVISO DE TOPE MUERTO (auditoria 2026-08-22). `min_account_cash_buffer` aparenta ser una capa
+    # activa del guardian, pero NO lo es: `live_engine` pasa siempre AccountSnapshot(cash=1e9), tanto
+    # en real como en dry-run, porque no existe ninguna llamada que traiga el cash/buying power real
+    # de Schwab. Con el valor en 0.0 es inocuo. El dia que alguien ponga 20000 creyendo que se
+    # protege, el guardian lo aceptaria, lo mostraria como capa activa, y no frenaria ni un contrato.
+    # Que grite hasta que se implemente la lectura del saldo real.
+    if limits.min_account_cash_buffer > 0 and account.cash >= 1e8:
+        logger.error(
+            "min_account_cash_buffer=%.2f esta configurado pero NO se esta aplicando: el guardian no "
+            "recibio el cash real de la cuenta (llego el valor de relleno). Ese tope no te protege.",
+            limits.min_account_cash_buffer,
+        )
     disponible = account.cash - limits.min_account_cash_buffer
     fit = int(disponible // collateral_pc) if disponible > 0 else 0
     if fit < final:

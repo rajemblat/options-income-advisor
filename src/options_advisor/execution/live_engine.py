@@ -214,11 +214,22 @@ def contracts_after_diversification(base: int, entradas_abiertas: int) -> int:
     return 0
 
 
+@_serialized
 def maybe_log_live_order(conn, symbol, result, snapshot, settings, as_of: date, day_change_pct=None,
                          broker=None) -> None:
     """Hook llamado por el simulador cuando una entrada PASA. Si el símbolo está en la whitelist real y
     el día está armado, arma el plan de orden real y lo registra. En dry-run se queda ahí (no envía). En
-    REAL (enabled + sin dry-run) y con `broker`, MANDA la orden y camina el precio. Nunca rompe el caller."""
+    REAL (enabled + sin dry-run) y con `broker`, MANDA la orden y camina el precio. Nunca rompe el caller.
+
+    Va bajo `@_serialized` desde la auditoria del 2026-08-22: era la UNICA funcion que mandaba ordenes
+    reales sin tomar el lock, mientras sus hermanas (send_pending_open_emails, reprice_resting_orders,
+    close_real_positions, process_approved_ai_orders) si lo tomaban.
+
+    El agujero concreto: el anti-duplicado `has_live_committed_order_for_symbol_today` exige `sent = 1`,
+    y esa marca se escribe recien DESPUES del price walk, que dura hasta 3 minutos. Si el chat aprobaba
+    vender NU a las 10:00 y entraba al walk, el escaneo del robot podia llegar a NU a las 10:01, no ver
+    la fila del chat (todavia con sent=0), y mandar una SEGUNDA orden real del mismo simbolo. Con el
+    lock, la segunda espera y ve sent=1."""
     lt = settings.live_trading
     try:
         if symbol not in (lt.allowed_symbols or []):
@@ -464,6 +475,25 @@ def _reprice_one_resting(conn, broker, account_hash, r, as_of: date) -> None:
         logger.warning("Live-reprice: la orden en espera de %s LLENÓ a $%.2f", r["symbol"], fp or 0.0)
         return
     if status in ("REJECTED", "CANCELED", "EXPIRED"):
+        # Una orden que murio pudo haber llenado PARTE (auditoria 2026-08-22). Registrar 0 dejaba
+        # esos contratos REALES invisibles: `get_open_real_put_positions` exige order_status='FILLED',
+        # asi que una orden EXPIRED con 2 de 4 llenados dejaba 2 puts cortos vivos sin objetivo de
+        # ganancia, sin stop y sin contar para ningun tope. El dato estaba disponible ahi mismo, en
+        # `info`, y se descartaba.
+        try:
+            _parcial = int(info.get("filledQuantity") or 0)
+        except (TypeError, ValueError):
+            _parcial = 0
+        if _parcial > 0:
+            _fp = real_sender.extract_fill_price(info)
+            repo.mark_live_order_sent(
+                conn, r["id"], schwab_order_id=oid, order_status="FILLED", fill_price=_fp,
+                filled_contracts=_parcial, final_limit_price=r["final_limit_price"],
+                replacements=r["replacements"] or 0, sent_ts=datetime.now(),
+                send_error=f"orden {status} con llenado PARCIAL de {_parcial} contrato(s)")
+            logger.warning("Live-reprice: %s quedo %s pero llenó %d contrato(s) — se registran como "
+                           "posicion abierta para que el robot los gestione", r["symbol"], status, _parcial)
+            return
         repo.mark_live_order_sent(
             conn, r["id"], schwab_order_id=oid, order_status=status, fill_price=None, filled_contracts=0,
             final_limit_price=r["final_limit_price"], replacements=r["replacements"] or 0,
@@ -496,7 +526,18 @@ def _reprice_one_resting(conn, broker, account_hash, r, as_of: date) -> None:
     cur = r["final_limit_price"]
     if cur is not None and round(new_price, 2) == round(cur, 2):
         return  # ya está EXACTAMENTE en el precio objetivo (en centavos), nada que cambiar
-    payload = so.build_sell_put_to_open(r["symbol"], exp, r["strike"], contracts, new_price)
+    # Solo el REMANENTE: `replace_order` cancela lo que queda y crea una orden nueva por la cantidad
+    # indicada, asi que reenviar `contracts` sobre una orden con llenado parcial compra de mas.
+    # `contracts` sale de `filled_contracts or final_contracts`, y filled_contracts vale 0 mientras
+    # la orden espera, asi que antes siempre se reenviaba la cantidad completa.
+    try:
+        _ya = int(info.get("filledQuantity") or 0)
+    except (TypeError, ValueError):
+        _ya = 0
+    _falta = max(0, contracts - _ya)
+    if _falta <= 0:
+        return   # no queda nada por pedir; el proximo sondeo vera el estado final
+    payload = so.build_sell_put_to_open(r["symbol"], exp, r["strike"], _falta, new_price)
     try:
         new_oid = broker.replace_order(account_hash, oid, payload)
     except Exception:

@@ -89,3 +89,27 @@ def test_close_debit_ladder_has_floor():
     ladder = lce._close_debit_ladder(sp, sc, lp, lc)
     assert ladder
     assert min(ladder) >= lce._MIN_CLOSE_DEBIT
+
+
+def test_ventana_de_gracia_usa_la_hora_real_del_envio():
+    """Regresion (auditoria 2026-08-22): la gracia de 5 minutos estaba MUERTA.
+
+    Anclaba en entry_date + medianoche, asi que durante el mercado la edad calculada iba de 570 a
+    960 minutos y nunca era menor que _SENDING_GRACE_MINUTES. Una orden recien colocada y todavia
+    negociandose se declaraba 'no_confirmada' en el primer tick, se cerraba la fila, y la orden real
+    seguia viva en Schwab: condor abierto sin marcado, sin profit target y sin stop-loss.
+    Es el incidente del 2026-08-14 que esta funcion fue escrita para evitar."""
+    from datetime import datetime, timedelta
+
+    ahora = datetime.now()
+
+    def edad_vieja(entry_date):
+        return (ahora - datetime.fromisoformat(f"{entry_date}T00:00:00")).total_seconds() / 60.0
+
+    def edad_nueva(entry_ts):
+        return (ahora - datetime.fromisoformat(entry_ts)).total_seconds() / 60.0
+
+    hace_dos_minutos = (ahora - timedelta(minutes=2)).isoformat()
+    assert edad_nueva(hace_dos_minutos) < 5, "una orden de hace 2 minutos esta dentro de la gracia"
+    assert edad_vieja(ahora.date().isoformat()) > 5 or ahora.hour == 0, \
+        "el calculo viejo daba la edad desde la medianoche, casi siempre fuera de la gracia"

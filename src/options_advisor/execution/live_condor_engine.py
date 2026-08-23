@@ -251,8 +251,22 @@ def _reconcile_sending(conn, broker, account_hash) -> None:
         return
     for row in filas:
         try:
+            # Edad REAL de la orden, en minutos (auditoria 2026-08-22).
+            #
+            # Bug que tenia: anclaba en `entry_date` + "T00:00:00", o sea la MEDIANOCHE de hoy, no el
+            # momento del envio. Durante el mercado eso da entre 570 y 960 minutos, siempre mayor que
+            # _SENDING_GRACE_MINUTES, asi que la ventana de gracia NUNCA se aplicaba: una orden recien
+            # colocada que todavia estaba negociandose se declaraba "no confirmada" en el primer tick.
+            # `entry_ts` guarda fecha Y hora — es el campo correcto; `entry_date` queda de respaldo
+            # para filas viejas que no lo tengan.
             _edad = None
-            if row["entry_date"]:
+            _sello = row["entry_ts"] if ("entry_ts" in row.keys() and row["entry_ts"]) else None
+            if _sello:
+                try:
+                    _edad = (datetime.now() - datetime.fromisoformat(str(_sello))).total_seconds() / 60.0
+                except (ValueError, TypeError):
+                    _edad = None
+            if _edad is None and row["entry_date"]:
                 _edad = (datetime.now() - datetime.fromisoformat(str(row["entry_date"]) + "T00:00:00")).total_seconds() / 60.0
             adoptada = _buscar_orden_en_schwab(broker, row)
             if adoptada is not None:

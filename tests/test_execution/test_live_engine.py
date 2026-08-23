@@ -383,7 +383,10 @@ def _reprice_fake_broker(*, status, chain_mid, strike, expiration):
         def resolve_account_hash(self, account_number=None):
             return "HASH"
         def get_order(self, h, oid):
-            info = {"status": status, "filledQuantity": 1}
+            # `filledQuantity` es lo REALMENTE llenado: 0 mientras la orden sigue viva sin llenar.
+            # El stub devolvia 1 siempre, incluso en WORKING — imposible en Schwab, y tapaba el bug
+            # de llenados parciales corregido el 2026-08-22.
+            info = {"status": status, "filledQuantity": 1 if status == "FILLED" else 0}
             if status == "FILLED":
                 info["orderActivityCollection"] = [{"executionLegs": [{"quantity": 1, "price": chain_mid}]}]
             return info

@@ -86,10 +86,26 @@ def execute_live_walk(
         result.error = "contratos < 1"
         return result
 
-    def make_payload(price: float) -> dict:
+    # LLENADOS PARCIALES (auditoria 2026-08-22). Schwab NO tiene un estado "PARTIALLY_FILLED": una
+    # orden de 4 contratos con 2 llenados sigue reportando status="WORKING" con filledQuantity=2.
+    #
+    # El bug: `replace_order` CANCELA el remanente y crea una orden NUEVA por la cantidad que se le
+    # pase. Como el payload usaba siempre `contracts` completo, un llenado parcial en un peldaño
+    # terminaba comprando de mas. Con 4 puts de AAL aprobados: el peldaño 1 llena 2, el reemplazo
+    # pide 4 otra vez y llena -> 6 puts cortos. Un 50% mas de lo que el guardian autorizo, con mas
+    # colateral del que el tope conto. El assert de live_guard protege la DECISION, no la EJECUCION.
+    #
+    # Ahora se lleva la cuenta de lo ya llenado y cada reemplazo pide solo el remanente.
+    llenados_parciales = 0
+
+    def _pendientes() -> int:
+        return max(0, contracts - llenados_parciales)
+
+    def make_payload(price: float, cantidad: int | None = None) -> dict:
+        n = contracts if cantidad is None else cantidad
         if opp.action == ACTION_OPEN:
-            return so.build_sell_put_to_open(opp.symbol, opp.expiration, opp.strike, contracts, price)
-        return so.build_buy_put_to_close(opp.symbol, opp.expiration, opp.strike, contracts, price)
+            return so.build_sell_put_to_open(opp.symbol, opp.expiration, opp.strike, n, price)
+        return so.build_buy_put_to_close(opp.symbol, opp.expiration, opp.strike, n, price)
 
     start = clock()
     rung = 0
@@ -114,17 +130,41 @@ def execute_live_walk(
         except Exception:  # noqa: BLE001 — un sondeo que falla no corta el caminado
             logger.debug("Live: sondeo de estado falló (se reintenta)", exc_info=True)
             return None
+        nonlocal llenados_parciales
         status = (info.get("status") or "").upper()
         result.status = status
+        try:
+            _ya = int(info.get("filledQuantity") or 0)
+        except (TypeError, ValueError):
+            _ya = 0
         if status == FILLED:
             result.filled = True
             result.fill_price = extract_fill_price(info)
-            result.filled_contracts = int(info.get("filledQuantity") or contracts)
+            result.filled_contracts = llenados_parciales + (_ya or _pendientes())
             result.steps.append({"price": result.final_limit_price, "event": "filled",
                                  "fill_price": result.fill_price})
             return FILLED
         if status in _DEAD_STATES:
+            # Una orden que murio pudo haber llenado PARTE. Registrarlo es lo que evita posiciones
+            # reales invisibles: `get_open_real_put_positions` exige order_status='FILLED', asi que
+            # una orden EXPIRED con 2 contratos llenados y filled_contracts=0 dejaba 2 puts cortos
+            # sin profit target, sin stop-loss y sin contar para ningun tope.
+            if _ya > llenados_parciales:
+                # MAXIMO, no suma: `filledQuantity` es acumulado de la orden, no un incremento.
+                # Sumarlo contaba dos veces lo que ya habia visto el sondeo anterior.
+                llenados_parciales = _ya
+                result.filled_contracts = llenados_parciales
+                result.fill_price = extract_fill_price(info) or result.fill_price
+                result.steps.append({"price": result.final_limit_price,
+                                     "event": f"{status.lower()}_parcial", "llenados": _ya})
             return status
+        # Sigue viva. Si ya llenó parte, lo anotamos para que el proximo reemplazo pida SOLO el
+        # resto. Se toma el maximo y nunca se baja: los sondeos pueden llegar desordenados y un
+        # conteo que retrocede haria pedir de mas, que es justo lo que queremos evitar.
+        if _ya > llenados_parciales:
+            llenados_parciales = _ya
+            result.filled_contracts = llenados_parciales
+            result.steps.append({"price": result.final_limit_price, "event": "parcial", "llenados": _ya})
         return None
 
     while True:
@@ -153,8 +193,21 @@ def execute_live_walk(
         # Camina un peldaño: reemplaza la orden al precio siguiente (más cerca del mid).
         rung += 1
         price = ladder[rung]
+        # Cuanto falta: `replace_order` cancela el remanente y crea una orden NUEVA por la cantidad
+        # que le pasemos, asi que pedir `contracts` otra vez duplicaria lo ya llenado.
+        #
+        # Deliberadamente NO usamos `filledQuantity` para declarar la orden llenada — solo el
+        # `status` decide eso. Aca sirve unicamente para dimensionar el reemplazo, donde
+        # equivocarse hacia abajo es inofensivo (se manda de menos y el proximo escaneo reintenta),
+        # mientras que equivocarse hacia arriba compra contratos que nadie aprobo.
+        _falta = _pendientes()
+        if _falta <= 0:
+            # Segun los sondeos ya se llenó todo. No reemplazamos nada; la reconciliacion final de
+            # abajo lee el estado real y decide, que es la unica fuente de verdad.
+            result.steps.append({"price": result.final_limit_price, "event": "sin_remanente"})
+            break
         try:
-            new_id = broker.replace_order(account_hash, result.order_id, make_payload(price))
+            new_id = broker.replace_order(account_hash, result.order_id, make_payload(price, _falta))
         except Exception as exc:  # noqa: BLE001 — si el reemplazo falla, dejamos de caminar y reconciliamos
             result.error = f"fallo al REEMPLAZAR al precio {price}: {exc}"
             logger.exception("Live: fallo al reemplazar la orden real de %s", getattr(opp, "symbol", "?"))

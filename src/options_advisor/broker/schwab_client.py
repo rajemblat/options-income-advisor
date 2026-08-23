@@ -475,6 +475,18 @@ class SchwabBrokerClient(BrokerClient):
                 fallos.append(f"no se pudieron listar las cuentas: {exc}")
             return
 
+        # Un 200 con lista VACIA tambien es "no se" (auditoria 2026-08-22). El arreglo del 21/08
+        # cubria los fallos de HTTP, pero Schwab puede responder 200 sin cuentas: consentimiento
+        # revocado o re-consentido, mantenimiento, o un token valido cuya cuenta quedo desvinculada.
+        # Sin esto, el generador no itera, `fallos` queda vacio, la version estricta devuelve [] sin
+        # lanzar, y la reconciliacion vuelve a cerrar TODAS las posiciones abiertas — el incidente
+        # del 21/08 reproducido tal cual.
+        if not accounts:
+            logger.error("Schwab no devolvio NINGUNA cuenta vinculada; no se puede confiar en las posiciones")
+            if fallos is not None:
+                fallos.append("la lista de cuentas vino vacia")
+            return
+
         for account in accounts:
             try:
                 response = self._trader_client.get(

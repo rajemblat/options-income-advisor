@@ -494,6 +494,18 @@ def insert_real_trade_alert(conn: sqlite3.Connection, trade: RealTradeAlert) -> 
             ),
         )
     except sqlite3.IntegrityError:
+        # ROLLBACK OBLIGATORIO (auditoria 2026-08-22). Sin el, esta conexion queda con una
+        # transaccion ABIERTA reteniendo el lock de escritor del WAL, y NADIE mas puede escribir
+        # en la base hasta que el proceso muera. Verificado: tras el IntegrityError,
+        # `conn.in_transaction` es True y otra conexion recibe "database is locked".
+        #
+        # Por que importa tanto aca: este IntegrityError es ESPERABLE — el indice unico
+        # idx_real_trade_alerts_order_leg existe justamente para resolver la carrera entre el
+        # dashboard y el scheduler detectando la misma operacion. O sea que se dispara
+        # exactamente cuando hay dos procesos trabajando, y la conexion del dashboard vive
+        # cacheada mientras viva Streamlit. A partir de ahi el robot "sigue andando", loguea, y
+        # no persiste ni una decision, ni un cierre, ni un P&L. En silencio.
+        conn.rollback()
         return None
     conn.commit()
     return cur.lastrowid
