@@ -64,6 +64,29 @@ if [ "$faltan" = "1" ]; then
     exit 1
 fi
 
+echo "== 1b/7  Revisando que la base haya llegado sana =="
+# La copia desde la Mac se hace con el robot ANDANDO (a propósito: así no se corta el trading
+# durante la validación). SQLite es sólido con esto, pero un archivo de 42 MB copiado mientras se
+# escribe puede llegar cortado. Mejor descubrirlo acá, en un comando, que el lunes con el mercado
+# abierto. Se usa sqlite3 del sistema para no depender todavía del entorno de Python.
+_integridad="$(sqlite3 data/app.db 'PRAGMA integrity_check;' 2>&1 | head -3)"
+if [ "$_integridad" = "ok" ]; then
+    echo "   ok       la base está íntegra"
+else
+    echo "   LA BASE LLEGÓ DAÑADA:"
+    echo "$_integridad" | sed 's/^/      /'
+    echo
+    echo "   No es grave y no se rompió nada en la Mac. Pasó que se copió justo mientras el robot"
+    echo "   escribía. Para arreglarlo, en la MAC:"
+    echo
+    echo "     launchctl bootout gui/\$(id -u)/com.robertoajemblat.options-income-advisor.scheduler"
+    echo "     rsync -av ~/options-income-advisor/data/app.db* lokshn@<IP>:~/options-income-advisor/data/"
+    echo "     launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/com.robertoajemblat.options-income-advisor.scheduler.plist"
+    echo
+    echo "   Y volvé a correr este script."
+    exit 1
+fi
+
 echo "== 2/7  Entorno de Python =="
 if [ ! -x .venv/bin/python ]; then
     python3 -m venv .venv

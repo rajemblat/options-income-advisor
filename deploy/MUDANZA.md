@@ -104,10 +104,14 @@ ssh root@LA_IP
 Y ya adentro del servidor:
 ```
 bash 1_preparar_servidor.sh
-passwd lokshn                    # elegir una contraseña
 tailscale up                     # abre un link para iniciar sesión
 tailscale ip -4                  # anotar la IP 100.x.x.x
 ```
+
+El script le copia al usuario `lokshn` la misma llave SSH que usa `root`. Sin ese paso no habría
+forma de entrar como `lokshn`: se crea sin contraseña, y un droplet creado con llave SSH viene con
+`PasswordAuthentication` apagado, así que ponerle una contraseña tampoco serviría. Es lo que hace
+que funcione el `rsync` desde la Mac.
 Deja el sistema actualizado, en horario de Nueva York, con el usuario `lokshn`, Tailscale,
 firewall (`ufw`) y `fail2ban`.
 
@@ -135,6 +139,17 @@ cd ~/options-income-advisor && bash deploy/2_instalar_lokshn.sh
 Verifica que llegaron los secretos y la base, instala con las versiones fijas, **corre la suite
 completa** (si no pasa, no instala nada), verifica el reloj, pone el modo prueba y levanta los
 servicios.
+
+### Nota: el swap no es opcional
+
+Los droplets vienen con `Swap: 0B`. En una máquina de 2 GB eso significa que un pico de memoria
+—el escaneo del universo con pandas, más Streamlit— hace que el kernel mate el proceso más grande
+en vez de paginar. O sea el robot, en pleno horario de mercado, sin avisar. Medido con el robot y
+el dashboard corriendo y el mercado cerrado: 720 MB usados, 1.2 GB disponibles. Hay aire, pero no
+tanto como para apostar a que ningún pico se pase.
+
+`1_preparar_servidor.sh` agrega 2 GB de archivo de swap con `swappiness=10`, así el kernel lo usa
+solo cuando está realmente apretado y en operación normal no lo toca.
 
 ### 1.5 Mirarlo unos días
 Qué observar antes de confiarle plata:

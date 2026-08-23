@@ -58,3 +58,35 @@ def test_la_notificacion_de_macos_no_corre_en_linux():
     cuerpo = _solo_codigo(_cuerpo("_notify"))
     antes_de_osascript = cuerpo.split("osascript")[0]
     assert 'platform.system() == "Darwin"' in antes_de_osascript
+
+
+# ---------------------------------------------------------------------------
+# El healthcheck no se puede suicidar (incidente 2026-08-20, descubierto el 23).
+
+def test_el_reinicio_nunca_lanza():
+    """`_restart_scheduler` NO puede usar check=True ni propagar excepciones.
+
+    El 20/08 el LaunchAgent del robot estaba descargado. El healthcheck lo detectó bien y quiso
+    revivirlo, pero `subprocess.run(..., check=True)` convirtió el `exit 113` de launchctl en una
+    excepción que mató el proceso entero. El healthcheck no volvió a correr durante TRES DÍAS, en
+    silencio — o sea que el robot quedó sin red de seguridad justo por culpa de la red de seguridad.
+    """
+    cuerpo = _solo_codigo(_cuerpo("_restart_scheduler"))
+    assert "check=True" not in cuerpo, (
+        "Volvió el check=True: un fallo de launchctl/systemctl mata al healthcheck otra vez."
+    )
+    assert "returncode" in cuerpo, "No revisa el resultado del comando"
+
+
+def test_un_reinicio_fallido_avisa_por_email():
+    """'Tu robot está muerto y no lo puedo revivir' es el mensaje más importante que este sistema
+    puede mandar. Si falla el reinicio y nadie se entera, no sirve de nada haberlo detectado."""
+    cuerpo = _solo_codigo(_cuerpo("_restart_scheduler"))
+    assert "send_email_robot_real" in cuerpo
+
+
+def test_el_aviso_dice_como_arreglarlo_en_las_dos_plataformas():
+    """El email tiene que traer el comando exacto, no un 'revisá el servicio'."""
+    cuerpo = _cuerpo("_restart_scheduler")
+    assert "launchctl bootstrap" in cuerpo, "Sin la instrucción de recarga para macOS"
+    assert "systemctl --user enable" in cuerpo, "Sin la instrucción de habilitación para el servidor"

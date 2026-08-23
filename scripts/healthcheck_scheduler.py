@@ -63,11 +63,56 @@ def _restart_scheduler() -> None:
 
     `systemctl --user` va SIN sudo a propósito: el robot corre como servicio de usuario (con
     linger activado para que arranque al prender el servidor), así que puede reiniciarse a sí mismo
-    sin permisos de administrador."""
+    sin permisos de administrador.
+
+    NUNCA LANZA. Esto es lo que se rompió el 2026-08-20 y no se descubrió hasta el 23:
+
+        launchctl kickstart ... -> exit 113
+        Could not find service "...scheduler" in domain for user gui: 501
+
+    El agente del robot estaba descargado (lo habíamos bajado para reparar la base). El healthcheck
+    lo detectó bien y quiso revivirlo, pero el `check=True` convirtió el fallo en una excepción que
+    mató al proceso entero. launchd dejó de reintentar y el healthcheck no volvió a correr en TRES
+    DÍAS, sin que nadie se enterara.
+
+    O sea: el componente que existe para ser la última línea de defensa se suicidó exactamente en
+    el escenario que tenía que reportar. Ahora el fallo se avisa —por email, fuerte y claro, porque
+    "tu robot está muerto y no lo puedo revivir" es el mensaje más importante que este sistema
+    puede mandar— y el healthcheck sigue vivo para reintentar en la próxima corrida."""
     if platform.system() == "Darwin":
-        subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"], check=True)
+        comando = ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"]
+        como_arreglarlo = (
+            "El LaunchAgent del robot no está cargado. Cargalo con:\n\n"
+            f"    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/{LAUNCHD_LABEL}.plist\n\n"
+            "Y verificá que quedó con:\n\n"
+            "    launchctl list | grep options-income-advisor"
+        )
     else:
-        subprocess.run(["systemctl", "--user", "restart", SYSTEMD_UNIT], check=True)
+        comando = ["systemctl", "--user", "restart", SYSTEMD_UNIT]
+        como_arreglarlo = (
+            "El servicio del robot no está habilitado. Habilitalo con:\n\n"
+            f"    systemctl --user enable --now {SYSTEMD_UNIT}\n\n"
+            "Y verificá con:\n\n"
+            f"    systemctl --user status {SYSTEMD_UNIT}"
+        )
+
+    resultado = subprocess.run(comando, capture_output=True, text=True)
+    if resultado.returncode == 0:
+        return
+
+    detalle = (resultado.stderr or resultado.stdout or "").strip() or f"código {resultado.returncode}"
+    logging.getLogger(__name__).error("NO se pudo reiniciar el robot: %s", detalle)
+    try:
+        notifier.send_email_robot_real(
+            "🚨 Lokshn: el robot está CAÍDO y no lo puedo levantar",
+            "El healthcheck detectó que el robot no está corriendo e intentó reiniciarlo, pero el\n"
+            "sistema rechazó el comando. El robot NO está operando y esto necesita tu intervención.\n\n"
+            f"Comando que falló:\n    {' '.join(comando)}\n\n"
+            f"Respuesta del sistema:\n    {detalle}\n\n"
+            f"{como_arreglarlo}\n",
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("Tampoco se pudo avisar por email del fallo de reinicio")
 
 
 def _notify(message: str) -> None:

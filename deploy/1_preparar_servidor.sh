@@ -41,9 +41,46 @@ if id "$USUARIO" >/dev/null 2>&1; then
 else
     adduser --disabled-password --gecos "" "$USUARIO"
 fi
+
+# Darle al usuario la MISMA llave SSH que usa root para entrar.
+#
+# Sin esto no se puede entrar como 'lokshn' de ninguna forma: el usuario se crea sin contraseña, y
+# los droplets creados con llave SSH vienen con PasswordAuthentication apagado en sshd — así que
+# ponerle una contraseña con `passwd` tampoco alcanzaría. Copiar la llave es lo que hace que
+# funcionen `ssh lokshn@...` y, sobre todo, el `rsync` que trae el proyecto desde la Mac.
+if [ -s /root/.ssh/authorized_keys ]; then
+    install -d -m 700 -o "$USUARIO" -g "$USUARIO" "/home/$USUARIO/.ssh"
+    install -m 600 -o "$USUARIO" -g "$USUARIO" /root/.ssh/authorized_keys "/home/$USUARIO/.ssh/authorized_keys"
+    echo "   llave SSH copiada: ya podés entrar con  ssh $USUARIO@<IP>"
+else
+    echo "   ATENCION: root no tiene authorized_keys, así que no se pudo habilitar el acceso"
+    echo "   de '$USUARIO'. Sin eso el rsync desde la Mac no va a funcionar."
+fi
 # 'linger' = los servicios del usuario arrancan al prender el servidor, sin que nadie inicie
 # sesión. Sin esto, el robot solo correría mientras haya una sesión SSH abierta.
 loginctl enable-linger "$USUARIO"
+
+echo "== 4b/7  Memoria de intercambio (swap) =="
+# Los droplets vienen SIN swap. En una máquina de 2 GB eso significa que si el escaneo del universo
+# pega un pico —pandas cargando cientos de símbolos, con Streamlit ya ocupando su parte— el kernel
+# no tiene a dónde recurrir y mata el proceso más grande: el robot, en pleno horario de mercado y
+# sin avisar.
+#
+# 2 GB de archivo de swap es el colchón. `swappiness=10` le dice al kernel que lo use solo cuando
+# esté realmente apretado, así en operación normal no lo toca (el swap en disco es lento).
+if swapon --show | grep -q .; then
+    echo "   ya había swap configurado"
+else
+    fallocate -l 2G /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile >/dev/null
+    swapon /swapfile
+    grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    echo "   2 GB de swap agregados (persisten al reiniciar)"
+fi
+sysctl -w vm.swappiness=10 >/dev/null
+echo 'vm.swappiness=10' > /etc/sysctl.d/99-swappiness.conf
+free -h | sed 's/^/   /'
 
 echo "== 5/7  Tailscale (red privada para llegar al dashboard) =="
 if command -v tailscale >/dev/null 2>&1; then
@@ -73,21 +110,20 @@ cat <<FIN
   SERVIDOR PREPARADO
 ============================================================================
 
-Ahora, en ESTE mismo servidor, hacé dos cosas:
-
-  1) Poner contraseña al usuario del robot (te la va a pedir dos veces):
-
-       passwd $USUARIO
-
-  2) Conectar Tailscale. Va a imprimir un link: abrilo en el navegador de tu
-     computadora e iniciá sesión. Después anotá la IP que te muestre (empieza
-     con 100.):
+Falta una sola cosa acá: conectar Tailscale. Va a imprimir un link —
+abrilo en el navegador de tu computadora e iniciá sesión. Después anotá
+la IP que te muestre (empieza con 100.):
 
        tailscale up
        tailscale ip -4
 
-Cuando termines esos dos pasos, avisá y seguimos con el paso 2 (mudar el
-robot desde la Mac).
+El usuario '$USUARIO' ya quedó con tu misma llave SSH, así que no hace
+falta ninguna contraseña: desde la Mac vas a entrar con
+
+       ssh $USUARIO@<la IP publica>
+
+Cuando termines, avisá y seguimos con el paso 2 (mudar el robot desde
+la Mac).
 ============================================================================
 
 FIN
