@@ -85,3 +85,51 @@ sensacion de seguridad."
 echo
 echo "Commits creados. Subilos con:   cd ~/options-income-advisor && git push"
 git --no-pager log --oneline -6
+
+git commit -q --allow-empty -m "El dashboard PIDE la corrida; el robot la ejecuta" -m \
+"Los botones 'Correr robot ahora' y 'Analisis completo' llamaban a job_robot_scan y
+job_poll_and_analyze DENTRO del proceso de Streamlit, con force=True. Esos jobs no son de solo
+lectura: llegan a reprice_resting_orders, close_real_positions, process_approved_ai_orders y
+maybe_log_live_order. Abren y cierran posiciones con PLATA REAL.
+
+El unico freno contra el solapamiento es _LIVE_ORDER_LOCK, y su propio comentario aclara que es un
+lock de PROCESO. Streamlit es otro proceso: no valia nada ahi. Un clic con el robot andando podia
+mandar la misma orden dos veces — los dos procesos leen la misma sugerencia 'approved' y los dos
+la envian. Es el mismo modo de falla que single_instance.py fue escrito para evitar entre dos
+robots, salvo que el dashboard nunca tomaba ese candado. Y era la fuente de las carreras de
+escritura que corrompieron la base dos veces; runner.py ya decia 'NO tener el dashboard
+escribiendo a la vez que el scheduler' y ahora se cumple de verdad.
+
+Ahora el boton escribe un pedido en robot_flags y el robot lo recoge en 15 segundos, ejecutando en
+el executor 'default': un solo worker, max_instances=1, un solo escritor. Los pedidos vencen a los
+10 minutos para que un robot que estuvo apagado no dispare un escaneo viejo. Incluye un test que
+falla si alguien vuelve a llamar a esos jobs desde el dashboard."
+
+git commit -q --allow-empty -m "El cash del simulador se mueve con deltas atomicos" -m \
+"Cada movimiento hacia SELECT cash -> calcular en Python -> UPDATE con un absoluto. Entre las dos
+puntas hay un commit implicito, asi que dos escritores se pisaban y ganaba el ultimo: si uno abria
+una posicion reservando colateral mientras otro cerraba otra devolviendolo, el colateral del
+primero se evaporaba del cash y ninguna reconciliacion lo detectaba.
+
+Ahora SET cash = cash + ?, con el calculo dentro de la base. Es el cinturon sobre los tiradores:
+con el dashboard ya fuera del camino de escritura el riesgo estaba acotado, pero la correccion no
+deberia depender de que nadie agregue otro escritor mañana."
+
+git commit -q --allow-empty -m "WAL verificado y migraciones que no envenenan la conexion" -m \
+"1) PRAGMA journal_mode=WAL falla EN SILENCIO y deja la base en modo delete si el archivo vive en
+una carpeta sincronizada (iCloud, Dropbox, Drive) o en un share de red. Toda la arquitectura de
+'cada executor con su conexion' se apoya en que WAL serializa a los escritores; sin WAL esa
+premisa no vale y dos procesos escribiendo es el escenario clasico de 'database disk image is
+malformed'. El resultado se descartaba. Ahora se verifica y se registra un ERROR claro.
+(Verificado el 22/08: la base del usuario SI esta en WAL y la carpeta no esta sincronizada.)
+
+2) busy_timeout se fijaba DESPUES de journal_mode, asi que el propio pragma de WAL podia fallar
+sin esperar. Invertido.
+
+3) _migrate corre en CADA connect() — incluido el del dashboard, con el robot operando — y lleva
+ALTER TABLE, DROP TABLE, DELETE y CREATE INDEX. Sin rollback, un fallo a mitad de camino dejaba la
+conexion con una transaccion abierta reteniendo el lock de escritor. Ahora va en try/rollback."
+
+echo
+echo "Commits creados. Subilos con:   cd ~/options-income-advisor && git push"
+git --no-pager log --oneline -9

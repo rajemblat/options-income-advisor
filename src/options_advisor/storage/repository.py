@@ -534,7 +534,33 @@ def init_simulated_account(conn: sqlite3.Connection, initial_capital: float, cre
 
 
 def update_simulated_account_cash(conn: sqlite3.Connection, cash: float) -> None:
+    """Fija el cash a un valor ABSOLUTO. Usalo solo para reset/inicializacion.
+
+    Para sumar o restar por una operacion usa `ajustar_cash_simulado`: fijar un absoluto obliga a
+    leer-calcular-escribir, y ahi se pierden movimientos (ver el docstring de esa funcion)."""
     conn.execute("UPDATE simulated_account SET cash = ? WHERE id = 1", (cash,))
+    conn.commit()
+
+
+def ajustar_cash_simulado(conn: sqlite3.Connection, delta: float) -> None:
+    """Suma `delta` al cash EN LA BASE, atomico (auditoria 2026-08-22).
+
+    Antes cada movimiento hacia leer -> calcular en Python -> escribir un absoluto:
+
+        account = repo.get_simulated_account(conn)
+        new_cash = account["cash"] - collateral + prima - comision
+        repo.update_simulated_account_cash(conn, new_cash)
+
+    Entre el SELECT y el UPDATE hay un commit implicito, asi que dos escritores concurrentes se
+    pisan y gana el ultimo: si uno abre una posicion (reserva colateral) mientras el otro cierra
+    otra (lo devuelve), el colateral del primero desaparece del cash para siempre y ninguna
+    reconciliacion lo detecta. `SET cash = cash + ?` lo resuelve de raiz — el calculo ocurre dentro
+    de la base, bajo su propio lock.
+
+    Hoy el riesgo esta acotado porque el simulador escribe solo desde el executor 'default', que
+    tiene un unico worker, y el dashboard ya no ejecuta escaneos. Esto es el cinturon sobre los
+    tiradores: que la correccion no dependa de que nadie agregue otro escritor mañana."""
+    conn.execute("UPDATE simulated_account SET cash = cash + ? WHERE id = 1", (delta,))
     conn.commit()
 
 
@@ -664,6 +690,51 @@ def set_robot_flag(conn: sqlite3.Connection, key: str, value: str) -> None:
 def get_robot_flag(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
     row = conn.execute("SELECT value FROM robot_flags WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else default
+
+
+# --- Pedidos de corrida manual: el dashboard PIDE, el robot EJECUTA (auditoria 2026-08-22) ---
+#
+# Por que existe. Los botones "Correr robot ahora" y "Analisis completo" llamaban a job_robot_scan /
+# job_poll_and_analyze DENTRO del proceso de Streamlit, con force=True. Esos jobs no son de solo
+# lectura: llegan a reprice_resting_orders, close_real_positions, process_approved_ai_orders y
+# maybe_log_live_order, o sea que ABREN Y CIERRAN POSICIONES CON PLATA REAL.
+#
+# El unico freno contra el solapamiento es _LIVE_ORDER_LOCK, y su propio comentario lo dice: es un
+# lock de PROCESO. Streamlit es otro proceso. Un clic con el robot andando podia mandar la misma
+# orden dos veces: los dos procesos leen la misma sugerencia 'approved', los dos la mandan. Es
+# exactamente el modo de falla que single_instance.py fue escrito para evitar entre dos robots, pero
+# el dashboard nunca tomo ese candado. Y ademas es la fuente de las carreras de escritura que
+# corrompieron la base dos veces (runner.py ya decia "NO tener el dashboard escribiendo a la vez").
+#
+# Solucion: el boton escribe un pedido; el robot lo ve en su proximo tick y corre el escaneo EN SU
+# PROPIO PROCESO, en el executor 'default', que tiene un solo worker y max_instances=1. Un solo
+# escritor, la semantica del boton intacta.
+PEDIDO_CORRIDA = "robot.corrida_pedida"
+_PEDIDO_VENCE_MINUTOS = 10
+
+
+def pedir_corrida_manual(conn: sqlite3.Connection, tipo: str) -> None:
+    """El dashboard pide una corrida. `tipo`: 'rapida' (solo robot) o 'completa' (con alertas/IA)."""
+    set_robot_flag(conn, PEDIDO_CORRIDA, f"{tipo}:{datetime.now().isoformat()}")
+
+
+def tomar_corrida_pendiente(conn: sqlite3.Connection) -> str | None:
+    """Devuelve el tipo de corrida pedida y BORRA el pedido, o None si no hay.
+
+    Los pedidos vencen a los 10 minutos: si el robot estuvo apagado, al arrancar no dispara un
+    escaneo por un boton que alguien apreto hace horas."""
+    raw = get_robot_flag(conn, PEDIDO_CORRIDA, "") or ""
+    if not raw:
+        return None
+    tipo, _, cuando = raw.partition(":")
+    set_robot_flag(conn, PEDIDO_CORRIDA, "")
+    try:
+        edad = (datetime.now() - datetime.fromisoformat(cuando)).total_seconds() / 60.0
+    except (ValueError, TypeError):
+        return None
+    if edad > _PEDIDO_VENCE_MINUTOS:
+        return None
+    return tipo or None
 
 
 def is_puts_paused(conn: sqlite3.Connection) -> bool:

@@ -137,9 +137,9 @@ def open_position(
         collateral=collateral,
         entry_ts=datetime.now(),
     )
-    account = repo.get_simulated_account(conn)
-    new_cash = account["cash"] - collateral + premium * CONTRACT_MULTIPLIER * quantity - commission
-    repo.update_simulated_account_cash(conn, new_cash)
+    # Delta atomico en vez de leer-calcular-escribir un absoluto (auditoria 2026-08-22): asi dos
+    # escritores no se pisan y no se evapora el colateral de una posicion.
+    repo.ajustar_cash_simulado(conn, -collateral + premium * CONTRACT_MULTIPLIER * quantity - commission)
     return position_id
 
 
@@ -180,9 +180,8 @@ def _close_position(
     # impacto total en el cash (la de apertura ya se descontó del cash al abrir; la de cierre acá).
     realized_pnl = round((entry_premium - close_value) * CONTRACT_MULTIPLIER * quantity - commission * 2, 2)
     repo.close_simulated_position(conn, position_row["id"], close_date, close_value, reason, realized_pnl, close_ts=datetime.now())
-    account = repo.get_simulated_account(conn)
-    new_cash = account["cash"] + position_row["collateral"] - close_value * CONTRACT_MULTIPLIER * quantity - commission
-    repo.update_simulated_account_cash(conn, new_cash)
+    repo.ajustar_cash_simulado(
+        conn, position_row["collateral"] - close_value * CONTRACT_MULTIPLIER * quantity - commission)
     return realized_pnl
 
 

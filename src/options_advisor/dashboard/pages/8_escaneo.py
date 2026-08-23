@@ -68,21 +68,14 @@ else:
             "varios minutos — quedate en esta página hasta que termine."
         )
 
+        # Igual que en la portada: se PIDE la corrida y la ejecuta el robot en su proceso
+        # (auditoria 2026-08-22). job_poll_and_analyze abre y cierra posiciones reales, y correrlo
+        # desde Streamlit podia duplicar ordenes porque el lock no cruza procesos.
         if st.button("2. Analizar candidatos (Fase 2 — tarda varios minutos)", type="primary"):
-            with st.spinner(f"Analizando {len(final_symbols)} símbolos... esto puede tardar varios minutos."):
-                t0 = time.time()
-                job_poll_and_analyze(
-                    broker,
-                    conn,
-                    final_symbols,
-                    settings,
-                    anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
-                    finnhub_api_key=os.environ.get("FINNHUB_API_KEY"),
-                    fred_api_key=os.environ.get("FRED_API_KEY"),
-                    force=True,
-                )
-                elapsed = time.time() - t0
-            st.success(f"Listo en {elapsed:.1f}s. Revisá la página de Alertas — ordená por score para ver las mejores oportunidades del escaneo.")
+            repo.pedir_corrida_manual(conn, "completa")
+            st.success("Pedido enviado. El robot arranca el análisis en unos segundos y tarda "
+                       "varios minutos. Revisá la página de Alertas cuando termine y ordená por "
+                       "score para ver las mejores oportunidades.")
 
 st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
 st.subheader("📊 Vista tabla (ordenable)")

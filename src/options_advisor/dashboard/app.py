@@ -5,6 +5,7 @@ from datetime import date
 
 import streamlit as st
 
+from options_advisor.storage import repository as repo
 from options_advisor.dashboard.components import (
     ACCENT,
     MARKET_MOVERS_INDICES,
@@ -65,24 +66,32 @@ def render_general_page() -> None:
         f"🤖 El robot escanea {len(scan_symbols)} símbolos. El botón rápido salta las alertas/IA "
         "(mucho más veloz); el completo agrega las alertas narradas por Claude."
     )
+    # Los botones PIDEN la corrida; la ejecuta el robot en SU proceso (auditoria 2026-08-22).
+    #
+    # Antes llamaban a job_robot_scan / job_poll_and_analyze acá adentro, en el proceso de Streamlit.
+    # Esos jobs no son de solo lectura: llegan a reprice_resting_orders, close_real_positions,
+    # process_approved_ai_orders y maybe_log_live_order, o sea que ABREN Y CIERRAN POSICIONES REALES.
+    # El lock que los serializa es de PROCESO, así que no cruzaba hasta acá: un clic con el robot
+    # andando podía mandar la misma orden dos veces (los dos procesos leen la misma sugerencia
+    # 'approved' y los dos la envían). Era además la fuente de las carreras de escritura que
+    # corrompieron la base dos veces — runner.py ya advertía "NO tener el dashboard escribiendo a la
+    # vez que el scheduler", y esto lo cumple de verdad.
+    #
+    # El robot recoge el pedido en 15 segundos y corre en el executor 'default': un solo worker,
+    # max_instances=1, un solo escritor.
     col_fast, col_full = st.columns(2)
     with col_fast:
         if st.button("⚡ Correr robot ahora (rápido)", type="primary", use_container_width=True):
-            broker = get_broker()
-            finnhub_api_key = os.environ.get("FINNHUB_API_KEY")
-            fred_api_key = os.environ.get("FRED_API_KEY")
-            with st.spinner(f"Escaneando {len(scan_symbols)} símbolos para el robot..."):
-                job_robot_scan(broker, conn, scan_symbols, settings, finnhub_api_key=finnhub_api_key, fred_api_key=fred_api_key, force=True)
-            st.success("Listo. Revisá el Simulador (Decisiones/Posiciones).")
+            repo.pedir_corrida_manual(conn, "rapida")
+            st.success("Pedido enviado. El robot lo corre en unos segundos — mirá el Simulador "
+                       "(Decisiones/Posiciones) en un momento.")
     with col_full:
         if st.button("🔬 Análisis completo (alertas + IA)", use_container_width=True):
-            broker = get_broker()
-            api_key = os.environ.get("ANTHROPIC_API_KEY")
-            finnhub_api_key = os.environ.get("FINNHUB_API_KEY")
-            fred_api_key = os.environ.get("FRED_API_KEY")
-            with st.spinner(f"Analizando {len(scan_symbols)} símbolos (completo, tarda más)..."):
-                job_poll_and_analyze(broker, conn, scan_symbols, settings, api_key, finnhub_api_key=finnhub_api_key, fred_api_key=fred_api_key, force=True)
-            st.success("Listo. Revisá Alertas y el Simulador.")
+            repo.pedir_corrida_manual(conn, "completa")
+            st.success("Pedido enviado. El análisis completo tarda varios minutos; revisá Alertas "
+                       "y el Simulador cuando termine.")
+    st.caption("Las corridas manuales las ejecuta el robot en su propio proceso, para que nunca "
+               "haya dos cosas operando tu cuenta a la vez.")
 
     st.markdown("<hr class='oia-divider'>", unsafe_allow_html=True)
     # Pedido 2026-07-29: cubrir más que solo $SPX — pestañas en vez de los 3 paneles en

@@ -327,3 +327,30 @@ def test_naked_margin_is_much_smaller_than_cash_secured():
     r = positions.size_position(strike=280.0, underlying_price=300.0, premium=3.0, cash_available=100_000.0, account_equity=100_000.0, settings=s)
     assert r is not None
     assert r.quantity == 1 and r.collateral == 4300.0
+
+
+def test_el_cash_se_ajusta_con_un_delta_atomico_no_con_un_absoluto(conn):
+    """Regresion (auditoria 2026-08-22): leer-calcular-escribir perdia movimientos.
+
+    El patron viejo era SELECT cash -> calcular en Python -> UPDATE con un absoluto. Entre las dos
+    puntas hay un commit implicito, asi que dos escritores se pisaban y ganaba el ultimo: si uno
+    abria una posicion (reservando colateral) mientras el otro cerraba otra (devolviendolo), el
+    colateral del primero se evaporaba del cash y ninguna reconciliacion lo detectaba.
+
+    Este test simula ese entrelazado: se lee el cash ANTES de los dos movimientos y despues se
+    aplican los dos. Con deltas el resultado es correcto; con absolutos calculados sobre esa
+    lectura vieja, uno de los dos se perdia."""
+    from options_advisor.storage import repository as repo
+
+    repo.update_simulated_account_cash(conn, 10_000.0)
+    leido_por_los_dos = repo.get_simulated_account(conn)["cash"]
+    assert leido_por_los_dos == 10_000.0
+
+    # Escritor A reserva 2.500 de colateral. Escritor B devuelve 1.200 de un cierre.
+    repo.ajustar_cash_simulado(conn, -2_500.0)
+    repo.ajustar_cash_simulado(conn, +1_200.0)
+
+    final = repo.get_simulated_account(conn)["cash"]
+    assert final == 8_700.0, "los dos movimientos tienen que quedar aplicados"
+    # Con el patron viejo, B habria escrito 10.000 + 1.200 = 11.200 pisando a A.
+    assert final != 11_200.0, "el colateral reservado no puede evaporarse"

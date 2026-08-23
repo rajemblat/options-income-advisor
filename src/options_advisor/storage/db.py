@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
@@ -214,18 +217,42 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
     # concurrentes, no la falta de este flag.
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    # busy_timeout PRIMERO (auditoria 2026-08-22): si otro proceso esta escribiendo, el propio
+    # `PRAGMA journal_mode=WAL` puede fallar sin esperar, y una base que se queda en modo `delete`
+    # con dos escritores es el escenario clasico de "database disk image is malformed".
+    conn.execute("PRAGMA busy_timeout=5000")
+    _modo = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+    _modo = (_modo[0] if _modo else "").lower()
+    if _modo != "wal":
+        # No es un detalle: TODA la arquitectura de "cada executor con su conexion" se apoya en que
+        # WAL serializa a los escritores. Sin WAL esa premisa no vale. Pasa cuando la base vive en
+        # una carpeta sincronizada (iCloud, Dropbox, Drive) o en un share de red, donde SQLite no
+        # puede crear el archivo de memoria compartida. Falla en SILENCIO: devuelve otro modo.
+        logger.error(
+            "La base NO quedo en modo WAL (journal_mode=%s). Con dos procesos escribiendo esto "
+            "puede corromper el archivo. Suele pasar si data/ esta en iCloud/Dropbox/Drive o en "
+            "un disco de red: movela a una carpeta local.", _modo or "desconocido",
+        )
     # busy_timeout: si otro proceso/thread está escribiendo, ESPERAR hasta 5s a que libere en vez
     # de fallar de una con "database is locked" (o peor, contribuir a la corrupción que vimos con
     # dos escritores simultáneos, 2026-08). synchronous=NORMAL es el combo recomendado con WAL:
     # menos fsync, sin riesgo de corrupción (a lo sumo se pierde la última transacción ante un
     # corte de luz — aceptable en paper trading).
-    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA_PATH.read_text())
     conn.commit()
-    _migrate(conn)
+    # Las migraciones NO pueden dejar la conexion con una transaccion abierta (auditoria
+    # 2026-08-22). `_migrate` lleva ALTER TABLE, DROP TABLE, DELETE y CREATE INDEX, y corre en CADA
+    # connect() — incluida la del dashboard, con el robot ya operando. Si algo falla a mitad de
+    # camino sin rollback, la conexion nace con una transaccion abierta reteniendo el lock de
+    # escritor del WAL, y el robot deja de poder escribir sin que nadie se entere.
+    try:
+        _migrate(conn)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logger.exception("Fallaron las migraciones de esquema; se sigue con el esquema actual")
     # Serializa las escrituras concurrentes del dashboard (varios hilos, misma conexión) para no
     # corromper el archivo — ver _LockedConnection.
     return _LockedConnection(conn)

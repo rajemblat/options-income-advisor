@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
+from datetime import datetime
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -20,6 +22,9 @@ from options_advisor.scheduler.jobs import (
     job_process_chat_orders,
     job_robot_scan,
 )
+from options_advisor.storage import repository as repo
+
+logger = logging.getLogger(__name__)
 
 
 def _hh_mm(value: str) -> tuple[int, int]:
@@ -133,6 +138,33 @@ def build_scheduler(
     def run_live_maintenance() -> None:
         # Conexión propia: corre en el executor 'live', un hilo distinto del escaneo pesado.
         job_live_position_maintenance(broker, live_conn, settings)
+
+    def run_peticiones_manuales() -> None:
+        """Atiende los pedidos de corrida que deja el dashboard (auditoria 2026-08-22).
+
+        Los botones "Correr robot ahora" y "Analisis completo" ejecutaban los jobs DENTRO del
+        proceso de Streamlit. Esos jobs abren y cierran posiciones con plata real, y el lock que los
+        protege es de proceso, asi que no cruzaba al dashboard: un clic con el robot andando podia
+        mandar la misma orden dos veces. Ahora el boton solo deja el pedido y la corrida ocurre aca,
+        en el executor 'default' -- un solo worker, max_instances=1, un solo escritor de la base."""
+        try:
+            tipo = repo.tomar_corrida_pendiente(chat_conn)
+        except Exception:
+            logger.debug("No se pudo leer el pedido de corrida manual", exc_info=True)
+            return
+        if not tipo:
+            return
+        logger.warning("Pedido de corrida manual desde el dashboard: %s", tipo)
+        scheduler.add_job(
+            run_job if tipo == "completa" else run_robot_scan_forzado,
+            id="corrida_manual", replace_existing=True, executor="default",
+            next_run_time=datetime.now(),
+        )
+
+    def run_robot_scan_forzado() -> None:
+        # force=True: el pedido es explicito del usuario, corre aunque el mercado este cerrado.
+        job_robot_scan(broker, conn, symbols, settings,
+                       finnhub_api_key=finnhub_api_key, fred_api_key=fred_api_key, force=True)
 
     def run_token_watch() -> None:
         # Usa la conexion del chat porque comparte su executor liviano: solo lee/escribe una fila de
@@ -262,6 +294,15 @@ def build_scheduler(
         run_learning_review,
         CronTrigger(day_of_week="mon-fri", hour=end_h, minute=min(59, end_m + 20), timezone=settings.scheduler.timezone),
         id="learning_review",
+    )
+    # Pedidos de corrida manual del dashboard: cada 15s, junto al job del chat (los dos son
+    # baratisimos y viven en el mismo hilo liviano). TODOS los dias y a toda hora: el usuario puede
+    # querer correr un analisis con el mercado cerrado, que es justo para lo que sirve el boton.
+    scheduler.add_job(
+        run_peticiones_manuales,
+        CronTrigger(second="*/15", timezone=settings.scheduler.timezone),
+        id="peticiones_manuales",
+        executor="chat",
     )
     # Vigilante del token de Schwab (usuario 2026-08-18: "me avisas 24 horas antes"). Cada hora, TODOS
     # los dias — a proposito, no solo en horario de mercado: los 7 dias del refresh_token corren
