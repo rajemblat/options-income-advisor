@@ -207,7 +207,12 @@ simulator:
   # hacían esperar 40% (lejos del strike) o 50% (cerca de vencimiento) quedan DESACTIVADOS (0.0 =
   # usa la base de 30%). Se mantienen como salvaguardas: stop-loss (pérdida grande) y el cierre por
   # noticia importante cerca del vencimiento — no son reglas de ganancia, protegen la cuenta.
-  stop_loss_multiple: 2.0        # salvaguarda: cerrar si la opción vale 3x la prima (pérdida de 2x)
+  stop_loss_multiple: 0.0        # 0 = STOP-LOSS DESACTIVADO en naked puts (usuario 2026-08-20:
+                                 # "parar urgente de vender por stop loss los naked"). Venía en 2.0
+                                 # (cerraba si la opción valía 3x la prima) y el 20/08 liquidó NCLH a
+                                 # -$68 con 3.06x. Aplica al simulador Y al real: el cierre real usa
+                                 # las mismas reglas. Siguen activos: objetivo de ganancia y cierre
+                                 # por noticia importante cerca del vencimiento.
   close_at_dte: 0                # no forzar cierre por DTE
   profit_target_far_pct: 0.0     # (viejo escalón, desactivado)
   profit_target_near_exp_pct: 0.0  # (viejo escalón, desactivado)
@@ -291,7 +296,10 @@ intraday_condor:
   timeframe_minutes: 1
   short_delta_max: 0.15            # vender put/call a delta <= 0.15
   wing_width: 10.0                 # alas de 10 puntos
-  profit_target_pct: 0.50          # pasada la ventana temprana: cerrar al 50% del crédito (usuario 2026-08-07)
+  profit_target_pct: 0.35          # pasada la ventana temprana: cerrar al 35% del crédito
+                                   # (usuario 2026-08-20: "35% de ganancia está para cerrar").
+                                   # Venía en 0.50. Se compara contra el crédito NETO de entrada:
+                                   # cierra cuando el P&L no realizado >= 0.35 * entry_net_credit.
   profit_target_early_pct: 0.20    # ganancia RÁPIDA (usuario 2026-08-11): si ya está a +20% en los primeros 30 min, cerrar ya
   early_window_minutes: 30.0       # "temprano/rápido" = primeros 30 minutos de la posición
   stop_loss_dollars: 100.0         # cerrar con -$100 de pérdida
@@ -350,7 +358,11 @@ live_trading:
   max_notional_per_order: 0        # Fase 1: sin tope de EXPOSICIÓN por orden (el freno real es el colateral;
                                    #         el cap por exposición diaria lo agregamos "más adelante", usuario)
   max_orders_per_day: 2            # 2 posiciones reales por día (usuario 2026-08-10: "quiero una operación más hoy")
-  max_orders_per_week: 5           # Fase 1: máximo 5 por semana
+  max_orders_per_week: 0           # 0 = SIN TOPE SEMANAL (usuario 2026-08-20: "dejarlo libre").
+                                   # Venía en 5 de Fase 1 y el jueves 20/08 ya estaba agotado con las
+                                   # 5 del lunes y martes, así que el robot no podía abrir en toda la
+                                   # semana. El freno que queda es el DIARIO (max_orders_per_day) más
+                                   # el colateral total (max_total_deployed).
   max_total_deployed: 10000.0      # Fase 1: $10.000 de COLATERAL/MARGEN máximo (no strike×100; el margen real
                                    #         que traba el broker: ~$300 NU, ~$1200 C → alcanza para varias)
   max_underlying_price: 700.0      # no operar acciones por encima de este precio...

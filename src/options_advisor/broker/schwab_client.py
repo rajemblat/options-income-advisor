@@ -33,6 +33,14 @@ VALID_INTRADAY_INTERVALS_MINUTES = (1, 5, 10, 15, 30)
 logger = logging.getLogger(__name__)
 
 
+class BrokerReadError(RuntimeError):
+    """La lectura al broker vino INCOMPLETA (alguna cuenta no respondió).
+
+    Existe para que quien decide sobre posiciones reales pueda distinguir "no tenés nada" de "no
+    pude leer". El 2026-08-21 esa diferencia costó el cierre falso de 5 posiciones abiertas."""
+
+
+
 def _is_retryable_http_error(exc: BaseException) -> bool:
     """¿Vale la pena reintentar este error? Solo los transitorios: 429 (rate limit) y 5xx
     (fallo del servidor). Los 4xx (400/401/403/404) son determinísticos —un símbolo sin cadena
@@ -445,18 +453,26 @@ class SchwabBrokerClient(BrokerClient):
             greeks=greeks,
         )
 
-    def _iter_raw_positions(self):
+    def _iter_raw_positions(self, fallos: list | None = None):
         """Generador de (número de cuenta, posición cruda) a través de todas las cuentas
         vinculadas — compartido por get_all_share_positions y get_all_positions para no
-        duplicar el fetch de cuentas. Una cuenta que falle no tumba las demás; sin cuentas
-        legibles, no yieldea nada (mismo resultado que MockBrokerClient: sin datos reales)."""
+        duplicar el fetch de cuentas. Una cuenta que falle no tumba las demás.
+
+        `fallos`: lista opcional donde se anotan los errores. Existe por el incidente del 2026-08-21
+        (usuario: "esas no las cerré yo"). Cuando la API fallaba, este generador no yieldeaba nada y
+        el llamador recibía una lista VACÍA, idéntica a "la cuenta no tiene posiciones". La
+        reconciliación de `live_engine` interpretó ese vacío como "ya no están en el broker" y marcó
+        cerradas 5 posiciones REALES que seguían abiertas. Anotando los fallos, el llamador puede
+        distinguir "no tenés nada" de "no pude leer" — ver `get_all_positions_strict`."""
         headers = {"Authorization": f"Bearer {self.auth.get_valid_access_token()}"}
         try:
             response = self._trader_client.get("/accounts/accountNumbers", headers=headers)
             response.raise_for_status()
             accounts = response.json()
-        except Exception:
+        except Exception as exc:
             logger.exception("Fallo al listar cuentas de Schwab; sin posiciones reales esta corrida")
+            if fallos is not None:
+                fallos.append(f"no se pudieron listar las cuentas: {exc}")
             return
 
         for account in accounts:
@@ -467,8 +483,23 @@ class SchwabBrokerClient(BrokerClient):
                 response.raise_for_status()
                 for position in response.json().get("securitiesAccount", {}).get("positions", []):
                     yield account["accountNumber"], position
-            except Exception:
+            except Exception as exc:
                 logger.exception("Fallo al leer posiciones de la cuenta %s; se continúa con el resto", account.get("accountNumber"))
+                if fallos is not None:
+                    fallos.append(f"cuenta {account.get('accountNumber')}: {exc}")
+
+    def get_all_positions_strict(self) -> list[AccountPosition]:
+        """Igual que `get_all_positions`, pero LANZA si alguna cuenta no se pudo leer.
+
+        Lo usa la reconciliación, que decide si una posición sigue viva en el broker: ahí una lista
+        incompleta es peor que ninguna respuesta, porque lleva a cerrar posiciones que existen. Una
+        lista vacía devuelta por ESTE método sí es de fiar: significa que todas las cuentas
+        respondieron y ninguna tiene posiciones."""
+        fallos: list = []
+        posiciones = self._build_positions(self._iter_raw_positions(fallos))
+        if fallos:
+            raise BrokerReadError("Lectura de posiciones incompleta: " + "; ".join(fallos))
+        return posiciones
 
     def get_all_share_positions(self) -> dict[str, int]:
         """Suma `longQuantity` de todas las posiciones EQUITY, a través de todas las cuentas
@@ -488,9 +519,18 @@ class SchwabBrokerClient(BrokerClient):
         """Todas las posiciones reales (acciones, opciones, ETFs) de todas las cuentas
         vinculadas — página de portafolio real, Entrega 1 (símbolo/cantidad/precio entrada/
         valor actual/P&L). `longOpenProfitLoss` es el campo que Schwab usa para el P&L no
-        realizado tanto en posiciones largas como cortas (confirmado con datos reales)."""
+        realizado tanto en posiciones largas como cortas (confirmado con datos reales).
+
+        TOLERANTE a fallos: si una cuenta no responde, devuelve lo que pudo leer. Para decidir si
+        una posición sigue viva usá `get_all_positions_strict`, que avisa cuando la lectura vino
+        incompleta (ver el incidente del 2026-08-21 en `_iter_raw_positions`)."""
+        return self._build_positions(self._iter_raw_positions())
+
+    def _build_positions(self, crudas) -> list[AccountPosition]:
+        """Mapea las posiciones crudas de Schwab al modelo interno. Compartido por la versión
+        tolerante y la estricta para que las dos devuelvan exactamente lo mismo."""
         positions: list[AccountPosition] = []
-        for account_number, position in self._iter_raw_positions():
+        for account_number, position in crudas:
             instrument = position.get("instrument", {})
             long_qty = position.get("longQuantity", 0) or 0
             short_qty = position.get("shortQuantity", 0) or 0

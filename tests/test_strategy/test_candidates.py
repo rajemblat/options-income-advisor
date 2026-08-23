@@ -59,7 +59,14 @@ def _build_chain() -> OptionChain:
     return OptionChain(symbol="TST", as_of=AS_OF, underlying_price=UNDERLYING_PRICE, contracts=contracts)
 
 
-ALL_19_STRATEGIES = sorted(c.ALL_INCOME_STRATEGIES)
+# `custom_multileg` NO es una estrategia que el robot ARME: es la etiqueta que usa el detector de
+# operaciones reales cuando agrupa una combinación que no encaja en ningún patrón conocido (ver
+# alerts/real_trades.py::_classify_opening_legs). Pasa por `compute_payoff` — por eso vive en
+# ALL_INCOME_STRATEGIES, a diferencia de roll_closed_leg — pero no tiene un `build_candidate`, y
+# nunca lo va a tener: se arma a partir de las patas que YA existen en el broker, no al revés.
+# Corregido el 2026-08-22: el test la incluía y fallaba con "Estrategia desconocida".
+SOLO_DETECCION = {c.CUSTOM_MULTILEG}
+ALL_19_STRATEGIES = sorted(c.ALL_INCOME_STRATEGIES - SOLO_DETECCION)
 
 
 @pytest.fixture(scope="module")

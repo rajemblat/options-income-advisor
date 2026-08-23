@@ -356,6 +356,49 @@ def job_process_chat_orders(
         logger.exception("Chat-orders: fallo al procesar sugerencias aprobadas del chat")
 
 
+def job_live_position_maintenance(
+    broker: BrokerClient,
+    conn: sqlite3.Connection,
+    settings: Settings,
+    force: bool = False,
+) -> None:
+    """Mantenimiento RÁPIDO de las posiciones REALES abiertas, cada minuto y en su propio hilo:
+    re-precio de las órdenes en espera, CIERRE por objetivo de ganancia/stop, y el email de apertura
+    que haya quedado pendiente.
+
+    Por qué existe (usuario 2026-08-19: "la tuve que cerrar yo con Moshe, cuando debería cerrar sola
+    al 52%"): estas tres cosas vivían al FINAL de `_run_robot_scan`, DESPUÉS del bucle que analiza el
+    universo entero. Ese bucle tarda varios minutos, así que APScheduler salteaba corridas enteras
+    ("skipped: maximum number of running instances reached") y el chequeo de ganancia quedaba esperando
+    a que terminara el escaneo. Consecuencias reales del 19/08: AAPL cruzó su objetivo y recién se
+    cerró 15:56, y el email de apertura de DLO llegó 24 horas tarde por el mismo motivo.
+
+    Acá el trabajo es chico y acotado — solo las posiciones ABIERTAS (5 o 6), nada del universo — así
+    que entra holgado en un minuto. Es el mismo patrón que ya se usó para la detección de operaciones
+    reales y para el butterfly cuando tuvieron este problema.
+
+    El escaneo del robot sigue llamando a las mismas funciones como red de seguridad: son idempotentes
+    y el lock `_LIVE_ORDER_LOCK` de live_engine (RLock) garantiza que nunca corran dos a la vez sobre
+    la misma orden. Cada paso va en su propio try: que falle el re-precio no puede impedir el CIERRE,
+    que es lo que maneja plata."""
+    today = date.today()
+    if not force and not is_market_day(today):
+        return
+    if not force and market_session() != "abierto":
+        return
+    from options_advisor.execution import live_engine as _live_engine
+    _pasos = (
+        ("re-precio de órdenes en espera", lambda: _live_engine.reprice_resting_orders(conn, broker, settings, today)),
+        ("cierre de posiciones reales", lambda: _live_engine.close_real_positions(conn, broker, settings, today)),
+        ("email de apertura pendiente", lambda: _live_engine.send_pending_open_emails(conn, settings)),
+    )
+    for _nombre, _paso in _pasos:
+        try:
+            _paso()
+        except Exception:
+            logger.exception("Live-mantenimiento: fallo en %s; se continúa con el resto", _nombre)
+
+
 def job_poll_and_analyze(
     broker: BrokerClient,
     conn: sqlite3.Connection,

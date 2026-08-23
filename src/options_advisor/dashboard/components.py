@@ -21,6 +21,7 @@ from options_advisor.alerts.formatting import (
 )
 from options_advisor.broker import get_broker_client
 from options_advisor.broker.base import BrokerClient
+from options_advisor.broker.schwab_auth import read_refresh_token_seconds_left
 from options_advisor.broker.models import IntradayBar, Mover, OptionChain, Quote
 from options_advisor.config import PROJECT_ROOT, Settings, load_movers_universe, load_settings, load_symbols
 from options_advisor.dashboard.portfolio_summary import summarize_portfolio
@@ -135,6 +136,42 @@ def render_schwab_reconnect(detail: str | None = None, *, stop: bool = True) -> 
             st.caption(str(detail))
     if stop:
         st.stop()
+
+
+# Umbral del aviso anticipado, en horas (usuario 2026-08-18: "me avisas 24 horas antes").
+TOKEN_WARN_HOURS = 24
+
+
+def render_schwab_token_warning() -> None:
+    """Cartel de 'te queda poco token' ANTES de que se corte (usuario 2026-08-18).
+
+    Complemento de `render_schwab_reconnect`, que solo aparece cuando YA es tarde: el 18/08 el token
+    vencio de madrugada, el robot quedo ciego toda la manana y nadie se entero hasta las 11:46. Este
+    se muestra arriba de todas las paginas y no corta el render — todavia funciona todo, es un
+    recordatorio, no un error."""
+    seconds_left = read_refresh_token_seconds_left()
+    if seconds_left is None or seconds_left > TOKEN_WARN_HOURS * 3600:
+        return
+    if seconds_left <= 0:
+        # El cartel de vencido ya lo maneja render_schwab_reconnect en las paginas que tocan Schwab.
+        return
+    horas = int(seconds_left // 3600)
+    restante = f"{horas} horas" if horas >= 1 else f"{int(seconds_left // 60)} minutos"
+    st.warning(
+        f"⏳ **La conexion con Schwab vence en ~{restante}.** Cuando venza, el robot deja de ver el "
+        "mercado y no opera hasta que te reconectes a mano. Mejor hacerlo ahora que con el mercado abierto.",
+        icon="⏳",
+    )
+    with st.expander("Como reconectar (30 segundos)"):
+        st.markdown(
+            "1. En la Terminal:\n"
+            "```\ncd ~/options-income-advisor\nsource .venv/bin/activate\npython scripts/schwab_login.py\n```\n"
+            "2. Abri la URL que imprime, inicia sesion en Schwab y pega de vuelta la URL del navegador "
+            "(va a mostrar un error de 'no se puede acceder a este sitio' — es esperado).\n"
+            "3. **Reinicia el robot** para que tome el token nuevo:\n"
+            "```\nlaunchctl kickstart -k gui/$(id -u)/com.robertoajemblat.options-income-advisor.scheduler\n```\n"
+            "El paso 3 no es opcional: el robot cachea el token en memoria al arrancar."
+        )
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -608,6 +645,9 @@ def _render_sidebar_toggle() -> None:
 
 
 def render_header(icon_html: str, title: str, subtitle: str | None = None) -> None:
+    # Enganchado aca a proposito: todas las paginas llaman a render_header, asi que el aviso de
+    # vencimiento del token aparece en cualquiera que abras, sin tocar las 16 paginas una por una.
+    render_schwab_token_warning()
     st.markdown(
         f"<h2 style='display:flex; align-items:center; gap:0.55rem; margin:0;'>{icon_html}<span>{title}</span></h2>",
         unsafe_allow_html=True,

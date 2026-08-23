@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as _dt   # para formatear la fecha/hora de apertura (usuario 2026-08-19)
 from datetime import date, timedelta as _timedelta
 
 import streamlit as st
@@ -68,6 +69,48 @@ def _fmt_money(v):
 
 def _fmt_pct(v):
     return f"{v:+.1f}%" if isinstance(v, (int, float)) else "—"
+
+
+_PERIODOS = ["Hoy", "Semana", "Mes", "Año", "Todo"]
+
+
+def _desde_periodo(periodo: str, hoy: date):
+    """Fecha DESDE la que cuenta cada período, o None para 'Todo'. Misma semántica que los filtros que
+    ya usaba la página para las órdenes, para que los números coincidan entre paneles."""
+    if periodo == "Hoy":
+        return hoy
+    if periodo == "Semana":
+        return hoy - _timedelta(days=hoy.weekday())      # desde el lunes
+    if periodo == "Mes":
+        return hoy.replace(day=1)
+    if periodo == "Año":
+        return hoy.replace(month=1, day=1)
+    return None
+
+
+def _fmt_apertura(row) -> str:
+    """'18/08 11:53' — fecha y hora en que se abrió la posición. Compacto a propósito: la tabla ya
+    tiene 12 columnas y el año se sobreentiende. Nunca lanza; si no hay dato devuelve '—'.
+
+    Usa `log_ts` y NO `sent_ts`: `sent_ts` se pisa en CADA reemplazo del precio caminado, así que en
+    una orden que negoció un rato marca el último envío, no la apertura (AAL del 18/08: log_ts
+    11:53:12 pero sent_ts 12:11:43, 18 minutos después). `log_ts` además es el mismo instante que
+    muestra 'Órdenes que armó el robot', así que las dos pantallas coinciden."""
+    for _campo in ("log_ts", "sent_ts"):
+        try:
+            _v = row[_campo]
+        except (KeyError, IndexError, TypeError):
+            _v = None
+        if _v:
+            try:
+                return _dt.datetime.fromisoformat(str(_v)).strftime("%d/%m %H:%M")
+            except (ValueError, TypeError):
+                pass
+    try:
+        _d = row["log_date"]
+        return _dt.date.fromisoformat(str(_d)).strftime("%d/%m") if _d else "—"
+    except (KeyError, IndexError, TypeError, ValueError):
+        return "—"
 
 
 def _fmt_plain(v):
@@ -253,15 +296,10 @@ with _od3:
                "Aplica en el próximo escaneo (no hace falta reiniciar). Una posición que llenó ocupa el cupo; "
                "una rechazada/cancelada no. A la medianoche vuelve al tope base de config.")
 
-st.markdown(
-    f"**Símbolos permitidos:** {', '.join(lt.allowed_symbols) if lt.allowed_symbols else '(todos)'}  \n"
-    f"**Exentos del tope de precio (\\${lt.max_underlying_price:,.0f}):** "
-    f"{', '.join(lt.price_cap_exempt_symbols) if lt.price_cap_exempt_symbols else '(ninguno)'}  \n"
-    f"**Caminar el precio:** paso según el spread — spread chico **\\$2/contrato**, spread grande "
-    f"(> \\${lt.price_walk_wide_threshold:.2f}) **\\$5/contrato** (menos envíos). Reemplazo cada "
-    f"{lt.price_walk_interval_seconds}s, sin cruzar el mid. Vender: arranca bajo el ask y baja; "
-    f"recomprar: arranca sobre el bid y sube."
-)
+# El bloque de "Símbolos permitidos / Exentos del tope / Caminar el precio" que estaba acá se sacó
+# (usuario 2026-08-19: "arreglemos la estética, borrar esto"). Era un paredón de texto fijo que no
+# cambia nunca y empujaba las posiciones para abajo. Los valores siguen vivos en config/settings.yaml
+# (live_trading.allowed_symbols, price_cap_exempt_symbols y los price_walk_*); solo se dejó de mostrar.
 
 # ------------------------- Avisos por email (apertura/cierre real) -------------------------
 with st.expander("📧 Avisos por email — te aviso en cada apertura y cierre REAL"):
@@ -314,7 +352,47 @@ _robot_open = repo.get_open_real_put_positions(conn)
 _ann_num = {1.0: 0.0}   # numerador (retorno $ anualizado) por fracción de captura
 _ann_den = 0.0          # denominador (margen total trabado)
 if not _robot_open:
+    # Sin posiciones abiertas igual hay que mostrar la UTILIDAD REALIZADA (usuario 2026-08-21: "no
+    # tengo mas la utilidad de los naked en real, estaban como el iron pero mejor y no los veo mas").
+    # Todo el panel colgaba del `else` de abajo, asi que el dia que se cerraron las 5 posiciones
+    # desaparecio tambien el historico. La plata YA COBRADA no depende de tener algo abierto: el
+    # condor nunca tuvo este problema porque su panel vive fuera de la guarda.
+    _realized_all = sum((r["realized_pnl"] or 0.0) for r in _cfg_realiz)
+    _real_pct = (_realized_all / CAPITAL_DISPONIBLE * 100.0) if CAPITAL_DISPONIBLE > 0 else None
+    _tcol = GOOD if _realized_all >= 0 else BAD
+    _sin_pnl_n = len([r for r in _cfg_all_closed if r["realized_pnl"] is None])
+    _sin_pnl_txt = (f" &middot; <b style='color:{WARN}'>{_sin_pnl_n} cerrada(s) sin precio de cierre cargado</b>"
+                    if _sin_pnl_n else "")
+    st.markdown(
+        f"<div style='background:{_tcol}1a; border:1px solid {_tcol}55; border-radius:0.6rem; padding:0.75rem 1rem; margin:0.1rem 0 0.7rem;'>"
+        f"<span style='color:{TEXT_MUTED}; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em;'>Ganancia realizada de los naked put reales &middot; solo operaciones cerradas</span><br>"
+        f"<span style='color:{_tcol}; font-size:1.7rem; font-weight:800;'>${_realized_all:+,.2f}</span>"
+        f"<span style='color:{_tcol}; font-size:1.05rem; font-weight:700; margin-left:0.5rem;'>"
+        f"{('(' + format(_real_pct, '+.2f') + '%)') if _real_pct is not None else ''}</span>"
+        f"<span style='color:{TEXT_MUTED}; font-size:0.86rem; margin-left:0.6rem;'>sobre ${CAPITAL_DISPONIBLE:,.0f} de capital &middot; "
+        f"{len(_cfg_realiz)} cerrada(s){_sin_pnl_txt}</span>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    _vp1, _vp2 = st.columns([1, 3])
+    _nak_periodo_v = _vp1.selectbox("Ganancia del período", _PERIODOS, key="rm_nak_periodo_vacio")
+    _nak_desde_v = _desde_periodo(_nak_periodo_v, today)
+    _nak_cerr_v = [r for r in _cfg_realiz
+                   if _nak_desde_v is None or (r["close_ts"] or "")[:10] >= _nak_desde_v.isoformat()]
+    _nak_pnl_v = round(sum((r["realized_pnl"] or 0.0) for r in _nak_cerr_v), 2)
+    _nak_win_v = [r for r in _nak_cerr_v if (r["realized_pnl"] or 0.0) > 0]
+    _va, _vb, _vc, _vd = st.columns(4)
+    _va.metric("Posiciones abiertas", 0)
+    _vb.metric(f"Ganancia {_nak_periodo_v.lower()}", f"${_nak_pnl_v:+,.2f}",
+               help=f"Realizado de los naked cerrados en el período · {len(_nak_cerr_v)} operación(es).")
+    _vc.metric("Win rate", f"{len(_nak_win_v) / len(_nak_cerr_v) * 100:.0f}%" if _nak_cerr_v else "—",
+               help=f"Ganadoras sobre cerradas en el período: {len(_nak_win_v)} de {len(_nak_cerr_v)}.")
+    _vd.metric("Cerradas (histórico)", len(_cfg_realiz),
+               help=f"Total de naked put reales cerrados con P&L cargado · ${_realized_all:+,.2f}.")
     st.caption("El robot no tiene posiciones reales abiertas ahora mismo.")
+    if _sin_pnl_n:
+        st.warning(f"⚠️ Hay **{_sin_pnl_n} operación(es) cerrada(s) sin precio de cierre**. Su ganancia NO está "
+                   "sumada en los totales de arriba. Se cargan más abajo, en la lista de cerradas.", icon="⚠️")
 else:
     import json as _json
 
@@ -358,9 +436,19 @@ else:
         _tot_exp += float(r["strike"]) * 100.0 * _n
         _p = _sch.get((_sym, round(float(r["strike"]), 2), _exp))
         if _p is not None:
-            _qty = int(_p.quantity)
+            # OJO (usuario 2026-08-18: "en el dashboard me marca mal"): `_p` es la posición AGREGADA
+            # de Schwab. Si el mismo strike/vencimiento se abrió en VARIAS órdenes, el broker las suma
+            # en UNA sola — AAL 13P 18-sep eran 1 contrato del 17/08 (orden 101) + 4 del 18/08 (orden
+            # 126) = -5. Como esta tabla lista UNA FILA POR ORDEN, poner `_p.quantity` mostraba -5 en
+            # las dos filas, como si hubiera 10 contratos. La cantidad de esta fila es la de SU orden.
+            _qty = -_n
             _mark = abs(_p.market_value) / (100.0 * abs(_p.quantity)) if _p.quantity else None
-            _bp = getattr(_p, "maintenance_requirement", None)
+            # El margen de Schwab también viene agregado: lo prorrateamos por contratos para que la
+            # suma de las filas dé el margen real y no el doble.
+            _raw_bp = getattr(_p, "maintenance_requirement", None)
+            _pos_qty = abs(int(_p.quantity))
+            _bp = (round(float(_raw_bp) * _n / _pos_qty, 2)
+                   if isinstance(_raw_bp, (int, float)) and _pos_qty else _raw_bp)
         else:
             _qty, _mark, _bp = -_n, None, None
         _premium = _cred * 100.0 * _n
@@ -397,9 +485,14 @@ else:
             _ann_den += _margin
             _ann_num[1.0] += _premium * (365.0 / _dte_ann)
 
+        # Fecha y hora en que se abrió la posición (usuario 2026-08-19: "debe decir la fecha y hora de
+        # apertura"). Con dos órdenes del mismo strike/vencimiento — AAL 13P: una del 17/08 y otra del
+        # 18/08 — la fila sola no dejaba distinguir cuál era cuál.
+        _abierta = _fmt_apertura(r)
         _q = _quotes.get(_sym)
         _rows.append({
             "ID": r["id"],   # ID único de la posición (usuario 2026-08-11): decíselo a Moshe para cerrar la exacta
+            "Abierta": _abierta,
             "Symbol": _sym,
             "Strike": float(r["strike"]) if r["strike"] is not None else None,   # strike vendido (usuario 2026-08-12)
             "Cant": _qty,
@@ -422,6 +515,21 @@ else:
     _col_usado = sum((r["collateral"] or 0.0) for r in _robot_open)
     # P&L TOTAL desde el INICIO del real (usuario 2026-08-12: "el P&L total desde que empezamos"):
     # realizado histórico (todas las cerradas) + abierto no realizado. _cfg_realiz viene de la config de arriba.
+    # Filtro de PERIODO, ARRIBA de todo (usuario 2026-08-21: "quiero filtro de fechas para ver las
+    # utilidades: hoy, esta semana, este mes, este año"). Manda sobre TODO el panel, incluido el numero
+    # grande: elegis "Mes" y el titular pasa a ser la ganancia del mes. Antes el filtro estaba abajo y
+    # solo movia una metrica chica, asi que el numero grande siempre decia lo mismo.
+    _np1, _np2 = st.columns([1, 3])
+    _nak_periodo = _np1.selectbox("Período de la ganancia", _PERIODOS, key="rm_nak_periodo",
+                                  help="Filtra la ganancia REALIZADA (operaciones cerradas). Las "
+                                       "posiciones abiertas se muestran siempre, no dependen del período.")
+    _nak_desde = _desde_periodo(_nak_periodo, today)
+    _nak_cerradas = [r for r in _cfg_realiz
+                     if _nak_desde is None or (r["close_ts"] or "")[:10] >= _nak_desde.isoformat()]
+    _nak_pnl_per = round(sum((r["realized_pnl"] or 0.0) for r in _nak_cerradas), 2)
+    _nak_wins = [r for r in _nak_cerradas if (r["realized_pnl"] or 0.0) > 0]
+    _nak_wr = round(len(_nak_wins) / len(_nak_cerradas) * 100, 0) if _nak_cerradas else None
+
     _realized_all = sum((r["realized_pnl"] or 0.0) for r in _cfg_realiz)
     _pl_total = _realized_all + _tot_unreal
     # % de utilidad = P&L total (realizado + abierto) sobre el CAPITAL DISPONIBLE (usuario 2026-08-13: "con
@@ -441,14 +549,23 @@ else:
             _plazo_txt = f" · en {_dias0} día(s) = {_dias0 / 7.0:.1f} semana(s) (desde el {_d0.strftime('%d/%m/%Y')})"
         except (ValueError, TypeError):
             _plazo_txt = ""
-    _tcol = GOOD if _pl_total >= 0 else BAD
+    # El número GRANDE muestra solo lo REALIZADO (usuario 2026-08-20: "me gustaría que el número
+    # grande sea solo de operaciones cerradas"). Antes mezclaba realizado + flotante, así que el
+    # titular se movía con el mercado y no se sabía cuánta plata estaba cobrada de verdad. El total
+    # con el flotante sigue estando, en la fila TOTAL del cuadro de abajo.
+    _real_pct = (_nak_pnl_per / CAPITAL_DISPONIBLE * 100.0) if CAPITAL_DISPONIBLE > 0 else None
+    _tcol = GOOD if _nak_pnl_per >= 0 else BAD
+    _rot = {"Hoy": "de hoy", "Semana": "de esta semana", "Mes": "de este mes",
+            "Año": "de este año", "Todo": "desde el inicio del real (día 0)"}[_nak_periodo]
+    _extra = _plazo_txt if _nak_periodo == "Todo" else f" · histórico total ${_realized_all:+,.2f}"
     st.markdown(
         f"<div style='background:{_tcol}1a; border:1px solid {_tcol}55; border-radius:0.6rem; padding:0.75rem 1rem; margin:0.1rem 0 0.7rem;'>"
-        f"<span style='color:{TEXT_MUTED}; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em;'>P&amp;L total desde el inicio del real (día 0)</span><br>"
-        f"<span style='color:{_tcol}; font-size:1.7rem; font-weight:800;'>${_pl_total:+,.2f}</span>"
+        f"<span style='color:{TEXT_MUTED}; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em;'>Ganancia realizada {_rot} · naked put · solo operaciones cerradas</span><br>"
+        f"<span style='color:{_tcol}; font-size:1.7rem; font-weight:800;'>${_nak_pnl_per:+,.2f}</span>"
         f"<span style='color:{_tcol}; font-size:1.05rem; font-weight:700; margin-left:0.5rem;'>"
-        f"{('(' + format(_pl_total_pct, '+.2f') + '%)') if _pl_total_pct is not None else ''}</span>"
-        f"<span style='color:{TEXT_MUTED}; font-size:0.86rem; margin-left:0.6rem;'>sobre ${CAPITAL_DISPONIBLE:,.0f} de capital{_plazo_txt}</span>"
+        f"{('(' + format(_real_pct, '+.2f') + '%)') if _real_pct is not None else ''}</span>"
+        f"<span style='color:{TEXT_MUTED}; font-size:0.86rem; margin-left:0.6rem;'>sobre ${CAPITAL_DISPONIBLE:,.0f} de capital · "
+        f"{len(_nak_cerradas)} cerrada(s){_extra}</span>"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -482,7 +599,9 @@ else:
             f"</tr>"
         )
 
-    _ritmo = f" · ritmo <b>${(_pl_total / _semanas):+,.0f}</b> por semana" if _semanas >= 0.5 else ""
+    # Ritmo = plata COBRADA por semana, para que acompañe al número grande (antes usaba el total con
+    # el flotante y decía un ritmo que todavía no estaba en la cuenta).
+    _ritmo = f" · ritmo <b>${(_realized_all / _semanas):+,.0f}</b> por semana cobrado" if _semanas >= 0.5 else ""
     st.markdown(
         f"<table style='border-collapse:collapse;width:100%;font-size:0.9rem;color:{TEXT_PRIMARY};"
         f"background:{SURFACE};border:1px solid {BORDER};border-radius:0.6rem;overflow:hidden;margin-bottom:0.5rem'>"
@@ -540,13 +659,18 @@ else:
     _pc.metric("P&L Open total %", f"{_tot_pct:+.1f}%" if _tot_pct is not None else "—",
                help="P&L Open total sobre la prima total cobrada en las posiciones abiertas.")
     _pd.metric("Crédito cobrado", f"${_tot_premium:,.0f}", help="Prima total cobrada en las posiciones abiertas.")
-    _pe.metric("Exposición (strike×100)", f"${_tot_exp:,.0f}")
-    _pf.metric("Colateral usado", f"${_col_usado:,.0f}")
+    _pe.metric(f"Ganancia {_nak_periodo.lower()}", f"${_nak_pnl_per:+,.2f}",
+               help=f"Realizado de los naked put cerrados en el período · {len(_nak_cerradas)} operación(es). "
+                    f"Exposición (strike×100): ${_tot_exp:,.0f} · Colateral usado: ${_col_usado:,.0f}.")
+    _pf.metric("Win rate", f"{_nak_wr:.0f}%" if _nak_wr is not None else "—",
+               help=f"Ganadoras sobre cerradas en el período: {len(_nak_wins)} de {len(_nak_cerradas)}. "
+                    f"Histórico completo: {len(_cfg_realiz)} cerradas, ${_realized_all:+,.2f}.")
 
     _pos_cols = [
         ("ID", "ID", _fmt_plain), ("Símbolo", "Symbol", _fmt_plain),
         ("Strike", "Strike", _fmt_money),   # strike vendido (usuario 2026-08-12)
         ("Cant", "Cant", _fmt_plain),
+        ("Abierta", "Abierta", _fmt_plain),   # fecha/hora de apertura (usuario 2026-08-19)
         ("Días p/ vencer", "Days", _fmt_plain),   # días que faltan para el vencimiento, actualizado a hoy
         ("Trade Price", "Trade Price", _fmt_money),
         ("Mark", "Mark", _fmt_money), ("P/L %", "P/L %", _fmt_pct),
@@ -640,19 +764,106 @@ st.markdown(
 # --- Métricas de utilidad / P&L del condor real, TODO por separado de los naked (usuario 2026-08-13) ---
 _cond_stats = repo.get_real_condor_performance_stats(conn, today)
 _co_open = repo.get_open_real_condor_positions(conn)
+
+# P&L EN VIVO del condor abierto (usuario 2026-08-20: "en el broker sube y baja y aca se actualiza muy
+# despacio"). `last_unrealized_pnl` de la base lo escribe el robot en su tick de 1 minuto, y si ese tick
+# se saltea (paso hoy) el numero se queda clavado varios minutos. Aca lo recalculamos con las posiciones
+# que ya trae `cached_all_positions()` (cache de 20s, la MISMA llamada que usa la tabla de naked, asi que
+# no cuesta ni una consulta extra a Schwab).
+#
+# Cuenta: el P&L de un credito es (credito cobrado - lo que cuesta cerrar hoy). El valor de mercado que
+# reporta Schwab ya viene con signo -- negativo en las patas vendidas, positivo en las compradas -- asi que
+# la suma de las cuatro patas ES el costo de cerrar en negativo. Por eso alcanza con sumarla al credito.
+def _condor_pnl_en_vivo(row):
+    """P&L al segundo de un condor abierto, o None si no se pueden identificar las 4 patas."""
+    if settings.broker.mode != "schwab":
+        return None
+    try:
+        _legs = {
+            ("put", round(float(row["short_put_strike"]), 2)), ("put", round(float(row["long_put_strike"]), 2)),
+            ("call", round(float(row["short_call_strike"]), 2)), ("call", round(float(row["long_call_strike"]), 2)),
+        }
+        _venc = date.fromisoformat(row["expiration_date"])
+        _sub = (row["underlying"] or "").strip().upper().lstrip("$")
+        _valor, _vistas = 0.0, set()
+        for _p in cached_all_positions():
+            if _p.option_type is None or _p.strike is None or _p.expiration != _venc:
+                continue
+            if (_p.underlying_symbol or "").strip().upper().lstrip("$") != _sub:
+                continue
+            _clave = (_p.option_type, round(float(_p.strike), 2))
+            if _clave in _legs:
+                _valor += float(_p.market_value or 0.0)
+                _vistas.add(_clave)
+        if len(_vistas) != 4:      # falta alguna pata: no inventamos, se usa el ultimo marcado
+            return None
+        return round(float(row["entry_net_credit"] or 0.0) + _valor, 2)
+    except Exception:
+        return None
+
+_cond_open_vivo = 0.0
+_cond_hay_vivo = False
+for _cr in _co_open:
+    _v = _condor_pnl_en_vivo(_cr)
+    if _v is None:
+        _cond_open_vivo += float(_cr["last_unrealized_pnl"] or 0.0)
+    else:
+        _cond_open_vivo += _v
+        _cond_hay_vivo = True
+_cond_stats["open_unrealized_pnl"] = round(_cond_open_vivo, 2) if _co_open else 0.0
+
 _cond_pl_total = round(_cond_stats["total_realized_pnl"] + _cond_stats["open_unrealized_pnl"], 2)
 _cond_pl_pct = (_cond_pl_total / CAPITAL_DISPONIBLE * 100.0) if CAPITAL_DISPONIBLE > 0 else None
+# Mismo filtro y misma caja que los naked, para comparar manzanas con manzanas (usuario 2026-08-21:
+# "el de los iron condor debe tener filtro para ver por fecha las utilidades... lo mismo para iron").
+_cp1, _cp2 = st.columns([1, 3])
+_cond_periodo = _cp1.selectbox("Período de la ganancia", _PERIODOS, key="rm_cond_periodo",
+                               help="Filtra la ganancia REALIZADA de los condors cerrados. Los abiertos "
+                                    "se muestran siempre, no dependen del período.")
+_cond_desde = _desde_periodo(_cond_periodo, today)
+_cond_cerrados = [r for r in conn.execute(
+    "SELECT realized_pnl, close_ts FROM real_condor_positions "
+    "WHERE status='closed' AND realized_pnl IS NOT NULL").fetchall()
+    if _cond_desde is None or (r["close_ts"] or "")[:10] >= _cond_desde.isoformat()]
+_cond_pnl_per = round(sum((r["realized_pnl"] or 0.0) for r in _cond_cerrados), 2)
+_cond_wins_per = [r for r in _cond_cerrados if (r["realized_pnl"] or 0.0) > 0]
+_cond_wr_per = round(len(_cond_wins_per) / len(_cond_cerrados) * 100, 0) if _cond_cerrados else None
+
+_cond_real_pct = (_cond_pnl_per / CAPITAL_DISPONIBLE * 100.0) if CAPITAL_DISPONIBLE > 0 else None
+_ccol = GOOD if _cond_pnl_per >= 0 else BAD
+_crot = {"Hoy": "de hoy", "Semana": "de esta semana", "Mes": "de este mes",
+         "Año": "de este año", "Todo": "desde el primer condor"}[_cond_periodo]
+_cextra = ("" if _cond_periodo == "Todo"
+           else f" &middot; histórico total {_fmt_money(_cond_stats['total_realized_pnl'])}")
+st.markdown(
+    f"<div style='background:{_ccol}1a; border:1px solid {_ccol}55; border-radius:0.6rem; padding:0.75rem 1rem; margin:0.1rem 0 0.7rem;'>"
+    f"<span style='color:{TEXT_MUTED}; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em;'>Ganancia realizada {_crot} &middot; Iron Condor real &middot; solo operaciones cerradas</span><br>"
+    f"<span style='color:{_ccol}; font-size:1.7rem; font-weight:800;'>{_fmt_money(_cond_pnl_per)}</span>"
+    f"<span style='color:{_ccol}; font-size:1.05rem; font-weight:700; margin-left:0.5rem;'>"
+    f"{('(' + format(_cond_real_pct, '+.2f') + '%)') if _cond_real_pct is not None else ''}</span>"
+    f"<span style='color:{TEXT_MUTED}; font-size:0.86rem; margin-left:0.6rem;'>sobre ${CAPITAL_DISPONIBLE:,.0f} de capital &middot; "
+    f"{len(_cond_cerrados)} cerrado(s){_cextra}</span>"
+    f"</div>",
+    unsafe_allow_html=True,
+)
+
 _cc1, _cc2, _cc3, _cc4, _cc5, _cc6 = st.columns(6)
 _cc1.metric("Abiertos ahora", _cond_stats["open_count"])
-_cc2.metric("P&L abierto", _fmt_money(_cond_stats["open_unrealized_pnl"]))
-_cc3.metric("Ganancia de hoy", _fmt_money(_cond_stats["realized_pnl_today"]),
-            help=f"P&L realizado de los condors reales cerrados hoy ({_cond_stats['closed_count_today']}).")
+_cc2.metric("P&L abierto" + (" \u26a1" if _cond_hay_vivo else ""), _fmt_money(_cond_stats["open_unrealized_pnl"]),
+            help=("EN VIVO: calculado con el valor de mercado de las 4 patas que reporta Schwab, "
+                  "refrescado cada 20 segundos."
+                  if _cond_hay_vivo else
+                  "Ultimo valor marcado por el robot. Sin las 4 patas en Schwab no se puede calcular en vivo."))
+_cc3.metric(f"Ganancia {_cond_periodo.lower()}", _fmt_money(_cond_pnl_per),
+            help=f"Realizado de los condors cerrados en el período · {len(_cond_cerrados)} operación(es). "
+                 f"Hoy: {_fmt_money(_cond_stats['realized_pnl_today'])}.")
 _cc4.metric("P&L total (día 0)", _fmt_money(_cond_pl_total),
             help="Realizado histórico + abierto de TODOS los condors reales, desde el primero.")
 _cc5.metric("P&L % / 50K", f"{_cond_pl_pct:+.2f}%" if _cond_pl_pct is not None else "—",
             help=f"P&L total del condor sobre ${CAPITAL_DISPONIBLE:,.0f} de capital disponible.")
-_cc6.metric("Win rate", f"{_cond_stats['win_rate_pct']:.0f}%" if _cond_stats["win_rate_pct"] is not None else "—",
-            help=f"Histórico real: {_cond_stats['closed_count']} cerrados · realizado {_fmt_money(_cond_stats['total_realized_pnl'])}.")
+_cc6.metric("Win rate", f"{_cond_wr_per:.0f}%" if _cond_wr_per is not None else "—",
+            help=f"Ganadores sobre cerrados en el período: {len(_cond_wins_per)} de {len(_cond_cerrados)}. "
+                 f"Histórico completo: {_cond_stats['closed_count']} cerrados, {_fmt_money(_cond_stats['total_realized_pnl'])}.")
 
 # --- Autorización PROPIA del condor (botón aparte de los naked) + cuántos por día autoriza ---
 _cond_cap_default = getattr(_cond_cfg, "live_max_per_day", 1)

@@ -324,6 +324,51 @@ def test_reconciles_position_closed_in_broker(monkeypatch):
     assert row["closed"] == 1 and row["close_reason"] == "closed_in_broker"
 
 
+def test_no_cierra_cuando_la_lectura_al_broker_viene_incompleta(monkeypatch):
+    """Regresion del 2026-08-21: una lectura FALLIDA no puede pasar por "ya no esta en el broker".
+
+    Ese dia la API de Schwab fallo, `get_all_positions()` devolvio una lista vacia (es tolerante a
+    fallos, loguea y sigue) y la reconciliacion marco `closed_in_broker` 5 posiciones REALES que
+    seguian abiertas. Ademas de descuadrar el registro, el robot dejo de vigilarlas: no las cerraba
+    por ganancia ni contaban para los topes.
+
+    Ahora la reconciliacion pide `get_all_positions_strict()`, que LANZA si alguna cuenta no
+    respondio. Ante esa excepcion no se cierra NADA por reconciliacion."""
+    import options_advisor.scheduler.market_calendar as _mc
+    monkeypatch.setattr(_mc, "market_session", lambda *a, **k: "abierto")
+    conn = db.connect(":memory:")
+    oid = _insert_filled_open(conn, credit=1.50)
+
+    # Mid alto = sin ganancia, para que un cierre solo pueda venir de la reconciliacion.
+    b = _close_fake_broker(put_mid=1.50, underlying_last=140.0, strike=125.0,
+                           expiration=date(2026, 9, 18), has_position=False)
+
+    def _lectura_rota():
+        raise RuntimeError("Lectura de posiciones incompleta: cuenta 74257810 no respondio")
+    b.get_all_positions_strict = _lectura_rota
+
+    live_engine.close_real_positions(conn, b, _settings(enabled=True, dry_run=False), AS_OF)
+    row = [r for r in repo.get_live_orders_today(conn, AS_OF) if r["id"] == oid][0]
+    assert not row["closed"], "una lectura fallida NUNCA debe cerrar una posicion real"
+
+
+def test_si_cierra_cuando_la_lectura_es_confiable_y_la_posicion_no_esta(monkeypatch):
+    """La contracara: con lectura ESTRICTA que responde bien y sin la posicion, si se reconcilia.
+
+    Es lo que evita quedar recomprando posiciones fantasma cuando cerraste algo a mano en el broker
+    (el 2026-08-20 el condor real quedo reintentando el cierre cada 10s y Schwab lo rechazaba)."""
+    import options_advisor.scheduler.market_calendar as _mc
+    monkeypatch.setattr(_mc, "market_session", lambda *a, **k: "abierto")
+    conn = db.connect(":memory:")
+    oid = _insert_filled_open(conn, credit=1.50)
+    b = _close_fake_broker(put_mid=0.30, underlying_last=140.0, strike=125.0,
+                           expiration=date(2026, 9, 18), has_position=False)
+    b.get_all_positions_strict = lambda: []      # lectura completa y de fiar: no hay nada
+    live_engine.close_real_positions(conn, b, _settings(enabled=True, dry_run=False), AS_OF)
+    row = [r for r in repo.get_live_orders_today(conn, AS_OF) if r["id"] == oid][0]
+    assert row["closed"] == 1 and row["close_reason"] == "closed_in_broker"
+
+
 def _reprice_fake_broker(*, status, chain_mid, strike, expiration):
     from options_advisor.broker.models import Greeks, OptionChain, OptionContract
 
@@ -420,3 +465,51 @@ def test_pending_open_emails_idempotent(monkeypatch):
     assert len(sent) == 1 and "NU" in sent[0]           # mandó 1
     _le.send_pending_open_emails(conn, s)
     assert len(sent) == 1                                # no lo re-manda
+
+
+# --------------------------------------------------------------------------------------------
+# Escalera de DIVERSIFICACION (usuario 2026-08-21)
+# --------------------------------------------------------------------------------------------
+# "Si el lunes le dio entrada AAL y vendio -4 put, que el miercoles no agregue 4 mas, sino 2 o 1
+# o ninguna." Antes el robot no miraba lo que ya tenia: AAL termino con 9 contratos en 3 entradas
+# (17/08, 18/08 y 20/08), todos expuestos al mismo movimiento.
+
+def test_escalera_de_diversificacion_va_a_la_mitad_cada_vez():
+    f = live_engine.contracts_after_diversification
+    # Empresa barata: la regla por precio/strike le da 4 de base.
+    assert f(4, 0) == 4, "1ra entrada: el tamano completo que decide la regla por precio"
+    assert f(4, 1) == 2, "2da: la mitad"
+    assert f(4, 2) == 1, "3ra: uno solo"
+    assert f(4, 3) == 0, "4ta: no entra"
+    assert f(4, 9) == 0
+    # El caso real de AAL: 4 -> 2 -> 1 -> nada = 7 contratos en vez de 9.
+    assert f(4, 0) + f(4, 1) + f(4, 2) + f(4, 3) == 7
+
+
+def test_escalera_no_deja_pedir_cero_por_redondeo():
+    """Empresa cara (base 1): la mitad de 1 redondea a 0, pero no queremos frenar la 2da entrada
+    por un redondeo — para eso esta el corte explicito de la 4ta."""
+    f = live_engine.contracts_after_diversification
+    assert f(1, 0) == 1
+    assert f(1, 1) == 1
+    assert f(1, 2) == 1
+    assert f(1, 3) == 0
+
+
+def test_escalera_respeta_la_regla_por_precio_de_la_empresa():
+    """La escalera NO reemplaza el tamano por precio (usuario 2026-08-07/08-17): solo lo achica en
+    las repeticiones. La primera entrada siempre entra con lo que diga esa regla."""
+    f = live_engine.contracts_after_diversification
+    for base in (1, 3, 4):
+        assert f(base, 0) == base
+
+
+def test_cuenta_entradas_vivas_por_simbolo_ignora_cerradas_y_rechazadas():
+    conn = db.connect(":memory:")
+    _insert_filled_open(conn, symbol="AAL", strike=13.0, credit=0.22)
+    _insert_filled_open(conn, symbol="AAL", strike=12.0, credit=0.35)
+    _insert_filled_open(conn, symbol="NVDA", strike=170.0, credit=1.17)
+    assert repo.count_open_real_entries_for_symbol(conn, "AAL") == 2, "dos entradas vivas de AAL"
+    assert repo.count_open_real_entries_for_symbol(conn, "NVDA") == 1
+    assert repo.count_open_real_entries_for_symbol(conn, "AMZN") == 0
+    assert repo.count_open_real_entries_for_symbol(conn, " aal ") == 2, "no distingue mayusculas ni espacios"

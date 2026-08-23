@@ -281,16 +281,31 @@ def build_live_context(conn, broker, settings, as_of: date) -> dict:
             entry = {
                 "id": r["id"],   # ID ÚNICO de la posición (usuario 2026-08-11): para cerrar la exacta sin confusión
                 "symbol": r["symbol"], "strike": float(r["strike"]), "expiration": r["expiration"],
-                "contracts": n, "credit": credit, "pnl_pct": None, "unrealized_pnl": None,
+                "contracts": n, "credit": credit, "pnl_pct": None, "unrealized_pnl": None, "mark": None,
             }
             try:
                 p = sch.get((str(r["symbol"]).strip().upper(), round(float(r["strike"]), 2),
                              date.fromisoformat(r["expiration"])))
-                if p is not None and p.unrealized_pnl is not None:
+                if p is not None:
                     premium = (credit or 0.0) * 100.0 * n
-                    entry["unrealized_pnl"] = round(float(p.unrealized_pnl), 2)
-                    if premium > 0:
-                        entry["pnl_pct"] = round(float(p.unrealized_pnl) / premium * 100.0, 1)
+                    # P&L calculado ACÁ desde (crédito − mark), igual que Real Market. NO se usa
+                    # `p.unrealized_pnl` de Schwab como fuente principal: ese campo llega en 0 y se
+                    # queda en 0 un buen rato (mismo bug que el usuario reportó el 2026-08-11 con "me
+                    # sale P/L en 0" y que ya se había arreglado en el dashboard, pero no acá). El
+                    # 2026-08-19 Moshe le dijo "AAPL #81 está al 0% de ganancia" cuando en realidad
+                    # estaba al 53% y el robot la cerró un minuto después con +$156.
+                    # Además `unrealized_pnl` viene AGREGADO por el broker: con dos órdenes del mismo
+                    # strike/vto (AAL 13P: 1 contrato + 4 contratos) le asignaba a cada una el P&L de
+                    # las cinco. El mark es por contrato, así que este cálculo también lo arregla.
+                    mark = abs(p.market_value) / (100.0 * abs(p.quantity)) if p.quantity else None
+                    if mark is not None and credit:
+                        entry["mark"] = round(mark, 2)
+                        entry["unrealized_pnl"] = round((credit - mark) * 100.0 * n, 2)
+                        entry["pnl_pct"] = round((credit - mark) / credit * 100.0, 1)
+                    elif p.unrealized_pnl is not None:
+                        entry["unrealized_pnl"] = round(float(p.unrealized_pnl), 2)
+                        if premium > 0:
+                            entry["pnl_pct"] = round(float(p.unrealized_pnl) / premium * 100.0, 1)
             except Exception:
                 pass
             open_positions.append(entry)

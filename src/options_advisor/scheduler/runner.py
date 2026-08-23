@@ -5,6 +5,7 @@ import sqlite3
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from options_advisor.broker import token_watch
 from options_advisor.broker.base import BrokerClient
 from options_advisor.config import Settings
 from options_advisor.scheduler.jobs import (
@@ -13,6 +14,7 @@ from options_advisor.scheduler.jobs import (
     job_condor_tick,
     job_detect_real_trades,
     job_learning_review,
+    job_live_position_maintenance,
     job_poll_and_analyze,
     job_premarket_digest,
     job_process_chat_orders,
@@ -36,6 +38,7 @@ def build_scheduler(
     butterfly_conn: sqlite3.Connection | None = None,
     chat_conn: sqlite3.Connection | None = None,
     trades_conn: sqlite3.Connection | None = None,
+    live_conn: sqlite3.Connection | None = None,
 ) -> BlockingScheduler:
     """Arma el scheduler con los disparos de la Sección 6 del plan de Fase 1 (apertura, chequeo
     periódico, cierre) MÁS el escaneo rápido del robot que lo hace operar solo.
@@ -73,6 +76,10 @@ def build_scheduler(
             # operación llenada a las 11:28 apareció en la página recién a las 11:39. Mismo patrón
             # seguro que butterfly/chat: executor propio + conexión propia.
             "trades": {"type": "threadpool", "max_workers": 1},
+            # Hilo propio del MANTENIMIENTO de posiciones reales (usuario 2026-08-19: "debería cerrar
+            # sola al 52%"). El cierre por objetivo de ganancia colgaba del final del escaneo pesado,
+            # que tarda minutos y se saltea a sí mismo; acá corre cada minuto pase lo que pase.
+            "live": {"type": "threadpool", "max_workers": 1},
         },
         job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 60},
     )
@@ -88,6 +95,9 @@ def build_scheduler(
     # Conexión dedicada de la detección de operaciones reales (su executor es otro hilo). En tests no se
     # pasa y cae a la compartida (inocuo: el job no se ejecuta en los tests, solo se registra).
     trades_conn = trades_conn if trades_conn is not None else conn
+    # Conexión dedicada del mantenimiento de posiciones reales (su executor es otro hilo). En tests no
+    # se pasa y cae a la compartida (inocuo: el job no se ejecuta en los tests, solo se registra).
+    live_conn = live_conn if live_conn is not None else conn
 
     def run_job() -> None:
         job_poll_and_analyze(broker, conn, symbols, settings, anthropic_api_key, finnhub_api_key=finnhub_api_key, fred_api_key=fred_api_key)
@@ -119,6 +129,15 @@ def build_scheduler(
     def run_real_trade_detection() -> None:
         # Conexión propia: corre en el executor 'trades', un hilo distinto del escaneo pesado.
         job_detect_real_trades(broker, trades_conn, settings, anthropic_api_key, finnhub_api_key=finnhub_api_key)
+
+    def run_live_maintenance() -> None:
+        # Conexión propia: corre en el executor 'live', un hilo distinto del escaneo pesado.
+        job_live_position_maintenance(broker, live_conn, settings)
+
+    def run_token_watch() -> None:
+        # Usa la conexion del chat porque comparte su executor liviano: solo lee/escribe una fila de
+        # `robot_flags` y nunca debe quedar detras del escaneo pesado de puts.
+        token_watch.check_and_warn(chat_conn)
 
     digest_h, digest_m = _hh_mm(settings.scheduler.premarket_digest_time)
     open_h, open_m = _hh_mm(settings.scheduler.market_open_snapshot_time)
@@ -194,6 +213,20 @@ def build_scheduler(
         id="real_trade_detection",
         executor="trades",   # hilo propio: no lo frena el escaneo pesado de puts (usuario 2026-08-17)
     )
+    # MANTENIMIENTO de posiciones REALES (usuario 2026-08-19): cierre por objetivo de ganancia,
+    # re-precio y email de apertura. Cada minuto, hilo propio. Es el job que decide cuándo te llevás
+    # la ganancia, así que NO puede depender de que el escaneo del universo haya terminado.
+    scheduler.add_job(
+        run_live_maintenance,
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour=f"{start_h}-{end_h}",
+            minute="*",
+            timezone=settings.scheduler.timezone,
+        ),
+        id="live_position_maintenance",
+        executor="live",
+    )
     # Estrategia 2 — Iron Butterfly 0DTE intradía (usuario 2026-08): tick de 1 minuto durante el
     # mercado. El job no hace nada si la estrategia está apagada, así que siempre se registra;
     # prenderla es solo `intraday_butterfly.enabled: true` en el settings.
@@ -229,6 +262,17 @@ def build_scheduler(
         run_learning_review,
         CronTrigger(day_of_week="mon-fri", hour=end_h, minute=min(59, end_m + 20), timezone=settings.scheduler.timezone),
         id="learning_review",
+    )
+    # Vigilante del token de Schwab (usuario 2026-08-18: "me avisas 24 horas antes"). Cada hora, TODOS
+    # los dias — a proposito, no solo en horario de mercado: los 7 dias del refresh_token corren
+    # tambien de noche y los fines de semana, y el 18/08 vencio justo fuera de hora. Avisar un sabado
+    # es lo que te deja reconectar tranquilo antes de que abra el lunes. Es un job baratisimo: lee un
+    # archivo JSON y una fila de `robot_flags`.
+    scheduler.add_job(
+        run_token_watch,
+        CronTrigger(minute=7, timezone=settings.scheduler.timezone),
+        id="schwab_token_watch",
+        executor="chat",
     )
     # Backtest AUTOMÁTICO SEMANAL (usuario 2026-08-07): domingo 18:00, mercado cerrado. Corre el
     # backtest sobre la watchlist y deja el hallazgo en Aprendizaje + te avisa.

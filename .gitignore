@@ -39,3 +39,9 @@ _to_delete/
 .schwab-tokens.json
 .schwab-token-request-debug.json
 data/.schwab-tokens.json
+
+# Respaldos de la base (scripts/backup_db.py) — son datos, no codigo.
+data/backups/
+data/*.tgz
+data/.scheduler.lock
+data/*.db-journal

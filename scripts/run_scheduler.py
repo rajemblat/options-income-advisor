@@ -55,6 +55,10 @@ def main() -> None:
     # compartía worker con el escaneo pesado de puts y quedaba minutos atrás (usuario 2026-08-17:
     # "demora más de 5 minutos y debe demorar menos de 10 segundos"). Mismo patrón que los de arriba.
     trades_conn = db.connect(settings.database.resolved_path())
+    # Conexión dedicada del MANTENIMIENTO de posiciones reales (executor propio, cada 1 min): cierre
+    # por objetivo de ganancia, re-precio y email de apertura. Antes colgaban del final del escaneo
+    # pesado y llegaban tarde (usuario 2026-08-19). Mismo patrón seguro que los de arriba.
+    live_conn = db.connect(settings.database.resolved_path())
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     finnhub_api_key = os.environ.get("FINNHUB_API_KEY")
     fred_api_key = os.environ.get("FRED_API_KEY")
@@ -62,7 +66,7 @@ def main() -> None:
     scheduler = build_scheduler(
         broker, conn, symbols, settings, api_key,
         finnhub_api_key=finnhub_api_key, fred_api_key=fred_api_key, butterfly_conn=butterfly_conn,
-        chat_conn=chat_conn, trades_conn=trades_conn,
+        chat_conn=chat_conn, trades_conn=trades_conn, live_conn=live_conn,
     )
     print(f"Scheduler iniciado (broker.mode={settings.broker.mode}, {len(symbols)} símbolos). Ctrl+C para salir.")
     scheduler.start()

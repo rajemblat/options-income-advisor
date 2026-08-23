@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import datetime as _dt   # fecha de apertura en el email (usuario 2026-08-19)
 from dataclasses import replace
 from datetime import date, datetime
 
@@ -55,7 +56,7 @@ _CLOSE_REASON_ES = {"profit_target": "objetivo de ganancia", "stop_loss": "stop-
                     "manual_ai": "cierre manual (pedido por chat)"}
 
 
-def _fmt_open_email(symbol, strike, expiration, contracts, fill_price, ctx) -> tuple[str, str]:
+def _fmt_open_email(symbol, strike, expiration, contracts, fill_price, ctx, opened_at=None) -> tuple[str, str]:
     """Email de APERTURA real con el mismo detalle que las alertas de apertura (usuario 2026-08-10):
     subyacente, venta/strike/vto/prima, prima neta, beneficio máx, breakeven, cobertura, POP, DTE, anualizado."""
     ctx = ctx or {}
@@ -68,7 +69,19 @@ def _fmt_open_email(symbol, strike, expiration, contracts, fill_price, ctx) -> t
     pop = ctx.get("chosen_pop")
     dte = ctx.get("chosen_dte")
     ann = ctx.get("chosen_annualized_return")
+    # CUÁNDO se abrió (usuario 2026-08-19: "me envió este correo hoy pero no abrí ningún DLO hoy").
+    # El email se reintenta hasta que el SMTP acepta, así que puede llegar horas —o un día— después de
+    # la apertura: el de DLO se abrió el 18/08 15:08 y llegó el 19/08 15:59. Sin la fecha adentro, el
+    # correo parece una operación de hoy y no hay forma de darse cuenta.
+    _abierta = None
+    if opened_at:
+        try:
+            _abierta = _dt.datetime.fromisoformat(str(opened_at)).strftime("%d/%m/%Y %H:%M")
+        except (ValueError, TypeError):
+            _abierta = None
     L = ["✦ Operación Real EJECUTADA (Lokshn)", "", f"✧ {symbol} — Naked PUT"]
+    if _abierta:
+        L.append(f"• Abierta: {_abierta}")
     if isinstance(under, (int, float)):
         L.append(f"• Precio del subyacente: ${under:.2f}")
     L += ["──────────",
@@ -179,6 +192,28 @@ def contracts_for_strike(strike: float | None, lt) -> int:
     return base
 
 
+def contracts_after_diversification(base: int, entradas_abiertas: int) -> int:
+    """Cuantos contratos pedir segun cuantas entradas vivas ya hay de ESE simbolo (usuario 2026-08-21:
+    "si el lunes vendio -4 put de AAL, que el miercoles no agregue 4 mas, sino 2 o 1 o ninguna").
+
+    La escalera va a la mitad cada vez: 1ra entrada el tamano completo, 2da la mitad, 3ra uno solo, 4ta
+    ninguna. Con AAL (4 contratos por la regla de strike barato) queda 4 -> 2 -> 1 -> nada: 7 contratos
+    en total en vez de los 9 que se acumularon.
+
+    IMPORTANTE: NO reemplaza la regla de tamano por precio de la empresa (usuario 2026-08-07/08-17,
+    `use_price_tier_sizing` en el simulador y `cheap_strike_*` en el real). Esa sigue decidiendo el
+    tamano BASE de la primera entrada; esta escalera solo lo achica en las repeticiones. Una empresa
+    barata sigue entrando con 4 la primera vez."""
+    base = max(0, int(base))
+    if entradas_abiertas <= 0:
+        return base
+    if entradas_abiertas == 1:
+        return max(1, base // 2)
+    if entradas_abiertas == 2:
+        return 1
+    return 0
+
+
 def maybe_log_live_order(conn, symbol, result, snapshot, settings, as_of: date, day_change_pct=None,
                          broker=None) -> None:
     """Hook llamado por el simulador cuando una entrada PASA. Si el símbolo está en la whitelist real y
@@ -197,9 +232,35 @@ def maybe_log_live_order(conn, symbol, result, snapshot, settings, as_of: date, 
             return
 
         margin = rules.per_contract_cost(snapshot.price, contract.strike, result.premium, settings.simulator)
+
+        # --- Escalera de DIVERSIFICACION (usuario 2026-08-21) ---
+        # El tamano base lo sigue fijando la regla por precio/strike de siempre; aca solo lo achicamos
+        # si ya hay posiciones vivas del mismo simbolo, para no apilar 9 contratos de AAL.
+        _base_ctr = contracts_for_strike(contract.strike, lt)
+        _abiertas_sym = repo.count_open_real_entries_for_symbol(conn, symbol)
+        _ctr_pedidos = contracts_after_diversification(_base_ctr, _abiertas_sym)
+        if _ctr_pedidos <= 0:
+            # Queda registrado como orden FRENADA para que se vea el motivo en el dashboard, igual que
+            # cuando frena por el tope diario. No se manda nada al broker.
+            repo.insert_live_order_log(
+                conn, log_date=as_of, log_ts=datetime.now(), symbol=symbol,
+                action=live_guard.ACTION_OPEN, strike=contract.strike,
+                expiration=contract.expiration.isoformat(), approved=False, final_contracts=0,
+                start_limit_price=None, collateral=0.0,
+                dry_run=not (lt.enabled and not lt.dry_run), sent=False,
+                reasons=(f"Diversificacion: ya tenes {_abiertas_sym} entradas abiertas de {symbol}; "
+                         f"no se agrega otra hasta cerrar alguna."),
+                payload_json=None, ladder_json=None, bid=contract.bid, ask=contract.ask,
+            )
+            logger.info("Live: %s frenada por diversificacion (%d entradas abiertas)", symbol, _abiertas_sym)
+            return
+        if _ctr_pedidos < _base_ctr:
+            logger.info("Live: %s achicada por diversificacion: %d -> %d contratos (%d entradas abiertas)",
+                        symbol, _base_ctr, _ctr_pedidos, _abiertas_sym)
+
         opp = Opportunity(
             symbol=symbol, action=live_guard.ACTION_OPEN, expiration=contract.expiration,
-            strike=contract.strike, requested_contracts=contracts_for_strike(contract.strike, lt),
+            strike=contract.strike, requested_contracts=_ctr_pedidos,
             bid=contract.bid, ask=contract.ask, underlying_price=snapshot.price,
             collateral_per_contract=margin,
         )
@@ -328,8 +389,9 @@ def send_pending_open_emails(conn, settings) -> None:
                 except Exception:
                     _octx = None
             _contracts = r["filled_contracts"] or r["final_contracts"] or 1
+            _abierta = r["log_ts"] if "log_ts" in r.keys() else None
             _subj, _body = _fmt_open_email(r["symbol"], r["strike"], r["expiration"], _contracts,
-                                           r["fill_price"] or 0.0, _octx)
+                                           r["fill_price"] or 0.0, _octx, opened_at=_abierta)
             if notifier.send_email(_subj, _body):
                 repo.mark_open_email_sent(conn, r["id"])   # solo marcamos si SE MANDÓ (si SMTP falla, reintenta)
         except Exception:
@@ -477,14 +539,7 @@ def close_real_positions(conn, broker, settings, as_of: date) -> None:
 
     # Reconciliación: qué puts cortos siguen REALMENTE abiertos en la cuenta (evita recomprar algo ya
     # cerrado/asignado, y mantiene el registro en sincronía con Schwab).
-    open_at_broker = None
-    try:
-        open_at_broker = set()
-        for p in broker.get_all_positions():
-            if getattr(p, "option_type", None) == "put" and (p.quantity or 0) < 0 and p.strike and p.expiration:
-                open_at_broker.add((p.underlying_symbol, round(float(p.strike), 2), p.expiration))
-    except Exception:
-        open_at_broker = None  # si Schwab falla, seguimos sin la reconciliación (con cautela)
+    open_at_broker = _puts_cortos_en_el_broker(broker)
 
     walk = _walk_config(lt)
     for pos in positions:
@@ -492,6 +547,38 @@ def close_real_positions(conn, broker, settings, as_of: date) -> None:
             _maybe_close_one_real(conn, broker, account_hash, pos, settings.simulator, as_of, walk, open_at_broker)
         except Exception:
             logger.exception("Live-close: fallo evaluando el cierre de %s (se continúa)", pos["symbol"])
+
+
+def _puts_cortos_en_el_broker(broker):
+    """Set de (simbolo, strike, vencimiento) de los puts CORTOS vivos en la cuenta, o None si no se
+    pudo leer con confianza. `None` significa "no se" y APAGA la reconciliacion.
+
+    Por que existe (usuario 2026-08-21: "esas no las cerre yo"). Ese dia la API de Schwab fallo:
+
+        12:26:53 ERROR Fallo al leer posiciones de la cuenta 74257810
+        12:26:56 ERROR Fallo al listar cuentas de Schwab; sin posiciones reales esta corrida
+
+    `get_all_positions()` es TOLERANTE: ante un fallo loguea y devuelve lo que pudo, que ese dia fue
+    una lista vacia. El codigo viejo la trataba como verdad y concluyo que ninguna de las 5
+    posiciones seguia en el broker. Las marco `closed_in_broker` a las 12:28 con AAL, NVDA y AMZN
+    todavia abiertas. El robot dejo de vigilarlas: sin cierre por ganancia y sin contar para los topes.
+
+    La solucion NO es desconfiar de toda lista vacia --- eso dejaria la reconciliacion muerta para
+    siempre el dia que cierres todo a mano, y el robot quedaria intentando recomprar posiciones
+    fantasma. La solucion es preguntar bien: `get_all_positions_strict()` LANZA si alguna cuenta no
+    respondio, asi que su lista vacia si es de fiar. Solo cuando el broker no ofrece esa garantia
+    (mocks y tests) caemos a la version tolerante."""
+    estricto = getattr(broker, "get_all_positions_strict", None)
+    try:
+        posiciones = list(estricto() if callable(estricto) else broker.get_all_positions())
+    except Exception as exc:
+        logger.warning("Reconciliacion: lectura de posiciones incompleta (%s); NO se cierra nada", exc)
+        return None
+    return {
+        (p.underlying_symbol, round(float(p.strike), 2), p.expiration)
+        for p in posiciones
+        if getattr(p, "option_type", None) == "put" and (p.quantity or 0) < 0 and p.strike and p.expiration
+    }
 
 
 # Piso de precio para recomprar un put que ya no tiene bid (vale casi nada). Sin esto el robot no
@@ -936,14 +1023,7 @@ def _process_approved_close(conn, broker, settings, as_of: date, s) -> None:
     if not account_hash:
         return  # sin cuenta resoluble: reintentar (no descartar la orden del usuario)
 
-    open_at_broker = None
-    try:
-        open_at_broker = set()
-        for p in broker.get_all_positions():
-            if getattr(p, "option_type", None) == "put" and (p.quantity or 0) < 0 and p.strike and p.expiration:
-                open_at_broker.add((p.underlying_symbol, round(float(p.strike), 2), p.expiration))
-    except Exception:
-        open_at_broker = None
+    open_at_broker = _puts_cortos_en_el_broker(broker)
 
     pos_id = pos["id"]
     walk = _walk_config(lt)

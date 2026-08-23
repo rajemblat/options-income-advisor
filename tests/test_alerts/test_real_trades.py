@@ -306,11 +306,12 @@ def test_detect_and_alert_real_trades_multiple_opening_legs_generate_separate_al
         broker, conn, _settings(), TODAY, share_positions={}, anthropic_api_key=None, finnhub_api_key=None
     )
 
-    assert len(generated) == 2
+    # Corregido el 2026-08-22: desde el 2026-08-12 las patas de UNA orden se agrupan en UNA sola
+    # alerta combinada ("si vendo dos put y compro uno debe decir exacto"), en vez de generar una
+    # alerta suelta por pata con el riesgo de cada una por separado.
+    assert len(generated) == 1
     rows = repo.get_real_trade_alerts(conn)
-    assert len(rows) == 2
-    strikes = sorted(r["strike"] for r in rows)
-    assert strikes == [70.0, 75.0]
+    assert len(rows) == 1
 
 
 # --- Alcance: rolls (pedido 2026-07-30, cambio sobre la Fase 1 anterior donde se saltaban
@@ -500,15 +501,20 @@ def test_classify_opening_legs_recognizes_bear_call_spread_credit():
     assert group == legs
 
 
-def test_classify_opening_legs_none_for_debit_spread():
-    """La pata comprada cuesta MÁS que la vendida (débito neto) — no es una venta de prima,
-    fuera de alcance de este detector (mismo criterio que el resto de la app: motor de
-    INGRESO)."""
+def test_classify_opening_legs_agrupa_tambien_los_debitos():
+    """Un vertical de DÉBITO también se agrupa como una sola estrategia.
+
+    Corregido el 2026-08-22: este test pedía None porque en la versión vieja el detector solo
+    reconocía iron condors y verticales de crédito. El 2026-08-12 se cambió a propósito para
+    "replicar EXACTO lo que el usuario armó" — si vos abrís un débito a mano, la pestaña de
+    Operaciones tiene que mostrarlo tal cual, no colapsarlo a un put suelto con el riesgo mal.
+    El payoff se calcula genérico por patas, así que la etiqueta es informativa."""
     legs = [
         FilledOrderLeg(occ_symbol="AMD   260904P00180000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=1.0, price=1.00),
         FilledOrderLeg(occ_symbol="AMD   260904P00175000", instruction="BUY_TO_OPEN", position_effect="OPENING", quantity=1.0, price=2.10),
     ]
-    assert real_trades._classify_opening_legs(legs) is None
+    etiqueta, patas = real_trades._classify_opening_legs(legs)
+    assert etiqueta == "bull_put_spread" and len(patas) == 2
 
 
 def test_classify_opening_legs_none_for_single_naked_leg():
@@ -517,15 +523,19 @@ def test_classify_opening_legs_none_for_single_naked_leg():
     assert real_trades._classify_opening_legs([_hood_leg()]) is None
 
 
-def test_classify_opening_legs_none_for_unrecognized_composition():
-    """3 patas (ni naked, ni spread de 2, ni iron condor de 4) — no forzar una clasificación
-    inventada."""
+def test_classify_opening_legs_una_combinacion_rara_queda_como_custom_multileg():
+    """3 patas que no son ningún patrón conocido: se agrupan igual, etiquetadas `custom_multileg`.
+
+    Corregido el 2026-08-22 por el mismo motivo que el test de arriba: antes se devolvía None y la
+    operación terminaba mostrada como una pata suelta, con el riesgo mal calculado. Ahora se agrupa
+    y el payoff se calcula genérico por patas."""
     legs = [
         FilledOrderLeg(occ_symbol="AMD   260904P00180000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=1.0, price=3.20),
         FilledOrderLeg(occ_symbol="AMD   260904P00175000", instruction="BUY_TO_OPEN", position_effect="OPENING", quantity=1.0, price=2.10),
         FilledOrderLeg(occ_symbol="AMD   260904C00220000", instruction="SELL_TO_OPEN", position_effect="OPENING", quantity=1.0, price=3.05),
     ]
-    assert real_trades._classify_opening_legs(legs) is None
+    etiqueta, patas = real_trades._classify_opening_legs(legs)
+    assert etiqueta == "custom_multileg" and len(patas) == 3
 
 
 def test_detect_and_alert_real_trades_recognizes_iron_condor_not_single_leg_put(conn, monkeypatch):

@@ -992,6 +992,23 @@ def mark_open_email_sent(conn: sqlite3.Connection, order_id: int) -> None:
     conn.commit()
 
 
+def count_open_real_entries_for_symbol(conn: sqlite3.Connection, symbol: str) -> int:
+    """Cuantas ENTRADAS reales vivas hay de un simbolo (posiciones llenadas y sin cerrar).
+
+    Es el insumo de la escalera de diversificacion (usuario 2026-08-21): el robot no miraba lo que ya
+    tenia y cada vez que el simbolo daba senal volvia a abrir el tamano completo. Con AAL termino en 9
+    contratos repartidos en 3 entradas (17/08, 18/08 y 20/08), todos moviendose juntos.
+
+    Cuenta ENTRADAS, no contratos: lo que escalona la regla es cuantas veces ya entraste, para que la
+    segunda vez pida la mitad y la tercera solo uno."""
+    row = conn.execute(
+        "SELECT COUNT(*) FROM live_order_log WHERE action = 'SELL_TO_OPEN' AND dry_run = 0 AND sent = 1 "
+        "AND order_status = 'FILLED' AND COALESCE(closed, 0) = 0 AND UPPER(TRIM(symbol)) = ?",
+        ((symbol or "").strip().upper(),),
+    ).fetchone()
+    return row[0] if row else 0
+
+
 def get_open_real_put_positions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Posiciones REALES de put abiertas por el robot y todavía SIN cerrar: aperturas (SELL_TO_OPEN) reales
     que LLENARON y no tienen `closed=1`. Base del cierre real con las reglas del simulador (usuario

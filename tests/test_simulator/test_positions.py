@@ -247,16 +247,21 @@ def _mark_open(conn, expiration, mark, underlying, as_of):
     return positions.mark_position(conn, row, chain, underlying_price=underlying, as_of=as_of, settings=_settings())
 
 
-def test_profit_week1_needs_30pct_floor(conn):
-    """Piso de 30% (usuario 2026-08-11: 'que no cierre automático nada menos del 30%'). Semana 1 ya NO
-    toma ganancia al 18/20% — necesita 30%."""
+def test_profit_dia_5_pide_35pct(conn):
+    """Escalón por ANTIGÜEDAD (usuario 2026-08-12): días 0-2 → 30%, días 3-6 → 35%, día 7+ → 40%.
+
+    Este test probaba el esquema viejo de semana1/semana2 (cerraba al 30% en el día 5) y quedó
+    desactualizado cuando se cambió la regla; se corrigió el 2026-08-22 al correr la suite completa.
+    A los 5 días manda el escalón del 35%."""
     exp = AS_OF + timedelta(days=35)
     contract = _put(strike=80.0, expiration=exp, mid=2.00)
     positions.open_position(conn, "TST", contract, quantity=1, collateral=8_000.0, entry_date=AS_OF)
-    # edad 5 días (dte 30), lejos del strike, ganancia 20% -> ya NO cierra (antes cerraba al 18%)
+    # edad 5 días, ganancia 20% (mark 1.60) -> NO cierra
     assert _mark_open(conn, exp, 1.60, 100.0, AS_OF + timedelta(days=5))["closed"] is False
-    # ganancia 30% (mark 1.40) -> cierra
-    assert _mark_open(conn, exp, 1.40, 100.0, AS_OF + timedelta(days=5))["closed"] is True
+    # ganancia 30% (mark 1.40) -> tampoco: en el día 5 la vara es 35%
+    assert _mark_open(conn, exp, 1.40, 100.0, AS_OF + timedelta(days=5))["closed"] is False
+    # ganancia 35% (mark 1.30) -> cierra
+    assert _mark_open(conn, exp, 1.30, 100.0, AS_OF + timedelta(days=5))["closed"] is True
 
 
 def test_profit_week1_stays_below_18pct(conn):
@@ -267,15 +272,18 @@ def test_profit_week1_stays_below_18pct(conn):
     assert _mark_open(conn, exp, 1.80, 100.0, AS_OF + timedelta(days=5))["closed"] is False
 
 
-def test_profit_week2_needs_30pct(conn):
-    """Semana 2 (edad 8-14): sube la vara a 30%. 20% NO cierra, 35% sí."""
+def test_profit_dia_10_pide_40pct(conn):
+    """Día 7 en adelante la vara sube a 40% (escalón 3). Corregido el 2026-08-22: probaba el
+    esquema viejo de semana2, que pedía 35%."""
     exp = AS_OF + timedelta(days=40)
     contract = _put(strike=80.0, expiration=exp, mid=2.00)
     positions.open_position(conn, "TST", contract, quantity=1, collateral=8_000.0, entry_date=AS_OF)
-    # edad 10 (dte 30), ganancia 20% -> NO cierra
+    # edad 10, ganancia 20% -> NO cierra
     assert _mark_open(conn, exp, 1.60, 100.0, AS_OF + timedelta(days=10))["closed"] is False
-    # ganancia 35% (mark 1.30) -> cierra
-    assert _mark_open(conn, exp, 1.30, 100.0, AS_OF + timedelta(days=10))["closed"] is True
+    # ganancia 35% (mark 1.30) -> tampoco: en el día 10 la vara es 40%
+    assert _mark_open(conn, exp, 1.30, 100.0, AS_OF + timedelta(days=10))["closed"] is False
+    # ganancia 40% (mark 1.20) -> cierra
+    assert _mark_open(conn, exp, 1.20, 100.0, AS_OF + timedelta(days=10))["closed"] is True
 
 
 def test_profit_near_exp_far_from_strike_needs_45pct(conn):
@@ -289,19 +297,25 @@ def test_profit_near_exp_far_from_strike_needs_45pct(conn):
     assert _mark_open(conn, exp, 1.00, 100.0, AS_OF + timedelta(days=20))["closed"] is True
 
 
-def test_profit_near_exp_near_strike_needs_30pct_floor(conn):
-    """Piso de 30% (usuario 2026-08-11): cerca del strike y del vto ya NO cierra con cualquier ganancia —
-    necesita 30%. Nunca cierra en pérdida."""
+def test_cerca_del_strike_y_del_vto_igual_manda_el_escalon_por_antiguedad(conn):
+    """Cerca del strike y del vencimiento NO hay excepción: manda el escalón por antigüedad.
+
+    Antes existía una regla que cerraba con "cualquier ganancia" en esa situación; el 2026-08-11 se
+    le puso un piso de 30% y el 2026-08-12 el esquema entero pasó a la escalera por antigüedad. Este
+    test seguía pidiendo 30% en el día 20, donde la vara real es 40%. Corregido el 2026-08-22.
+    Lo que sí sigue valiendo, y es lo importante: NUNCA cierra en pérdida por ganancia."""
     exp = AS_OF + timedelta(days=35)
     contract = _put(strike=80.0, expiration=exp, mid=2.00)
     positions.open_position(conn, "TST", contract, quantity=1, collateral=8_000.0, entry_date=AS_OF)
     # subyacente 83 -> cobertura (83-80)/83 = 3.6% <=6% (cerca del strike), edad 20 (dte 15)
     # en PÉRDIDA (mark 2.20 = -10%) -> NO cierra
     assert _mark_open(conn, exp, 2.20, 83.0, AS_OF + timedelta(days=20))["closed"] is False
-    # ganancia chica 5% (mark 1.90) -> ya NO cierra (antes cerraba con cualquier ganancia)
+    # ganancia chica 5% (mark 1.90) -> NO cierra
     assert _mark_open(conn, exp, 1.90, 83.0, AS_OF + timedelta(days=20))["closed"] is False
-    # ganancia 30% (mark 1.40) -> cierra
-    assert _mark_open(conn, exp, 1.40, 83.0, AS_OF + timedelta(days=20))["closed"] is True
+    # ganancia 30% (mark 1.40) -> tampoco: en el día 20 la vara es 40%
+    assert _mark_open(conn, exp, 1.40, 83.0, AS_OF + timedelta(days=20))["closed"] is False
+    # ganancia 40% (mark 1.20) -> cierra
+    assert _mark_open(conn, exp, 1.20, 83.0, AS_OF + timedelta(days=20))["closed"] is True
 
 
 def test_naked_margin_is_much_smaller_than_cash_secured():

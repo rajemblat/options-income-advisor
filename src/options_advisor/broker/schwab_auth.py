@@ -20,6 +20,12 @@ DEFAULT_TOKEN_STORE_PATH = PROJECT_ROOT / "data" / ".schwab_tokens.json"
 # El access_token de Schwab expira a los 30 min; refrescamos un poco antes por margen de seguridad.
 ACCESS_TOKEN_REFRESH_MARGIN_SECONDS = 120
 
+# El refresh_token dura ~7 días contados DESDE EL LOGIN MANUAL (scripts/schwab_login.py). Refrescar
+# el access_token cada 30 min NO reinicia ese reloj: Schwab devuelve el mismo refresh_token con su
+# vencimiento original. Por eso `obtained_at` (que se pisa en cada refresh) no sirve para saber
+# cuánto falta, y guardamos aparte `refresh_token_obtained_at`, sellado solo en el login.
+REFRESH_TOKEN_LIFETIME_SECONDS = 7 * 24 * 3600
+
 
 class SchwabAuthError(RuntimeError):
     pass
@@ -61,7 +67,8 @@ class SchwabAuth:
             timeout=15.0,  # nunca colgar el arranque esperando a Schwab (blindaje 2026-08-05)
         )
         response.raise_for_status()
-        self._store_tokens(response.json())
+        # from_login=True: ESTE es el único momento en que arranca el reloj de los 7 días.
+        self._store_tokens(response.json(), from_login=True)
 
     def _refresh(self) -> None:
         tokens = self._load_tokens()
@@ -83,11 +90,47 @@ class SchwabAuth:
         response.raise_for_status()
         self._store_tokens(response.json())
 
-    def _store_tokens(self, token_response: dict) -> None:
-        token_response["obtained_at"] = time.time()
+    def _store_tokens(self, token_response: dict, *, from_login: bool = False) -> None:
+        now = time.time()
+        token_response["obtained_at"] = now
+        # Reloj de los 7 días (usuario 2026-08-18, tras perder media rueda con el token vencido):
+        # se sella SOLO en el login manual. Un refresh arrastra el sello viejo, así el contador no
+        # se reinicia solo cada 30 min y podemos avisar 24 h antes de que caduque de verdad.
+        if from_login:
+            token_response["refresh_token_obtained_at"] = now
+        else:
+            previous = self._stored_refresh_token_obtained_at()
+            # Sin sello previo (primer arranque tras este cambio, o archivo de una versión vieja)
+            # asumimos "recién emitido". El error es como mucho de unos minutos y siempre hacia el
+            # lado seguro: preferimos avisar de más y no de menos.
+            token_response["refresh_token_obtained_at"] = previous if previous is not None else now
         self.token_store_path.parent.mkdir(parents=True, exist_ok=True)
         self.token_store_path.write_text(json.dumps(token_response))
         self._tokens = token_response
+
+    def _stored_refresh_token_obtained_at(self) -> float | None:
+        """Sello de emisión que ya está guardado. None si todavía no hay ninguno.
+
+        Mira PRIMERO el disco y solo cae a memoria si el archivo no se puede leer. El orden importa:
+        el archivo es lo que comparten el robot, el dashboard y `scripts/schwab_login.py`, así que si
+        difiere de la memoria es porque alguien MÁS lo escribió — típicamente vos reconectándote
+        desde otra terminal. Ese dato es más nuevo que el que este proceso tiene cacheado, y leer la
+        memoria primero hacía que el refresh siguiente lo pisara con el sello viejo.
+
+        Nunca lanza: se usa dentro de `_store_tokens`, en el camino crítico del trading."""
+        try:
+            value = json.loads(self.token_store_path.read_text()).get("refresh_token_obtained_at")
+            if isinstance(value, (int, float)):
+                return float(value)
+        except Exception:
+            pass
+        value = (self._tokens or {}).get("refresh_token_obtained_at")
+        return float(value) if isinstance(value, (int, float)) else None
+
+    def refresh_token_seconds_left(self) -> float | None:
+        """Segundos hasta que caduque el refresh_token de este store. Lee del DISCO a propósito
+        (ver `read_refresh_token_seconds_left`)."""
+        return read_refresh_token_seconds_left(self.token_store_path)
 
     def _load_tokens(self) -> dict:
         if self._tokens is not None:
@@ -114,3 +157,22 @@ class SchwabAuth:
             return True
         except Exception:
             return False
+
+
+def read_refresh_token_seconds_left(token_store_path: Path = DEFAULT_TOKEN_STORE_PATH) -> float | None:
+    """Segundos que faltan para que caduque el refresh_token (el que obliga a re-loguearse a mano).
+    None si no hay tokens guardados o el archivo está ilegible; negativo si ya venció.
+
+    Lee SIEMPRE del disco, nunca de `SchwabAuth._tokens`. Es a propósito: el robot cachea los tokens
+    en memoria al arrancar, así que un proceso viejo seguiría creyendo que faltan horas después de
+    que vos te reconectaste desde otra terminal (fue exactamente lo que pasó el 18/08). El archivo es
+    la única fuente de verdad compartida entre el robot, el dashboard y el script de login.
+    Nunca lanza."""
+    try:
+        tokens = json.loads(Path(token_store_path).read_text())
+    except Exception:
+        return None
+    issued_at = tokens.get("refresh_token_obtained_at") or tokens.get("obtained_at")
+    if not isinstance(issued_at, (int, float)):
+        return None
+    return float(issued_at) + REFRESH_TOKEN_LIFETIME_SECONDS - time.time()
