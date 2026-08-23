@@ -1,0 +1,107 @@
+# Versiones EXACTAS de todo lo que necesita el robot.
+#
+# Por qué existe (mudanza al servidor, 2026-08-23): pyproject.toml declara mínimos ("pandas>=2.2"),
+# así que dos instalaciones hechas en fechas distintas traen cosas distintas. Para un robot que
+# manda órdenes con plata real eso no alcanza: la máquina nueva tiene que correr EXACTAMENTE el
+# mismo software que la que ya viene funcionando, y una reinstalación dentro de seis meses no puede
+# traerse sola un cambio grande de pandas, de numpy o del SDK de Anthropic.
+#
+# Estas versiones son las que hoy corren en la Mac del usuario, con plata real, y con ellas pasa la
+# suite completa (1133 tests). Se verificó que importa: una instalación limpia sin fijar traía
+# anthropic 1.0.0 en lugar de 0.118.0 — un salto de versión mayor, en medio de una mudanza, sin
+# ninguna necesidad.
+#
+# `yfinance` NO está en pyproject.toml porque el código lo importa de forma opcional
+# (market_context/earnings.py lo envuelve en try/ImportError). Pero está instalado en la Mac y es
+# la fuente GRATIS de respaldo para las fechas de earnings, que el robot usa para no vender prima
+# encima de un balance. Sin él el robot no falla: pierde ese dato en silencio. Por eso va acá.
+#
+# Para actualizar a propósito: instalar en un entorno limpio SIN este archivo, correr la suite,
+# probar el robot, y recién ahí regenerarlo con:
+#     pip freeze --exclude-editable > deploy/requirements-lock.txt
+altair==6.2.2
+annotated-types==0.7.0
+anthropic==0.118.0
+anyio==4.14.2
+APScheduler==3.11.3
+attrs==26.1.0
+beautifulsoup4==4.15.0
+blinker==1.9.0
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.4.9
+click==8.4.2
+cody-special==1.0.0
+curl_cffi==0.16.0
+distro==1.9.0
+docstring_parser==0.18.0
+exchange_calendars==4.13.2
+freezegun==1.5.5
+gitdb==4.0.12
+GitPython==3.1.59
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+httpx==0.28.1
+idna==3.18
+iniconfig==2.3.0
+itsdangerous==2.2.0
+Jinja2==3.1.6
+jiter==0.16.0
+jsonschema-specifications==2025.9.1
+jsonschema==4.26.0
+korean_lunar_calendar==0.4.0
+lets_be_rational==1.1.2
+MarkupSafe==3.0.3
+multitasking==0.0.13
+narwhals==2.24.0
+numpy==2.4.6
+packaging==26.2
+pandas==3.0.3
+pandas_market_calendars==5.4.0
+peewee==4.3.0
+piecewise-rational==1.0.0
+pillow==12.3.0
+platformdirs==4.11.0
+plotly==6.9.0
+pluggy==1.6.0
+protobuf==7.35.1
+py-vollib==1.0.12
+pyarrow==24.0.0
+pycparser==3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+pydeck==0.9.3
+Pygments==2.20.0
+pyluach==2.3.0
+pytest-mock==3.15.1
+pytest==9.1.1
+python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
+python-multipart==0.0.32
+pytz==2026.3.post1
+PyYAML==6.0.3
+referencing==0.37.0
+requests==2.34.2
+rpds-py==2026.6.3
+scipy==1.17.1
+simplejson==3.20.2
+six==1.17.0
+smmap==5.0.3
+sniffio==1.3.1
+soupsieve==2.9.2
+starlette==1.3.1
+streamlit==1.60.0
+tenacity==9.1.4
+toml==0.10.2
+toolz==1.1.0
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+tzdata==2026.3
+tzlocal==5.4.4
+urllib3==2.7.0
+uvicorn==0.51.0
+vollib==1.0.11
+watchdog==6.0.0
+websockets==16.1.1
+yfinance==1.5.2

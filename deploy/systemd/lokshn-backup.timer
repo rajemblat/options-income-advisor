@@ -1,0 +1,13 @@
+# 20:30 hora de Nueva York, con el mercado cerrado. El reloj del servidor está en esa zona (lo
+# exige el candado de zona horaria del robot), así que esta hora es la que parece.
+
+[Unit]
+Description=Lokshn - respaldo diario de la base
+
+[Timer]
+OnCalendar=*-*-* 20:30:00
+Persistent=true
+Unit=lokshn-backup.service
+
+[Install]
+WantedBy=timers.target

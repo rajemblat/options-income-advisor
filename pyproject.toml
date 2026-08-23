@@ -25,6 +25,14 @@ dev = [
     "pytest-mock>=3.14",
     "freezegun>=1.5",
 ]
+# Fuente GRATIS de respaldo para las fechas de earnings (market_context/earnings.py). El código lo
+# importa dentro de un try/ImportError, así que sin esto el robot funciona igual — pero pierde ese
+# dato en silencio, y las fechas de earnings son las que evitan vender prima encima de un balance.
+# Se declara como extra, no como dependencia obligatoria, para que esa relación quede escrita:
+# es opcional para arrancar, deseable para operar. La instalación del servidor lo incluye.
+yahoo = [
+    "yfinance>=1.5",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

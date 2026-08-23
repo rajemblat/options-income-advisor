@@ -19,6 +19,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 from options_advisor.broker import get_broker_client  # noqa: E402
 from options_advisor.config import configure_logging, load_scan_symbols, load_settings  # noqa: E402
 from options_advisor.scheduler import single_instance  # noqa: E402
+from options_advisor.scheduler import zona_horaria  # noqa: E402
 from options_advisor.scheduler.runner import build_scheduler  # noqa: E402
 from options_advisor.storage import db  # noqa: E402
 
@@ -41,6 +42,19 @@ def main() -> None:
 
     configure_logging()
     settings = load_settings()
+
+    # CANDADO DE ZONA HORARIA (mudanza al servidor, 2026-08-23). Va acá arriba, antes de abrir la
+    # base o hablar con el broker: si el reloj está corrido, todo lo que el robot escriba a partir
+    # de este momento queda con la fecha equivocada, y eso no se nota hasta que se leen los números.
+    try:
+        zona_horaria.exigir_zona_horaria(settings.scheduler.timezone)
+    except zona_horaria.ZonaHorariaIncorrecta as exc:
+        print("\n" + "=" * 70)
+        print("  EL ROBOT NO ARRANCA")
+        print("=" * 70)
+        print(exc)
+        print("=" * 70 + "\n")
+        sys.exit(1)
     symbols = load_scan_symbols(settings.simulator.scan_full_universe)
     broker = get_broker_client(settings)
     conn = db.connect(settings.database.resolved_path())

@@ -1,0 +1,27 @@
+# El dashboard de Streamlit.
+#
+# Escucha en 0.0.0.0, pero el firewall (ufw) solo deja entrar al puerto 8501 por la interfaz de
+# Tailscale. O sea: se ve desde tu celular y tu Mac, y NO desde internet. Eso importa más que de
+# costumbre acá, porque desde el dashboard se aprueban órdenes con plata real.
+
+[Unit]
+Description=Lokshn - dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/options-income-advisor
+ExecStart=%h/options-income-advisor/.venv/bin/streamlit run src/options_advisor/dashboard/app.py \
+    --server.port 8501 \
+    --server.address 0.0.0.0 \
+    --server.headless true \
+    --browser.gatherUsageStats false
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lokshn-dashboard
+
+[Install]
+WantedBy=default.target

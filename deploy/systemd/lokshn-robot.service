@@ -1,0 +1,35 @@
+# El robot: escaneo, decisiones y órdenes reales. Es el equivalente en Linux del LaunchAgent
+# com.robertoajemblat.options-income-advisor.scheduler de la Mac.
+#
+# Es un servicio de USUARIO (~/.config/systemd/user/), no del sistema. Dos motivos: corre sin
+# permisos de administrador, y el healthcheck puede reiniciarlo solo con `systemctl --user restart`
+# sin necesidad de sudo. Para que arranque al prender el servidor sin que nadie inicie sesión hace
+# falta `loginctl enable-linger` — lo hace el instalador.
+
+[Unit]
+Description=Lokshn - robot de opciones
+After=network-online.target
+Wants=network-online.target
+
+# Si el robot se cae 5 veces en 5 minutos, systemd deja de reintentar y lo marca como "failed".
+# Es a propósito: un arranque que falla siempre (por ejemplo el candado de zona horaria) no se
+# arregla reintentando, y un bucle de reinicios esconde el problema en vez de mostrarlo. El
+# healthcheck lo vuelve a levantar cada 5 minutos y ahora manda un email, así que la falla se ve.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=%h/options-income-advisor
+ExecStart=%h/options-income-advisor/.venv/bin/python scripts/run_scheduler.py
+Restart=always
+RestartSec=10
+
+# El robot guarda su propio log rotado en data/logs/robot.log (config/logging.yaml). Acá sólo
+# queda lo que salga por consola, que journald ya rota solo.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lokshn-robot
+
+[Install]
+WantedBy=default.target

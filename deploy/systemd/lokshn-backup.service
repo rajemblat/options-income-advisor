@@ -1,0 +1,13 @@
+# Respaldo diario de la base (equivalente del LaunchAgent .backup de la Mac). Usa la API .backup de
+# SQLite, que copia en caliente y de forma consistente aunque el robot esté escribiendo.
+
+[Unit]
+Description=Lokshn - respaldo de la base
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/options-income-advisor
+ExecStart=%h/options-income-advisor/.venv/bin/python scripts/backup_db.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lokshn-backup

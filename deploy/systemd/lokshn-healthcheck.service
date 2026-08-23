@@ -1,0 +1,13 @@
+# Detecta el robot colgado "mudo" (vivo para el sistema pero sin procesar nada), lo reinicia y
+# manda un email. Lo dispara lokshn-healthcheck.timer; no se habilita solo.
+
+[Unit]
+Description=Lokshn - healthcheck del robot
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/options-income-advisor
+ExecStart=%h/options-income-advisor/.venv/bin/python scripts/healthcheck_scheduler.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lokshn-healthcheck

@@ -1,0 +1,13 @@
+# Cada 5 minutos. El propio healthcheck no hace nada fuera del horario de mercado, así que correrlo
+# siempre es inofensivo y evita depender de un calendario acá.
+
+[Unit]
+Description=Lokshn - correr el healthcheck cada 5 minutos
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+Unit=lokshn-healthcheck.service
+
+[Install]
+WantedBy=timers.target
