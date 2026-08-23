@@ -57,19 +57,53 @@ que hace que arranquen al prender el servidor sin que nadie inicie sesión.
 
 ---
 
-## Pasos
+## La mudanza es en dos etapas, no en una
 
-### 1. Crear el servidor
+Pedido explícito del usuario (23/08): *"no quiero que se borre de la Mac hasta comprobar que
+funciona bien en otro lado"*. Es la decisión correcta, y se puede hacer — con una condición que no
+se negocia:
+
+> **Nunca puede haber dos robots en MODO REAL al mismo tiempo.** El candado de proceso único
+> (`single_instance.py`) protege contra dos robots en la MISMA máquina, con un `flock` sobre un
+> archivo local. Entre máquinas distintas no puede ver nada, y cada una lleva sus topes diarios en
+> su propia base. Dos robots reales mandan cada uno su orden.
+
+Por eso el servidor se instala en **modo prueba** y se queda ahí todos los días que haga falta. En
+ese modo (`dry_run: true` + `kill_switch: true`) el robot escanea, evalúa y registra lo que HARÍA,
+pero el camino real está cortado en cuatro lugares distintos del código: no manda órdenes, no
+cierra posiciones, no re-precia órdenes en espera y no manda emails de apertura ni de cierre.
+
+Además el servicio lleva `LOKSHN_NO_NOTIFY=1`, que es un freno **independiente del modo**: ese
+proceso no manda ni un email ni un mensaje de Telegram, pase lo que pase. Sin eso, cada aviso
+llegaría dos veces —uno de la Mac y otro del servidor— y no se sabría cuál vino de dónde. Es
+justamente la confusión que ya costó un susto el 23/08 con los emails de los tests.
+
+Lo único que sí comparten las dos máquinas es la cuenta de Schwab, para leer precios. No es un
+problema: el `refresh_token` de Schwab no rota (devuelve siempre el mismo con su vencimiento
+original), así que los dos pueden refrescar sin pisarse. Sí duplica las llamadas a la API — si
+aparecieran errores 429 conviene acortar la validación, aunque el cliente ya los reintenta con
+backoff.
+
+---
+
+## Etapa 1 — Levantar el servidor mirando
+
+### 1.1 Crear el servidor
 DigitalOcean → Create Droplet → **Debian 12**, Basic, **$12/mes** (1 vCPU / 2 GB), región **New
 York**, autenticación por contraseña, hostname `lokshn`.
 
 Los 2 GB no son capricho: el dashboard de Streamlit más el robot con pandas no entran cómodos en
 1 GB, y quedarse sin memoria a mitad de rueda es una falla cara.
 
-### 2. Preparar el servidor
+### 1.2 Preparar el servidor
+Desde la Mac, copiar el preparador (un comando por vez, y la IP va sin `< >`):
 ```
-ssh root@<IP>
-bash 1_preparar_servidor.sh      # pegar el contenido del script
+scp ~/options-income-advisor/deploy/1_preparar_servidor.sh root@LA_IP:/root/
+ssh root@LA_IP
+```
+Y ya adentro del servidor:
+```
+bash 1_preparar_servidor.sh
 passwd lokshn                    # elegir una contraseña
 tailscale up                     # abre un link para iniciar sesión
 tailscale ip -4                  # anotar la IP 100.x.x.x
@@ -81,30 +115,61 @@ El firewall cierra todo salvo SSH y **todo lo que venga por Tailscale**. El dash
 alcanzable desde el celular y la Mac, y no desde internet — importa más que de costumbre, porque
 desde el dashboard se aprueban órdenes con plata real.
 
-### 3. Apagar el robot de la Mac
-**Antes de copiar nada.** Dos robots operando a la vez mandarían órdenes dobles, y además copiar la
-base mientras se escribe puede llevarse un archivo inconsistente.
+### 1.3 Copiar el proyecto (la Mac sigue trabajando)
+```
+rsync -av --exclude .venv --exclude __pycache__ --exclude .pytest_cache \
+      ~/options-income-advisor/ lokshn@LA_IP:~/options-income-advisor/
+```
+El `rsync` lleva también lo que **no está en git** y sin lo cual el robot no arranca: `.env`,
+`data/.schwab_tokens.json` y `data/app.db`.
+
+La base se copia con el robot de la Mac corriendo, así que puede quedar un poco desactualizada o
+incluso a medio escribir. Para la etapa de prueba no importa: es una foto para arrancar, y esa
+copia se descarta en la etapa 2. Lo que **no** hay que hacer es copiarla al revés más adelante.
+
+### 1.4 Instalar en modo prueba
+```
+ssh lokshn@LA_IP
+cd ~/options-income-advisor && bash deploy/2_instalar_lokshn.sh
+```
+Verifica que llegaron los secretos y la base, instala con las versiones fijas, **corre la suite
+completa** (si no pasa, no instala nada), verifica el reloj, pone el modo prueba y levanta los
+servicios.
+
+### 1.5 Mirarlo unos días
+Qué observar antes de confiarle plata:
+
+- **Que siga vivo mañana** — `systemctl --user status lokshn-robot`
+- **Que decida parecido a la Mac** — el dashboard, pestaña Real Market, contra lo que hizo la Mac
+- **Que no se quede ciego** — `grep -i "sin conex" data/logs/robot.log`
+- **Que el token se refresque bien** — `grep -c refrescando data/logs/robot.log` tiene que dar
+  decenas por día, no decenas de miles (eso último era el síntoma del apagón de red del 21/08)
+- **Que sobreviva a un reinicio** — `sudo reboot`, y que los cuatro servicios vuelvan solos
+
+---
+
+## Etapa 2 — El cambio definitivo
+
+En este orden, sin saltear:
+
+**1. Apagar el robot de la Mac.**
 ```
 launchctl bootout gui/$(id -u)/com.robertoajemblat.options-income-advisor.scheduler
 ```
 
-### 4. Copiar el proyecto desde la Mac
+**2. Copiar la base de nuevo.** La Mac siguió operando durante toda la validación, así que su base
+tiene operaciones que la copia del servidor no. Ahora sí se copia con el robot ya apagado, o sea
+consistente:
 ```
-rsync -av --exclude .venv --exclude __pycache__ --exclude .pytest_cache \
-      ~/options-income-advisor/ lokshn@<IP>:~/options-income-advisor/
+rsync -av ~/options-income-advisor/data/app.db lokshn@LA_IP:~/options-income-advisor/data/
 ```
-El `rsync` lleva también lo que **no está en git** y sin lo cual el robot no arranca: `.env`,
-`data/.schwab_tokens.json` y `data/app.db` con todo el historial.
 
-### 5. Instalar
+**3. Pasar el servidor a real.**
 ```
-ssh lokshn@<IP>
-cd ~/options-income-advisor && bash deploy/2_instalar_lokshn.sh
+ssh lokshn@LA_IP
+cd ~/options-income-advisor && bash deploy/2_instalar_lokshn.sh --real
 ```
-Verifica que llegaron los secretos y la base, arma el entorno con las versiones fijas, **corre la
-suite completa** (si no pasa, no instala nada), verifica el reloj y levanta los cuatro servicios.
-
----
+Pide confirmación escrita de que la Mac está apagada antes de hacer nada.
 
 ## Uso diario
 
@@ -116,6 +181,15 @@ systemctl --user stop lokshn-robot            # apagarlo
 ```
 
 Dashboard: `http://<IP-de-tailscale>:8501`
+
+**Ver o cambiar el modo de una máquina:**
+```
+./.venv/bin/python deploy/modo.py estado    # ¿esta máquina opera o solo mira?
+./.venv/bin/python deploy/modo.py prueba    # ponerla a mirar
+./.venv/bin/python deploy/modo.py real      # ponerla a operar
+systemctl --user restart lokshn-robot       # el cambio toma efecto al reiniciar
+```
+El robot también lo dice en su primera línea al arrancar, en la consola y en el log.
 
 **Reconectar Schwab (cada ~7 días, no hay forma de evitarlo):**
 ```

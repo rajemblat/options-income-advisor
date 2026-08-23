@@ -120,6 +120,16 @@ def send_text(text: str) -> None:
     rompería con caracteres sin escapar. Nunca lanza: TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID
     ausentes o Telegram caído no deben tumbar el resto del pipeline de alertas (Sección 6) — la
     alerta ya quedó persistida en la tabla `alerts` de todas formas."""
+    # LOKSHN_NO_NOTIFY=1 significa "este proceso no le manda NADA a nadie". Se usa en el servidor
+    # mientras corre en paralelo con la Mac para validarlo: los dos robots evalúan el mismo mercado,
+    # pero solo el de la Mac —el que opera de verdad— tiene permitido avisar. Sin esto, cada alerta
+    # llegaría dos veces y no se sabría cuál vino de dónde.
+    #
+    # A diferencia de send_email/send_native, acá NO se mira PYTEST_CURRENT_TEST: los tests de
+    # Telegram inyectan credenciales falsas y reemplazan httpx, así que no sale nada a la red y
+    # necesitan poder recorrer este camino.
+    if os.environ.get("LOKSHN_NO_NOTIFY") == "1":
+        return
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:

@@ -5,6 +5,7 @@ Uso: python scripts/run_scheduler.py
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -55,6 +56,17 @@ def main() -> None:
         print(exc)
         print("=" * 70 + "\n")
         sys.exit(1)
+
+    # Decir EN VOZ ALTA en qué modo arranca. Durante la mudanza (agosto 2026) conviven el robot de
+    # la Mac —que opera de verdad— y el del servidor —que solo mira—, y confundirlos es la única
+    # forma de que esto salga caro. Va a la consola y al log, antes que cualquier otra cosa.
+    _lt = settings.live_trading
+    _modo = ("MODO PRUEBA (mira pero NO opera)"
+             if (_lt.dry_run or _lt.kill_switch or not _lt.enabled)
+             else "MODO REAL (opera con plata de verdad)")
+    print(f"\n>>> Lokshn arrancando en {_modo}\n")
+    logging.getLogger("options_advisor").warning("Lokshn arranca en %s", _modo)
+
     symbols = load_scan_symbols(settings.simulator.scan_full_universe)
     broker = get_broker_client(settings)
     conn = db.connect(settings.database.resolved_path())
