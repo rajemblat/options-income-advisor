@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
+from options_advisor.broker import conectividad
 from options_advisor.config import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,15 @@ ACCESS_TOKEN_REFRESH_MARGIN_SECONDS = 120
 # cuánto falta, y guardamos aparte `refresh_token_obtained_at`, sellado solo en el login.
 REFRESH_TOKEN_LIFETIME_SECONDS = 7 * 24 * 3600
 
+# Cuánto esperar antes de volver a intentar un refresh que falló por RED (no por token vencido).
+# Por qué existe (viernes 2026-08-21, encontrado el 23/08): la Mac se quedó sin DNS y CADA llamada
+# a la API entraba a la rama de refresh, escribía "refrescando..." en el log, intentaba un POST que
+# reventaba, y volcaba un stack trace de 90 líneas. Resultado: 31.000 líneas de "refrescando..." en
+# un día para ~15 refrescos de verdad, y el log del scheduler creció a 560 MB. Como `_refresh()`
+# revienta antes de guardar nada, `obtained_at` nunca se actualiza y la condición de vencimiento
+# queda pegada en True para siempre: el robot se martillaba a sí mismo.
+REFRESH_FAIL_BACKOFF_SECONDS = 30.0
+
 
 class SchwabAuthError(RuntimeError):
     pass
@@ -42,6 +52,8 @@ class SchwabAuth:
         self.redirect_uri = redirect_uri
         self.token_store_path = token_store_path
         self._tokens: dict | None = None
+        # (instante del fallo, texto) del último refresh que falló por red. Ver REFRESH_FAIL_BACKOFF_SECONDS.
+        self._ultimo_fallo_de_refresh: tuple[float, str] | None = None
 
     def authorization_url(self) -> str:
         params = {"client_id": self.client_id, "redirect_uri": self.redirect_uri}
@@ -72,6 +84,18 @@ class SchwabAuth:
 
     def _refresh(self) -> None:
         tokens = self._load_tokens()
+        try:
+            self._refresh_http(tokens)
+        except httpx.TransportError as exc:
+            # No llegamos ni a Schwab (DNS/Wi-Fi/TLS). NO es el token: no lo tratamos como vencido,
+            # anotamos el fallo para frenar el martilleo y avisamos al vigilante de conexión.
+            self._ultimo_fallo_de_refresh = (time.time(), str(exc))
+            conectividad.registrar_fallo_de_red(exc)
+            raise
+        self._ultimo_fallo_de_refresh = None
+        conectividad.registrar_exito()
+
+    def _refresh_http(self, tokens: dict) -> None:
         response = httpx.post(
             TOKEN_URL,
             headers={**self._basic_auth_header(), "Content-Type": "application/x-www-form-urlencoded"},
@@ -146,10 +170,28 @@ class SchwabAuth:
         tokens = self._load_tokens()
         expires_at = tokens["obtained_at"] + tokens["expires_in"] - ACCESS_TOKEN_REFRESH_MARGIN_SECONDS
         if time.time() >= expires_at:
+            self._frenar_si_el_refresh_viene_fallando()
             logger.info("access_token de Schwab vencido o por vencer, refrescando...")
             self._refresh()
             tokens = self._tokens
         return tokens["access_token"]
+
+    def _frenar_si_el_refresh_viene_fallando(self) -> None:
+        """Si el refresh acaba de fallar por red, corta de una en vez de reintentar el POST.
+
+        Sin esto, durante un apagón de red cada una de las ~100 llamadas por escaneo repetía el
+        intento y su stack trace. El mensaje dice explícitamente que NO es el token vencido, para
+        que nadie salga a re-loguearse a mano por un problema de Wi-Fi."""
+        if self._ultimo_fallo_de_refresh is None:
+            return
+        cuando, detalle = self._ultimo_fallo_de_refresh
+        transcurrido = time.time() - cuando
+        if transcurrido >= REFRESH_FAIL_BACKOFF_SECONDS:
+            return  # ya pasó el enfriamiento: se vuelve a intentar de verdad
+        raise SchwabAuthError(
+            f"Sin conexión con Schwab: el refresh del token falló hace {transcurrido:.0f}s ({detalle}). "
+            "NO es el token vencido — es la red de la máquina. Se reintenta solo en cuanto vuelva."
+        )
 
     def is_authenticated(self) -> bool:
         try:

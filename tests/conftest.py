@@ -89,3 +89,35 @@ def write_mock_fixtures(fixtures_dir: Path, symbol: str = "TST") -> None:
 def mock_fixtures_dir(tmp_path):
     write_mock_fixtures(tmp_path, symbol="TST")
     return tmp_path
+
+
+# ---------------------------------------------------------------------------
+# Ningún test manda avisos de verdad.
+#
+# El 23/08 el usuario recibió emails de cierre con datos inventados ("C put 125 a $1.50",
+# "AAL put 11 a $1.55", un Iron Condor de $200 cerrado a mano) mezclados con los avisos reales de
+# su robot. No los mandó el robot: los mandó `pytest`. La cadena era esta:
+#
+#   1. `dashboard/components.py` hace `load_dotenv(.env)` al importarse.
+#   2. Basta que pytest recoja un test de tests/test_dashboard/ para que ese import corra.
+#   3. A partir de ahí SMTP_HOST/USER/PASSWORD/EMAIL_TO reales viven en os.environ de TODO el
+#      proceso de pytest.
+#   4. tests/test_execution/test_live_engine.py llama a `close_real_positions()` de verdad, que
+#      llama a `notifier.send_email()` de verdad → sale un correo real con datos de fixture.
+#
+# Este fixture corta el paso 3: cada test arranca sin credenciales de ningún canal. Los tests que
+# necesitan credenciales (tests/test_alerts/test_notifier.py) las ponen ellos con
+# monkeypatch.setenv dentro del test, que corre DESPUÉS de este fixture y por lo tanto gana.
+_VARIABLES_DE_AVISO = (
+    "SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "EMAIL_TO", "EMAIL_FROM",
+    "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+)
+
+
+@pytest.fixture(autouse=True)
+def _sin_avisos_reales(monkeypatch):
+    """Corre en TODOS los tests (autouse). Borra las credenciales de correo y Telegram del entorno
+    para que ningún test pueda mandarle nada a la casilla del usuario, aunque el .env se haya
+    colado por un import."""
+    for nombre in _VARIABLES_DE_AVISO:
+        monkeypatch.delenv(nombre, raising=False)

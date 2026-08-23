@@ -109,6 +109,25 @@ def _refresh_news_for_symbol(conn: sqlite3.Connection, symbol: str, today: date,
         logger.exception("Fallo al guardar noticias de %s; se continúa con el resto del análisis", symbol)
 
 
+def _es_fallo_de_red(exc: BaseException) -> bool:
+    """¿Este error es "no llegamos a internet" y no un bug del robot?
+
+    Existe para no volcar un stack trace de 90 líneas por cada símbolo durante un apagón de red.
+    El viernes 21/08 la Mac se quedó sin DNS y los ~100 símbolos de cada escaneo escribieron su
+    traceback completo: el log del scheduler terminó pesando 560 MB. El error importa, el traceback
+    no — es siempre el mismo y no dice nada que la línea de resumen no diga."""
+    import httpx
+    return isinstance(exc, (httpx.TransportError, ConnectionError, OSError))
+
+
+def _loguear_fallo_de_simbolo(mensaje: str, symbol: str, exc: BaseException) -> None:
+    """Una línea si es la red; el traceback completo si es cualquier otra cosa."""
+    if _es_fallo_de_red(exc):
+        logger.warning(mensaje + " — SIN CONEXIÓN: %s", symbol, exc)
+    else:
+        logger.exception(mensaje, symbol)
+
+
 def _run_full_analysis(
     broker: BrokerClient,
     conn: sqlite3.Connection,
@@ -194,10 +213,10 @@ def _run_full_analysis(
                         conn, symbol, analysis.snapshot, analysis.chain, analysis.price_history, settings, broker,
                         day_change_pct=analysis.quote.net_change_pct,
                     )
-            except Exception:
-                logger.exception("Robot: fallo al evaluar entrada de %s; se continúa con el resto", symbol)
-        except Exception:
-            logger.exception("Fallo al procesar %s; se continúa con el resto de los símbolos", symbol)
+            except Exception as _exc:
+                _loguear_fallo_de_simbolo("Robot: fallo al evaluar entrada de %s; se continúa con el resto", symbol, _exc)
+        except Exception as _exc:
+            _loguear_fallo_de_simbolo("Fallo al procesar %s; se continúa con el resto de los símbolos", symbol, _exc)
 
     # Mark-to-market diario de TODAS las posiciones simuladas abiertas (Simulador de Trading
     # Automático) — una sola vez por corrida completa, no por símbolo: una posición simulada
@@ -271,11 +290,11 @@ def _run_robot_scan(
                         conn, symbol, analysis.snapshot, analysis.chain, analysis.price_history, settings, broker,
                         day_change_pct=analysis.quote.net_change_pct,
                     )
-            except Exception:
-                logger.exception("Robot: fallo al evaluar entrada de %s; se continúa con el resto", symbol)
+            except Exception as _exc:
+                _loguear_fallo_de_simbolo("Robot: fallo al evaluar entrada de %s; se continúa con el resto", symbol, _exc)
             evaluated += 1
-        except Exception:
-            logger.exception("Robot: fallo al calcular indicadores de %s; se continúa con el resto", symbol)
+        except Exception as _exc:
+            _loguear_fallo_de_simbolo("Robot: fallo al calcular indicadores de %s; se continúa con el resto", symbol, _exc)
 
     try:
         simulator_engine.mark_and_close_positions(conn, broker, settings, today)
@@ -386,11 +405,16 @@ def job_live_position_maintenance(
         return
     if not force and market_session() != "abierto":
         return
+    from options_advisor.broker import conectividad as _conectividad
     from options_advisor.execution import live_engine as _live_engine
     _pasos = (
         ("re-precio de órdenes en espera", lambda: _live_engine.reprice_resting_orders(conn, broker, settings, today)),
         ("cierre de posiciones reales", lambda: _live_engine.close_real_positions(conn, broker, settings, today)),
         ("email de apertura pendiente", lambda: _live_engine.send_pending_open_emails(conn, settings)),
+        # Cuarto paso, agregado el 2026-08-23: avisar si la máquina se quedó sin conexión. El viernes
+        # 21/08 el robot estuvo ciego por un apagón de DNS y "corría" igual — 288 escaneos de menos de
+        # un segundo — sin que nadie se enterara. Va acá porque este job late cada minuto.
+        ("aviso de conexión caída", lambda: _conectividad.avisar_si_esta_ciego(conn)),
     )
     for _nombre, _paso in _pasos:
         try:

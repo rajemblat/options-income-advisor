@@ -7,6 +7,8 @@ from datetime import date, datetime, timedelta, timezone
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from options_advisor.broker import conectividad
+
 from options_advisor.broker.base import BrokerClient
 from options_advisor.broker.models import (
     AccountPosition,
@@ -200,6 +202,29 @@ def _parse_next_ex_dividend_date(fundamental: dict) -> date | None:
     return min(candidates) if candidates else None
 
 
+class _TransporteVigilado(httpx.HTTPTransport):
+    """Transporte de httpx que le avisa a `conectividad` si la máquina llega o no a Schwab.
+
+    Se engancha acá, en el transporte, y no en cada método: hay una docena de llamadas distintas
+    (quotes, cadenas, cuentas, órdenes) y una nueva se olvidaría de reportar. Distingue el fallo de
+    RED (`httpx.TransportError`: DNS, Wi-Fi, TLS, timeout de conexión) de una respuesta con código
+    de error, que sí llegó y por lo tanto prueba que hay conexión.
+
+    Nota para el futuro: pasarle un transporte propio a httpx.Client hace que httpx no arme el suyo,
+    así que deja de leer HTTP_PROXY/HTTPS_PROXY del entorno. Hoy no se usa proxy; si algún día hace
+    falta, hay que pasarle `proxy=` a este transporte a mano. La verificación de TLS no cambia
+    (HTTPTransport verifica por defecto, igual que antes)."""
+
+    def handle_request(self, request):
+        try:
+            respuesta = super().handle_request(request)
+        except httpx.TransportError as exc:
+            conectividad.registrar_fallo_de_red(exc)
+            raise
+        conectividad.registrar_exito()
+        return respuesta
+
+
 class SchwabBrokerClient(BrokerClient):
     """Implementación real de BrokerClient contra la Schwab Trader API — verificada en vivo
     (autenticación, quotes, historial de precios, cadena de opciones con griegos/IV/OI/volumen
@@ -208,8 +233,10 @@ class SchwabBrokerClient(BrokerClient):
     def __init__(self, auth: SchwabAuth, risk_free_rate: float = DEFAULT_RISK_FREE_RATE):
         self.auth = auth
         self.risk_free_rate = risk_free_rate
-        self._client = httpx.Client(base_url=MARKET_DATA_BASE_URL, timeout=15.0)
-        self._trader_client = httpx.Client(base_url=TRADER_API_BASE_URL, timeout=15.0)
+        self._client = httpx.Client(base_url=MARKET_DATA_BASE_URL, timeout=15.0,
+                                    transport=_TransporteVigilado())
+        self._trader_client = httpx.Client(base_url=TRADER_API_BASE_URL, timeout=15.0,
+                                           transport=_TransporteVigilado())
 
     @classmethod
     def from_env(cls) -> SchwabBrokerClient:

@@ -366,7 +366,7 @@ def _send_real_order(conn, log_id, broker, opp, plan, walk, lt, open_context=Non
             from options_advisor.alerts import notifier
             _subj, _body = _fmt_working_email(opp.symbol, opp.strike, opp.expiration, plan.final_contracts,
                                               res.final_limit_price or plan.start_limit_price, open_context)
-            notifier.send_email(_subj, _body)
+            notifier.send_email_robot_real(_subj, _body)
         except Exception:
             logger.debug("Live: no se pudo mandar el email de 'Working'", exc_info=True)
     else:
@@ -403,7 +403,7 @@ def send_pending_open_emails(conn, settings) -> None:
             _abierta = r["log_ts"] if "log_ts" in r.keys() else None
             _subj, _body = _fmt_open_email(r["symbol"], r["strike"], r["expiration"], _contracts,
                                            r["fill_price"] or 0.0, _octx, opened_at=_abierta)
-            if notifier.send_email(_subj, _body):
+            if notifier.send_email_robot_real(_subj, _body):
                 repo.mark_open_email_sent(conn, r["id"])   # solo marcamos si SE MANDÓ (si SMTP falla, reintenta)
         except Exception:
             logger.debug("Live-email: fallo al mandar el email de apertura de %s", r["symbol"], exc_info=True)
@@ -815,7 +815,7 @@ def _maybe_close_one_real(conn, broker, account_hash, pos, sim, as_of: date, wal
             except Exception:
                 _days_held = None
             _subj, _body = _fmt_close_email(symbol, strike, contracts, entry_premium, close_px, reason, _octx, _days_held)
-            notifier.send_email(_subj, _body)
+            notifier.send_email_robot_real(_subj, _body)
         except Exception:
             logger.debug("Live-close: no se pudo mandar el email de cierre", exc_info=True)
         repo.reset_real_close_attempts(conn, pos["id"])
@@ -831,7 +831,7 @@ def _maybe_close_one_real(conn, broker, account_hash, pos, sim, as_of: date, wal
             try:
                 from options_advisor.alerts import notifier
                 _pnl_now = round((entry_premium - current_value) * 100.0 * contracts, 2)
-                notifier.send_email(
+                notifier.send_email_robot_real(
                     f"⚠️ Lokshn no puede cerrar {symbol} put ${strike:,.2f} ({_n} intentos)",
                     f"El robot quiere cerrar esta posición por {reason} pero la recompra no llena.\n\n"
                     f"Posición: {contracts} put(s) {symbol} ${strike:,.2f} vto {expiration}\n"

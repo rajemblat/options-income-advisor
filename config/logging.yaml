@@ -1,3 +1,17 @@
+# Logging del robot.
+#
+# Dos destinos a propósito (2026-08-23):
+#   - `archivo`: el detalle completo (INFO) en data/logs/robot.log, ROTADO. 20 MB por archivo y 5
+#     de respaldo = 120 MB como techo absoluto, pase lo que pase.
+#   - `console`: solo WARNING para arriba. Es lo que launchd guarda en data/logs/scheduler.err.log,
+#     que NO rota — así que ahí va únicamente lo que hay que mirar.
+#
+# Por qué: el viernes 21/08 la Mac se quedó sin DNS, cada símbolo de cada escaneo volcó su stack
+# trace completo, y scheduler.err.log llegó a 560 MB. Un disco lleno con el robot operando plata
+# real es una forma cara de perder una rueda.
+#
+# `configure_logging()` (src/options_advisor/config.py) reemplaza `filename` por la ruta absoluta
+# dentro del proyecto y crea la carpeta, así que no importa desde dónde se arranque el proceso.
 version: 1
 disable_existing_loggers: false
 
@@ -9,8 +23,30 @@ handlers:
   console:
     class: logging.StreamHandler
     formatter: default
+    level: WARNING
+  archivo:
+    class: logging.handlers.RotatingFileHandler
+    formatter: default
     level: INFO
+    filename: data/logs/robot.log
+    maxBytes: 20971520      # 20 MB
+    backupCount: 5
+    encoding: utf-8
+
+loggers:
+  # httpx loguea una línea INFO por cada request HTTP. Un escaneo del universo son cientos, y no
+  # dicen nada que no diga ya el resultado del escaneo.
+  httpx:
+    level: WARNING
+
+  # OJO: `apscheduler` se deja en INFO A PROPÓSITO, aunque sea ruidoso (dos líneas por corrida de
+  # cada job, con uno que late cada 15 segundos). Esas líneas son el LATIDO del robot:
+  # `scripts/healthcheck_scheduler.py` decide si el proceso está colgado mirando hace cuánto que no
+  # se escribe este archivo, y da por muerto un robot que pasa 9 minutos sin escribir nada. Bajarlo
+  # a WARNING dejaría el archivo mudo con el robot perfectamente sano y el healthcheck lo
+  # reiniciaría en bucle, con el mercado abierto. El techo de tamaño lo pone la rotación, no el
+  # silencio. Ver tests/test_logging_rotativo.py.
 
 root:
   level: INFO
-  handlers: [console]
+  handlers: [console, archivo]

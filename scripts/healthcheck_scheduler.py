@@ -34,7 +34,14 @@ from options_advisor.storage import db  # noqa: E402
 
 LAUNCHD_LABEL = "com.robertoajemblat.options-income-advisor.scheduler"
 SCHEDULER_SCRIPT_MARKER = "run_scheduler.py"
-LOG_PATH = PROJECT_ROOT / "data" / "logs" / "scheduler.err.log"
+# El healthcheck decide si el robot está colgado mirando la fecha de modificación de este archivo.
+# Tiene que ser el log donde el robot escribe SIEMPRE que está sano — o sea el rotado de INFO
+# (config/logging.yaml, handler `archivo`), NO el de launchd. Desde el 23/08 la consola quedó en
+# WARNING para que scheduler.err.log deje de crecer sin control; un robot sano no escribe nada ahí,
+# así que apuntar acá a scheduler.err.log significaría "sin actividad" cada pocos minutos y este
+# script lo reiniciaría en bucle con el mercado abierto. El test tests/test_scheduler/
+# test_healthcheck_log_path.py ata las dos rutas para que no se separen nunca más.
+LOG_PATH = PROJECT_ROOT / "data" / "logs" / "robot.log"
 HEALTHCHECK_LOG_PATH = PROJECT_ROOT / "data" / "logs" / "healthcheck.log"
 
 

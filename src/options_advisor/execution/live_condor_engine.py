@@ -126,7 +126,7 @@ def _close_debit_ladder(sp, sc, lp, lc) -> list[float]:
 def _email(subject: str, body: str) -> None:
     try:
         from options_advisor.alerts import notifier
-        notifier.send_email(subject, body)
+        notifier.send_email_robot_real(subject, body)
     except Exception:
         logger.debug("Condor-real: no se pudo mandar el email", exc_info=True)
 

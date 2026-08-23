@@ -536,7 +536,23 @@ def load_priority_watchlist_symbols(path: Path | None = None) -> list[str]:
 
 
 def configure_logging(path: Path | None = None) -> None:
+    """Arma el logging del proceso a partir de config/logging.yaml.
+
+    Convierte a ruta ABSOLUTA el `filename` de los handlers de archivo y crea la carpeta. Sin esto,
+    la ruta relativa del YAML depende del directorio desde el que se arrancó el proceso: el robot
+    lo lanza launchd (con WorkingDirectory) pero un `python scripts/run_scheduler.py` a mano desde
+    otra carpeta escribiría el log en cualquier lado — o reventaría al arrancar por una carpeta
+    inexistente, que con plata real significa el robot caído."""
     path = path or (PROJECT_ROOT / "config" / "logging.yaml")
     with open(path) as f:
         raw = yaml.safe_load(f)
+    for handler in (raw.get("handlers") or {}).values():
+        nombre = handler.get("filename")
+        if not nombre:
+            continue
+        destino = Path(nombre)
+        if not destino.is_absolute():
+            destino = PROJECT_ROOT / destino
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        handler["filename"] = str(destino)
     logging.config.dictConfig(raw)
