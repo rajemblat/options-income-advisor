@@ -108,6 +108,8 @@ if mode == "🤖 Reglas del robot":
     do_butterfly = scol3.checkbox("🟣 Iron Butterfly (aprox.)", value=True)
 
 with st.expander("⚙️ Parámetros (avanzado)"):
+    st.caption("Estos controles son de los **naked puts**. El Iron Condor y el Iron Butterfly son 0DTE "
+               "y usan sus propias reglas — se muestran abajo, cuando los tildás.")
     p1, p2, p3, p4 = st.columns(4)
     target_delta = p1.slider("Delta objetivo (put)", 0.10, 0.45, 0.25, 0.01)
     target_dte = p2.slider("DTE objetivo", 7, 60, 40, 1)
@@ -167,8 +169,35 @@ with st.expander("⚙️ Parámetros (avanzado)"):
 npar = engine.NakedPutParams(target_delta=target_delta, target_dte=target_dte, min_coverage=min_cov,
                              iv_mult=iv_mult, rsi_max=rsi_max, near_support_pct=near_support_pct,
                              profit_target_pct=profit_target_pct, model_assignment=model_assignment)
-ipar = engine.IronParams(profit_target_pct=settings.intraday_condor.profit_target_pct,
-                         stop_loss_dollars=settings.intraday_condor.stop_loss_dollars, iv_mult=iv_mult)
+# Los 0DTE NO usan los controles de arriba (delta objetivo, DTE, cobertura): esos son de los naked
+# puts. El condor y el butterfly se miden con SUS PROPIAS reglas, y con los valores EFECTIVOS — los
+# que el aprendizaje ya ajustó — no con los de config.
+#
+# Hasta el 2026-08-23 había UN solo juego de parámetros para las dos estrategias, tomado del condor.
+# O sea que el butterfly se venía midiendo con 35% del crédito y stop de $100, cuando su regla real
+# es cerrar a +$50 FIJOS con stop de -$70 (usuario 2026-08-10: "scalp rápido"). El backtest del
+# butterfly estaba describiendo una estrategia que no existe.
+_cfg_condor = learning.effective_condor(conn, settings.intraday_condor)
+_cfg_fly = learning.effective_butterfly(conn, settings.intraday_butterfly)
+
+from dataclasses import replace as _replace
+ipar_condor = _replace(engine.params_del_condor(_cfg_condor), iv_mult=iv_mult)
+ipar_fly = _replace(engine.params_del_butterfly(_cfg_fly), iv_mult=iv_mult)
+
+if do_condor or do_butterfly:
+    _c1, _c2 = st.columns(2)
+    if do_condor:
+        _c1.caption(
+            f"🔵 **Iron Condor** se corre con SUS reglas (no con el delta/DTE de arriba): "
+            f"cierra al **{ipar_condor.profit_target_pct:.0%}** del crédito, stop **${ipar_condor.stop_loss_dollars:,.0f}**, "
+            f"cortos a delta **{ipar_condor.short_delta:.2f}** (≈{engine.sigmas_para_delta(ipar_condor.short_delta):.2f}σ), "
+            f"y **solo en días calmos** (rango del día anterior ≤ {ipar_condor.calm_range_pct:.2%}).")
+    if do_butterfly:
+        _c2.caption(
+            f"🟣 **Iron Butterfly** se corre con SUS reglas: cierra a **+${ipar_fly.profit_dollars:,.0f} fijos**, "
+            f"stop **-${ipar_fly.stop_loss_dollars:,.0f}**. Necesita acertar más de "
+            f"**{ipar_fly.stop_loss_dollars / (ipar_fly.profit_dollars + ipar_fly.stop_loss_dollars):.1%}** "
+            f"solo para empatar.")
 
 run = st.button("▶️ Correr backtest", type="primary", use_container_width=True)
 lookback_days = (today - start_date).days + 40
@@ -235,9 +264,9 @@ if run:
                 if do_naked:
                     all_trades.extend(engine.backtest_naked_puts(bars, s, sim_settings, npar))
                 if do_condor:
-                    all_trades.extend(engine.backtest_iron_condor_daily(bars, s, ipar))
+                    all_trades.extend(engine.backtest_iron_condor_daily(bars, s, ipar_condor))
                 if do_butterfly:
-                    all_trades.extend(engine.backtest_iron_butterfly_daily(bars, s, ipar))
+                    all_trades.extend(engine.backtest_iron_butterfly_daily(bars, s, ipar_fly))
     st.session_state["bt_trades"] = all_trades
     st.session_state["bt_mode"] = mode
 

@@ -571,6 +571,62 @@ def job_learning_review(conn: sqlite3.Connection, settings: Settings, force: boo
         logger.exception("Aprendizaje: fallo al notificar las consultas pendientes")
 
 
+def _backtest_semanal_de_los_iron(broker: BrokerClient, conn: sqlite3.Connection, settings: Settings) -> dict:
+    """Backtest aproximado del Iron Condor y del Iron Butterfly 0DTE sobre su subyacente real.
+
+    Va aparte del sweep de naked puts porque es OTRA cosa: los naked se miden sobre la watchlist
+    entera a varios deltas; los 0DTE se operan solo sobre $SPX, y lo que se mide no es el strike
+    sino con qué frecuencia el mercado se queda lo bastante quieto.
+
+    Usa los parámetros EFECTIVOS (los que el aprendizaje ya movió), no los de config, para que el
+    histórico se compare contra las reglas que el robot está usando hoy.
+
+    Es una APROXIMACIÓN declarada: no existe intradía histórico de años atrás, así que el crédito se
+    estima desde la volatilidad. Sirve para la frecuencia de acierto, no para el peso exacto en
+    dólares. Nunca lanza: es un informe, no puede tumbar el scheduler."""
+    salida: dict = {}
+    try:
+        cfg_condor = learning.effective_condor(conn, settings.intraday_condor)
+        cfg_fly = learning.effective_butterfly(conn, settings.intraday_butterfly)
+        subyacente = getattr(cfg_condor, "underlying", None) or "$SPX"
+        bars = broker.get_price_history(subyacente, 365 * 5 + 40)
+        if not bars or len(bars) < 60:
+            logger.info("Backtest semanal: sin histórico suficiente de %s para los 0DTE", subyacente)
+            return {}
+
+        combinaciones = (
+            ("condor", backtest_engine.backtest_iron_condor_daily,
+             backtest_engine.params_del_condor(cfg_condor)),
+            ("butterfly", backtest_engine.backtest_iron_butterfly_daily,
+             backtest_engine.params_del_butterfly(cfg_fly)),
+        )
+        for nombre, correr, params in combinaciones:
+            try:
+                operaciones = correr(bars, subyacente, params)
+                k = backtest_engine.summarize(operaciones)
+                if not k["n"]:
+                    continue
+                # El crédito que ASUME el modelo va en el texto a propósito: es el supuesto más
+                # frágil de todo esto y hasta hoy quedaba invisible. Con $SPX a 7.700 la fórmula
+                # (precio × sigma × 0.20) da créditos de más de $1.000, cuando los condors REALES
+                # del usuario cobraron entre $167 y $202. Un P&L construido sobre un crédito 7 veces
+                # mayor que el real no se puede usar para decidir nada, y el informe tiene que
+                # decirlo en vez de mostrar un número redondo y confiado.
+                _credito = (sum(t.entry_premium for t in operaciones) / len(operaciones)) * 100.0
+                k["credito_medio_modelado"] = round(_credito, 2)
+                k["linea"] = (f"{nombre.capitalize()} 0DTE ({subyacente}, {k['n']} días): "
+                              f"acertó {k['win_rate']:.1f}%, P&L ${k['total_pnl']:,.0f}. "
+                              f"OJO: el modelo asume un crédito medio de ${_credito:,.0f} por operación "
+                              f"— comparalo con lo que cobrás de verdad antes de creerle al P&L.")
+                k.pop("equity_curve", None)   # no entra en el informe, son miles de puntos
+                salida[nombre] = k
+            except Exception:
+                logger.exception("Backtest semanal: falló el 0DTE de %s", nombre)
+    except Exception:
+        logger.exception("Backtest semanal: falló el bloque de los 0DTE (no afecta al de naked puts)")
+    return salida
+
+
 def job_backtest_review(broker: BrokerClient, conn: sqlite3.Connection, settings: Settings, force: bool = False) -> None:
     """Backtest AUTOMÁTICO SEMANAL (usuario 2026-08-07): corre el backtest de naked puts sobre tu
     watchlist a varios deltas en ~5 años de histórico, guarda el hallazgo (qué delta rindió mejor) en
@@ -596,14 +652,35 @@ def job_backtest_review(broker: BrokerClient, conn: sqlite3.Connection, settings
         best = ranking[0] if ranking else None
         if not best:
             return
-        resumen = (f"Backtest semanal (5 años, {len(bars_by)} símbolos): el delta objetivo que MÁS rindió "
-                   f"fue {best['delta']:.2f} (win {best['win_rate']:.1f}%, P&L ${best['total_pnl']:,.0f}, "
-                   f"anualizado {best['avg_annualized']:.0f}%). Miralo en Aprendizaje.")
-        repo.insert_learning_report(conn, best["n"], resumen,
-                                    json.dumps({"source": "weekly_backtest", "ranking": ranking}, default=str))
-        notifier.send_native(resumen, title="Lokshn", subtitle="Backtest semanal")
+        # El ranking va por P&L total, y por eso SIEMPRE va a coronar al delta más arriesgado: vender
+        # más cerca del dinero cobra más prima y gana casi siempre… hasta la vez que no. El titular
+        # tiene que traer el drawdown al lado, o el informe empuja a tomar más riesgo escondiendo
+        # justamente el riesgo (encontrado el 2026-08-23: el delta ganador mostraba +$389k de
+        # ganancia y se callaba -$879k de caída máxima, más del doble).
+        _dd = abs(float(best.get("max_drawdown") or 0.0))
+        _veces = (_dd / best["total_pnl"]) if best["total_pnl"] > 0 else 0.0
+        resumen = (f"Backtest semanal (5 años, {len(bars_by)} símbolos): el delta que más P&L dio fue "
+                   f"{best['delta']:.2f} (win {best['win_rate']:.1f}%, P&L ${best['total_pnl']:,.0f}) "
+                   f"PERO con una caída máxima de ${_dd:,.0f}"
+                   + (f" — {_veces:.1f}× la ganancia." if _veces >= 1 else ".")
+                   + " El ranking ordena por P&L, así que premia al delta MÁS arriesgado: mirá la"
+                     " tabla completa en Aprendizaje antes de mover nada.")
+        detalle = {"source": "weekly_backtest", "ranking": ranking}
+
+        # Los 0DTE también (usuario 2026-08-23: "si quiero los iron, ¿cómo hacemos?"). Hasta hoy el
+        # backtest semanal corría SOLO naked puts, aunque el motor ya tenía condor y butterfly.
+        # Van sobre el subyacente que operan de verdad ($SPX), no sobre la watchlist, y con los
+        # parámetros EFECTIVOS — los que el aprendizaje ya ajustó — para que el histórico se mida
+        # contra las reglas vigentes y no contra las de fábrica.
+        iron = _backtest_semanal_de_los_iron(broker, conn, settings)
+        if iron:
+            detalle["iron"] = iron
+            resumen += "\n" + "\n".join(iron[k]["linea"] for k in ("condor", "butterfly") if k in iron)
+
+        repo.insert_learning_report(conn, best["n"], resumen, json.dumps(detalle, default=str))
+        notifier.send_native(resumen.splitlines()[0], title="Lokshn", subtitle="Backtest semanal")
         notifier.send_text(f"📊 {resumen}")
-        logger.info("Backtest semanal: %s", resumen)
+        logger.info("Backtest semanal: %s", resumen.replace("\n", " | "))
     except Exception:
         logger.exception("Backtest semanal: fallo al correr el backtest de aprendizaje")
 

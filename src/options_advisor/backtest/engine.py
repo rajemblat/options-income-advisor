@@ -17,6 +17,7 @@ Honestidad sobre exactitud:
 from __future__ import annotations
 
 import math
+from statistics import NormalDist
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -419,6 +420,43 @@ class IronParams:
     stop_loss_dollars: float = 100.0
     iv_mult: float = 1.15
     max_per_day: int = 3               # cuántos por día (aprox: si aplica, cuenta como N iguales)
+    # Ganancia FIJA en dólares, cuando la estrategia cierra por monto y no por porcentaje del
+    # crédito. Es el caso del Iron Butterfly: cierra a +$50 fijo (settings.yaml
+    # `intraday_butterfly.profit_target`, decisión del usuario 2026-08-10: "scalp rápido"). Sin
+    # esto el backtest del butterfly usaba un % del crédito estimado y no se parecía a la regla
+    # real. None = usar `profit_target_pct` (el caso del condor).
+    profit_dollars: float | None = None
+    # Delta de los cortos, tomado de la config real (`intraday_condor.short_delta_max`). Antes la
+    # distancia estaba escrita a mano como 1.04 sigma; ese numero NO era arbitrario -- es exactamente
+    # el equivalente en sigmas de delta 0.15 -- pero quedaba clavado, asi que cambiar la
+    # configuracion no movia el backtest y se medía una estrategia distinta a la que el robot opera.
+    short_delta: float = 0.15
+    # Filtro de DIA CALMO. El condor en vivo solo entra si el mercado viene tranquilo
+    # (`intraday_condor.calm_range_pct`). El backtest abria uno TODOS los dias, incluidos los
+    # violentos que el robot habria salteado, y por eso subestimaba la estrategia.
+    #
+    # Ojo con la trampa: en vivo eso se decide mirando los primeros 30 minutos. Con datos diarios
+    # solo se conoce el rango del dia ENTERO, y usarlo seria decidir con informacion del futuro
+    # (look-ahead). Por eso el filtro mira el rango del dia ANTERIOR, que si esta disponible al
+    # abrir. Es una aproximacion del gatillo real, no el gatillo real.
+    filtrar_dias_calmos: bool = False
+
+
+def sigmas_para_delta(delta: float) -> float:
+    """A cuantos sigmas OTM esta un corto de este delta.
+
+    Para una opcion OTM, delta ~= la probabilidad de terminar dentro del dinero, asi que la
+    distancia en sigmas es el cuantil de la normal: z = inv_cdf(1 - delta). Con delta 0.15 da 1.036
+    -- el mismo 1.04 que antes estaba escrito a mano, ahora derivado en vez de clavado."""
+    d = min(max(float(delta), 0.001), 0.499)
+    return NormalDist().inv_cdf(1.0 - d)
+
+
+def _rango_del_dia(bar: PriceBar) -> float | None:
+    """Rango intradia como fraccion de la apertura. None si la barra no sirve."""
+    if not bar.open or bar.open <= 0 or bar.high is None or bar.low is None:
+        return None
+    return (bar.high - bar.low) / bar.open
 
 
 def _daily_sigma_pct(iv: float) -> float:
@@ -427,7 +465,12 @@ def _daily_sigma_pct(iv: float) -> float:
 
 
 def _iron_trade(symbol, strategy, bar, est_credit, won, p):
-    pnl = round(est_credit * CONTRACT_MULTIPLIER * p.profit_target_pct, 2) if won else round(-p.stop_loss_dollars, 2)
+    if not won:
+        pnl = round(-p.stop_loss_dollars, 2)
+    elif p.profit_dollars is not None:
+        pnl = round(p.profit_dollars, 2)          # cierre por monto fijo (butterfly: +$50)
+    else:
+        pnl = round(est_credit * CONTRACT_MULTIPLIER * p.profit_target_pct, 2)
     capital = p.stop_loss_dollars
     return BacktestTrade(
         symbol=symbol, strategy=strategy, entry_date=bar.trade_date, exit_date=bar.trade_date,
@@ -436,6 +479,43 @@ def _iron_trade(symbol, strategy, bar, est_credit, won, p):
         pnl=pnl, return_pct=round(pnl / capital, 4) if capital else 0.0,
         annualized_pct=round(pnl / capital * 365 * 100, 2) if capital else 0.0,
         close_reason=("profit_target" if won else "stop_loss"), won=won, approximate=True,
+    )
+
+
+def params_del_condor(cfg) -> IronParams:
+    """Traduce la configuración REAL del Iron Condor a parámetros de backtest.
+
+    Existe para que haya UN solo lugar donde se hace esta traducción. Antes el dashboard armaba los
+    suyos y el trabajo semanal los suyos, y encima el dashboard le pasaba los del condor también al
+    butterfly — o sea que cada pantalla medía una estrategia distinta, y ninguna era la que el robot
+    opera (usuario 2026-08-23: "quiero que uses lo que ya estás usando en simulador y en real").
+
+    Se le pasa la config EFECTIVA (`learning.effective_condor`), no la de settings.yaml, para que el
+    histórico se mida contra las reglas vigentes y no contra las de fábrica.
+
+    Lee con getattr para no acoplar el motor de backtest a las clases de configuración."""
+    return IronParams(
+        profit_target_pct=float(getattr(cfg, "profit_target_pct", 0.35) or 0.35),
+        stop_loss_dollars=float(getattr(cfg, "stop_loss_dollars", 100.0) or 100.0),
+        short_delta=float(getattr(cfg, "short_delta_max", 0.15) or 0.15),
+        calm_range_pct=float(getattr(cfg, "calm_range_pct", 0.004) or 0.004),
+        filtrar_dias_calmos=True,
+    )
+
+
+def params_del_butterfly(cfg) -> IronParams:
+    """Traduce la configuración REAL del Iron Butterfly a parámetros de backtest.
+
+    Dos diferencias con el condor que importan y que antes se perdían:
+      - cierra por MONTO fijo (`profit_target`, +$50), no por porcentaje del crédito;
+      - su stop es `stop_loss` (-$70), con otro nombre que el del condor.
+
+    NO filtra por día calmo: el butterfly no tiene ese gatillo — entra cuando el precio se separa de
+    la SMA8, que es otra condición y no se puede reproducir con datos diarios."""
+    return IronParams(
+        profit_dollars=float(getattr(cfg, "profit_target", 50.0) or 50.0),
+        stop_loss_dollars=float(getattr(cfg, "stop_loss", 70.0) or 70.0),
+        filtrar_dias_calmos=False,
     )
 
 
@@ -453,10 +533,20 @@ def backtest_iron_condor_daily(bars: list[PriceBar], symbol: str, params: IronPa
         iv = iv_proxy(bars[: i + 1], p.iv_mult)
         if iv is None:
             continue
+        # Filtro de dia calmo con el rango de AYER (nunca el de hoy: seria look-ahead).
+        if p.filtrar_dias_calmos:
+            if i == 0:
+                continue
+            rango_ayer = _rango_del_dia(bars[i - 1])
+            if rango_ayer is None or rango_ayer > p.calm_range_pct:
+                continue
         sigma = _daily_sigma_pct(iv)
         move = abs(bar.close - bar.open) / bar.open
-        short_dist = 1.04 * sigma            # delta ~0.15 ≈ 1.04σ OTM
-        est_credit = max(0.20, bar.close * sigma * 0.20)   # crédito 0DTE estimado (acotado)
+        short_dist = sigmas_para_delta(p.short_delta) * sigma
+        # El credito baja a medida que los cortos se alejan. Proporcional al delta es una regla
+        # gruesa pero razonable (a delta 0.15 reproduce el valor que se usaba antes) y evita el
+        # absurdo de cobrar lo mismo vendiendo a delta 0.05 que a delta 0.30.
+        est_credit = max(0.20, bar.close * sigma * 0.20 * (p.short_delta / 0.15))
         won = move <= short_dist
         trades.append(_iron_trade(symbol, "iron_condor", bar, est_credit, won, p))
     return trades
@@ -474,6 +564,12 @@ def backtest_iron_butterfly_daily(bars: list[PriceBar], symbol: str, params: Iro
         iv = iv_proxy(bars[: i + 1], p.iv_mult)
         if iv is None:
             continue
+        if p.filtrar_dias_calmos:
+            if i == 0:
+                continue
+            rango_ayer = _rango_del_dia(bars[i - 1])
+            if rango_ayer is None or rango_ayer > p.calm_range_pct:
+                continue
         sigma = _daily_sigma_pct(iv)
         move = abs(bar.close - bar.open) / bar.open
         # El butterfly (cuerpo ATM) gana solo en días MUY quietos/que revirtieron: ~0.6σ. Cobra más
