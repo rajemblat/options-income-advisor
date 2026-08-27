@@ -469,10 +469,70 @@ def _manage_open_position(conn, broker, account_hash, chain, spot, as_of: date, 
                f"Iron Condor {row['underlying']} cerrado (motivo: {reason}).\n"
                f"Crédito abierto ${entry_total:,.2f} → costo de cierre ${close_debit_total:,.2f}.\n"
                f"Resultado: ${realized:+,.2f}.")
+        _reset_cierres_fallidos(conn, row["id"])
     else:
         # No llenó: dejamos la posición abierta, marcamos el unrealized y reintentamos el próximo tick.
         repo.mark_real_condor_position(conn, row["id"], datetime.now(), unrealized)
-        logger.info("Condor-real: la recompra de id=%s no llenó (%s); se reintenta", row["id"], res.status)
+        _detalle = getattr(res, "status_detalle", "") or ""
+        logger.warning("Condor-real: la recompra de id=%s no llenó (%s); se reintenta%s",
+                       row["id"], res.status, f" — {_detalle}" if _detalle else "")
+        _avisar_si_el_cierre_no_entra(conn, row, res, unrealized)
+
+
+_CIERRES_FALLIDOS_PARA_AVISAR = 3
+
+
+def _clave_cierres_fallidos(pos_id) -> str:
+    return f"condor_real.cierres_fallidos.{pos_id}"
+
+
+def _reset_cierres_fallidos(conn, pos_id) -> None:
+    """El cierre entró: se borra la cuenta de intentos fallidos y el aviso queda rearmado."""
+    try:
+        repo.set_robot_flag(conn, _clave_cierres_fallidos(pos_id), "0")
+    except Exception:  # noqa: BLE001
+        logger.debug("Condor-real: no se pudo resetear el contador de cierres fallidos", exc_info=True)
+
+
+def _avisar_si_el_cierre_no_entra(conn, row, res, unrealized: float) -> None:
+    """Manda UN email cuando la recompra falla varias veces seguidas.
+
+    El 2026-08-24 el motor intentó cerrar un condor real 8 veces en 40 minutos; Schwab rechazó todas
+    y el usuario NO recibió ningún aviso, porque el email solo salía cuando el cierre entraba. Se
+    enteró de casualidad, mirando su broker. Un cierre que no entra es exactamente el momento en que
+    hay que avisar: la posición sigue viva y quiere salir.
+
+    Se avisa una sola vez por posición (el contador solo se limpia cuando el cierre entra), para no
+    convertir el problema en una lluvia de mails."""
+    clave = _clave_cierres_fallidos(row["id"])
+    try:
+        fallos = int(repo.get_robot_flag(conn, clave, "0") or 0)
+    except (TypeError, ValueError):
+        fallos = 0
+    fallos += 1
+    try:
+        repo.set_robot_flag(conn, clave, str(fallos))
+    except Exception:  # noqa: BLE001
+        logger.debug("Condor-real: no se pudo guardar el contador de cierres fallidos", exc_info=True)
+        return
+    if fallos != _CIERRES_FALLIDOS_PARA_AVISAR:
+        return   # != y no >=: así sale UNA vez, no en cada intento posterior
+
+    detalle = getattr(res, "status_detalle", "") or "(el broker no dio motivo)"
+    _email(
+        "⚠️ Lokshn NO puede cerrar un Iron Condor REAL",
+        f"El robot intentó recomprar el condor {row['underlying']} "
+        f"(put {row['short_put_strike']:.0f} / call {row['short_call_strike']:.0f}) "
+        f"{fallos} veces seguidas y el broker no lo dejó.\n\n"
+        f"Último estado: {res.status}\n"
+        f"Motivo que dio Schwab: {detalle}\n"
+        f"P&L no realizado ahora: ${unrealized:+,.2f}\n\n"
+        "REVISÁ TU CUENTA EN SCHWAB. Si la posición ya no está ahí, el robot la cerró y no se "
+        "enteró: avisale para que actualice su registro. Si sigue abierta, el condor es 0DTE y "
+        "vence hoy — decidí vos si la cerrás a mano.",
+    )
+    logger.error("Condor-real: id=%s lleva %s cierres rechazados seguidos — avisado por mail",
+                 row["id"], fallos)
 
 
 def settings_commission(cfg) -> float:

@@ -41,6 +41,10 @@ class CondorSendResult:
     filled: bool                    # True si LLENÓ
     order_id: str | None = None
     status: str = ""
+    # Texto con que el broker explica un estado muerto ("REJECTED: This order may result in an
+    # oversold/overbought position..."). Antes se tiraba a la basura y el log solo decía "REJECTED",
+    # que no alcanzaba para entender nada (auditoría 2026-08-24).
+    status_detalle: str = ""
     fill_price: float | None = None   # precio NETO (por acción) al que quedó cuando llenó
     final_limit_price: float | None = None
     replacements: int = 0
@@ -123,6 +127,9 @@ def execute_condor_walk(
             return None
         status = (info.get("status") or "").upper()
         result.status = status
+        _detalle = info.get("statusDescription") or info.get("statusDescriptions") or ""
+        if _detalle:
+            result.status_detalle = str(_detalle)[:400]
         if status == FILLED:
             result.filled = True
             result.fill_price = result.final_limit_price   # límite al que quedó = fill conservador
@@ -180,12 +187,32 @@ def execute_condor_walk(
                     result.final_limit_price or 0.0, result.order_id)
         return result
 
+    cancelado = False
     try:
         broker.cancel_order(account_hash, result.order_id)
-        result.status = "CANCELED"
-        result.steps.append({"price": result.final_limit_price, "event": "canceled"})
-        logger.info("Condor-real: cierre no llenó en la ventana; CANCELADO (se reintenta el próximo tick)")
+        cancelado = True
     except Exception:  # noqa: BLE001
         result.error = (result.error or "") + " | fallo al cancelar la orden de cierre colgada"
         logger.exception("Condor-real: no se pudo cancelar la orden de cierre colgada")
+
+    # CARRERA CANCEL/FILL — bug real del 2026-08-24, con dinero de verdad.
+    #
+    # Entre el último sondeo y el `cancel_order` hay una ventana de milisegundos en la que la orden
+    # puede LLENAR. Ese día llenó a $1.25 justo mientras salía el cancel; el walk devolvió CANCELED,
+    # el motor dejó la posición como abierta, y pasó 40 MINUTOS mandando recompras que Schwab
+    # rechazaba una tras otra ("oversold/overbought position") porque la posición ya no existía.
+    # El usuario lo vio en su broker antes que el robot.
+    #
+    # Cancelar no es una respuesta: hay que volver a PREGUNTAR. Si llenó, gana el fill.
+    term = _poll_once()
+    if term == FILLED:
+        logger.warning("Condor-real: la orden de cierre LLENÓ mientras salía el cancel (orden %s, "
+                       "límite $%.2f) — se registra el FILL, no el cancel", result.order_id,
+                       result.final_limit_price or 0.0)
+        return result
+
+    if cancelado:
+        result.status = "CANCELED"
+        result.steps.append({"price": result.final_limit_price, "event": "canceled"})
+        logger.info("Condor-real: cierre no llenó en la ventana; CANCELADO (se reintenta el próximo tick)")
     return result
