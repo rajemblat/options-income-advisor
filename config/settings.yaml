@@ -306,7 +306,9 @@ intraday_condor:
   dte: 0                           # 0DTE
   max_per_day: 0                   # 0 = SIN TOPE diario (usuario 2026-08: "todos los que quieras")
   max_open_positions: 5            # pero hasta 5 abiertos a la vez (freno de exposición simultánea)
-  stop_loss_streak_halt: 2         # 2 stop-loss seguidos en el día = no abre más condors hoy (usuario 2026-08-08)
+  stop_loss_streak_halt: 1         # UN stop-loss y no abre más condors hoy (usuario 2026-08-26:
+                                   # "si pierde uno por stop loss no vuelva a abrir ese día").
+                                   # Venía en 2. Cuenta por separado el condor REAL y el de papel.
   calm_range_pct: 0.004            # rango intradía <= 0.4% = día calmo
   # ⚠️ OJO — ESTA VENTANA SE COMPARA EN **UTC**, NO EN HORA DEL ESTE (verificado 2026-08-14).
   # `evaluate_condor_signal` mira la hora de la ÚLTIMA BARRA intradía, y Schwab las devuelve en UTC
