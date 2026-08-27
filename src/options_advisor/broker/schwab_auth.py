@@ -52,6 +52,8 @@ class SchwabAuth:
         self.redirect_uri = redirect_uri
         self.token_store_path = token_store_path
         self._tokens: dict | None = None
+        # mtime del archivo cuando lo leímos. Si en disco cambia, relemos: ver `_load_tokens`.
+        self._mtime_leido: float | None = None
         # (instante del fallo, texto) del último refresh que falló por red. Ver REFRESH_FAIL_BACKOFF_SECONDS.
         self._ultimo_fallo_de_refresh: tuple[float, str] | None = None
 
@@ -131,6 +133,10 @@ class SchwabAuth:
         self.token_store_path.parent.mkdir(parents=True, exist_ok=True)
         self.token_store_path.write_text(json.dumps(token_response))
         self._tokens = token_response
+        try:
+            self._mtime_leido = self.token_store_path.stat().st_mtime
+        except OSError:
+            self._mtime_leido = None
 
     def _stored_refresh_token_obtained_at(self) -> float | None:
         """Sello de emisión que ya está guardado. None si todavía no hay ninguno.
@@ -157,13 +163,49 @@ class SchwabAuth:
         return read_refresh_token_seconds_left(self.token_store_path)
 
     def _load_tokens(self) -> dict:
+        """Tokens vigentes, releyendo el archivo si alguien MÁS lo reescribió.
+
+        Antes esto cacheaba para siempre: el primer `_load_tokens` guardaba el dict en memoria y no
+        volvía a mirar el disco nunca. Consecuencia real (2026-08-24): el usuario corrió
+        `scripts/schwab_login.py`, Schwab anuló el refresh_token viejo, y el robot —que seguía con el
+        viejo en memoria— quedó 22 MINUTOS ciego con el mercado abierto, tirando "el token venció"
+        ~100 veces por minuto, hasta que lo reiniciamos a mano. Al servidor le pasó lo mismo.
+
+        Ahora comparamos el mtime del archivo con el de la última lectura. Si cambió, releemos: el
+        login nuevo entra solo, sin reiniciar nada. Si el stat o el parseo fallan, nos quedamos con
+        lo que ya teníamos — esto está en el camino crítico del trading y nunca puede reventar por
+        un archivo a medio escribir."""
+        mtime = None
+        try:
+            mtime = self.token_store_path.stat().st_mtime
+        except OSError:
+            mtime = None
+
         if self._tokens is not None:
+            if mtime is None or mtime == self._mtime_leido:
+                return self._tokens
+            try:
+                frescos = json.loads(self.token_store_path.read_text())
+            except (OSError, ValueError):
+                # Archivo ilegible o a medio escribir: seguimos con el de memoria y reintentamos
+                # en la próxima llamada (el mtime sigue distinto, así que no se pierde el cambio).
+                return self._tokens
+            if not isinstance(frescos, dict) or "refresh_token" not in frescos:
+                return self._tokens
+            cambio = frescos.get("refresh_token") != self._tokens.get("refresh_token")
+            self._tokens = frescos
+            self._mtime_leido = mtime
+            if cambio:
+                logger.warning("Tokens de Schwab recargados desde el disco: alguien reconectó la cuenta "
+                               "(scripts/schwab_login.py). Se usa el token NUEVO, sin reiniciar el robot.")
             return self._tokens
+
         if not self.token_store_path.exists():
             raise SchwabAuthError(
                 "No hay tokens guardados. Corré scripts/schwab_login.py para autenticarte por primera vez."
             )
         self._tokens = json.loads(self.token_store_path.read_text())
+        self._mtime_leido = mtime
         return self._tokens
 
     def get_valid_access_token(self) -> str:
