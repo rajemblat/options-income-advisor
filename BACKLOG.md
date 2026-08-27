@@ -1,5 +1,76 @@
 # Backlog consolidado
 
+---
+
+## ⏳ PENDIENTES ABIERTOS — sesión 2026-08-26
+
+Anotado a pedido del usuario ("recuerda esto para arreglar otro día"). Nada de esto está hecho.
+Orden por riesgo, no por esfuerzo.
+
+### 1. ☠️ El condor deja de abrir el 2 de noviembre de 2026 — EN SILENCIO
+
+`intraday_condor.entry_window_start/end` valen `"10:00"`/`"14:00"` y se comparan contra la hora
+de la última barra intradía, que **Schwab devuelve en UTC**.
+
+- Hoy (horario de verano, ET = UTC−4): el mercado abre 13:30 UTC → la ventana 10:00–14:00 UTC
+  deja **de 09:30 a 10:00 hora de Nueva York**. Media hora.
+- Desde el **lunes 2026-11-02** (EEUU sale del horario de verano el domingo 1): el mercado abre
+  14:30 UTC → **la ventana ya cerró antes de que abra el mercado**.
+
+Resultado: el condor no abre nunca más. Sin error, sin log, sin aviso. Ya está advertido en
+`config/settings.yaml` línea 321.
+
+**Hallazgo del 26/08 que hay que decidir aparte:** la ventana efectiva de HOY es de 30 minutos
+(09:30–10:00 ET), no las 4 horas que el número `10:00–14:00` sugiere leerlo. Puede ser un
+accidente heredado. Antes de arreglar el desfase horario hay que decidir **qué ventana se quiere
+de verdad**, porque cambiarla mueve bastante cuándo opera el robot. Decisión del usuario.
+
+### 2. Dejar la orden de cierre del condor WORKING en vez de cancelarla y reenviarla
+
+Pedido del usuario el 24/08: *"envío el cierre en 1.25, después lo sigue enviando más veces en
+1.25 en vez de dejarlo working... si modifica el precio sí, el mismo precio no es necesario"*.
+
+Hoy `execute_condor_walk` se llama con `leave_resting_at_mid=False` en el cierre: cada tick pone
+una orden, camina ~28 s y la CANCELA. Eso es lo que abre la carrera cancel/fill (ya mitigada en
+`f3e5380`, pero la causa sigue).
+
+Para hacerlo hay que recordar la orden viva entre ticks: columna nueva en
+`real_condor_positions` (id + precio de la orden de cierre en curso), y en `_manage_open_position`
+sondearla antes de decidir si poner otra. Solo se reemplaza si el precio objetivo cambió.
+
+### 3. Tope de 3 entradas por símbolo — decisión de riesgo del usuario
+
+Los naked reales no operan desde el 20/08. El 24/08 el guardián frenó **10 órdenes de AAL
+seguidas** por diversificación. Puede que el tope quede corto o que el mercado no haya dado.
+**No tocar sin que el usuario lo pida.**
+
+### 4. Finnhub devuelve 429 (límite del plan gratis)
+
+121 rechazos el 26/08 en el calendario de earnings. No afecta operaciones; sí la calidad del
+análisis. Falta caché o backoff.
+
+### 5. Validación del servidor antes de mudar
+
+Criterio acordado: **3 días de mercado en que `scripts/huella_del_dia.py` del servidor reproduzca
+la de la Mac**. El 26/08 no contó como día limpio (la Mac arrancó frenada por `all_paused` y
+entró 10 minutos tarde). Repetir jueves y viernes; si coinciden, mudar el sábado con el mercado
+cerrado.
+
+**Dato del 26/08 para tener presente:** el servidor entró 09:30–09:34 y cobró $87,50 y $85,00 en
+sus dos primeros condors; la Mac entró 09:40–09:44 y cobró entre $145 y $165. Total del día
++$202,50 contra +$275,00. Una sola muestra, pero el mecanismo (spreads anchos en los primeros
+minutos) es real. **Queda retirado el consejo de "cuanto más temprano mejor"** que se dio el
+25/08 sin datos.
+
+### Reglas del usuario que NO se tocan
+
+- **Naked put: NUNCA stop loss.** Confirmado 20/08 y ratificado 26/08 ("nunca, nunca").
+  `simulator.stop_loss_multiple: 0.0` es deliberado, no un pendiente.
+- **Iron condor y butterfly: stop loss SIEMPRE activo.** ($100 y $70.)
+- Ningún parámetro de trading se cambia sin pedido explícito del usuario.
+
+---
+
 Registro vivo de todo lo pedido, para no perder el hilo en sesiones largas. Se actualiza cada
 vez que algo arranca o termina — no es un historial (eso está en `NOTES.md` y en `git log`),
 es el estado ACTUAL de qué falta.

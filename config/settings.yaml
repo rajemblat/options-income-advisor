@@ -310,19 +310,27 @@ intraday_condor:
                                    # "si pierde uno por stop loss no vuelva a abrir ese día").
                                    # Venía en 2. Cuenta por separado el condor REAL y el de papel.
   calm_range_pct: 0.004            # rango intradía <= 0.4% = día calmo
-  # ⚠️ OJO — ESTA VENTANA SE COMPARA EN **UTC**, NO EN HORA DEL ESTE (verificado 2026-08-14).
-  # `evaluate_condor_signal` mira la hora de la ÚLTIMA BARRA intradía, y Schwab las devuelve en UTC
-  # (`schwab_client.get_intraday_bars` → `datetime.fromtimestamp(..., tz=timezone.utc)`).
-  # Con UTC−4 (horario de verano) "10:00–14:00" son las 06:00–10:00 ET; como el mercado abre 09:30 ET,
-  # la ventana EFECTIVA son los primeros 30 minutos de la rueda (09:30–10:00 ET).
-  # NO es un descuido para corregir a la ligera: los 16 condors ganadores del papel (6, 7, 11 y 12 de
-  # agosto, 100% de aciertos) se abrieron TODOS entre las 09:31 y las 09:54 ET — o sea, dentro de esa
-  # ventana. Cambiar el huso movería la estrategia a un horario donde nunca fue probada. Decisión del
-  # usuario (2026-08-14): dejarlo como está y documentarlo.
-  # ⏰ PENDIENTE ANTES DE NOVIEMBRE: con el cambio a UTC−5 el mercado abre 14:30 UTC — DESPUÉS de
-  # entry_window_end (14:00) — y el condor dejaría de abrir para siempre, en silencio y sin error.
-  entry_window_start: "10:00"      # ventana de entrada, en UTC (ver el bloque de arriba)
-  entry_window_end: "14:00"        # ...con tiempo para que corra el 0DTE
+  # VENTANA DE ENTRADA — EN HORA DE NUEVA YORK (cambiado 2026-08-27).
+  # `evaluate_condor_signal` convierte la hora de la última barra a America/New_York antes de
+  # comparar (ver `iron_condor.hora_de_mercado`). Estos dos valores son, entonces, hora del mercado.
+  #
+  # Qué cambió y por qué (usuario 2026-08-27: "no quiero que solo opere la primera ventana, quiero
+  # que opere cuando vea oportunidad, máximo hasta las 2 pm horario de mercado"):
+  #   ANTES: se comparaba en UTC. "10:00–14:00" UTC = 06:00–10:00 ET, y como el mercado abre 09:30,
+  #          la ventana EFECTIVA eran los primeros 30 minutos de la rueda. El robot no podía abrir
+  #          después de las 10:00 ET aunque el día siguiera calmo.
+  #   AHORA: 09:30–14:00 ET, toda la mañana y hasta las 2 de la tarde.
+  #
+  # De paso desactiva la bomba del 2026-11-02: al salir EEUU del horario de verano el mercado pasaba
+  # a abrir 14:30 UTC, después de la vieja ventana, y el condor habría dejado de abrir PARA SIEMPRE
+  # en silencio. Comparando en hora del Este, el cambio de hora se resuelve solo.
+  #
+  # OJO al leer el historial: los 16 condors ganadores del papel de agosto se abrieron todos entre
+  # 09:31 y 09:54 ET, porque era el único horario en que PODÍA abrir. No es evidencia de que ese
+  # horario sea el mejor — es evidencia de que era el único. Lo que abra ahora fuera de esa franja
+  # es territorio nuevo: mirarlo en el papel antes de sacar conclusiones.
+  entry_window_start: "09:30"      # ventana de entrada, en HORA DE NUEVA YORK (ver el bloque de arriba)
+  entry_window_end: "14:00"        # 2 PM del mercado — deja tiempo para que corra el 0DTE
   max_collateral: 1000.0           # 10 pts de ala ≈ $1000 teórico (riesgo real = stop $100)
   min_credit: 0.0
   # Paso a DINERO REAL del condor (usuario 2026-08-13). Apagado por default: se prende acá cuando el

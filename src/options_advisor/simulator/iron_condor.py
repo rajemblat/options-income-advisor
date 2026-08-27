@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import time
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 from options_advisor.broker.models import IntradayBar, OptionChain, OptionContract
 from options_advisor.config import IntradayCondorSettings
@@ -16,6 +17,31 @@ CONTRACT_MULTIPLIER = 100
 def _parse_hhmm(value: str) -> time:
     h, m = value.split(":")
     return time(int(h), int(m))
+
+
+MERCADO = ZoneInfo("America/New_York")
+
+
+def hora_de_mercado(ts: datetime) -> time:
+    """Hora de Nueva York de esa barra — que es el reloj con el que piensa el usuario.
+
+    Schwab devuelve las barras en UTC (`schwab_client.get_intraday_bars` las arma con tz=utc), y
+    antes se comparaban TAL CUAL contra la ventana del settings. Eso tenía dos problemas:
+
+      1. La ventana "10:00-14:00" era en realidad 09:30-10:00 hora del Este: media hora, no cuatro.
+         El robot solo podía abrir en los primeros 30 minutos de la rueda.
+      2. El 2026-11-02, al salir EEUU del horario de verano, el mercado pasa a abrir 14:30 UTC y la
+         ventana ya habría cerrado: el condor dejaba de abrir para siempre, en silencio.
+
+    Convirtiendo a hora del Este, la ventana significa lo mismo todo el año y el cambio de hora se
+    resuelve solo (usuario 2026-08-27: "que opere cuando vea oportunidad, máximo hasta las 2 pm,
+    horario de mercado").
+
+    Una barra SIN huso se toma como si ya viniera en hora de mercado: es lo que arman los tests y
+    las fixtures, y convertirla sería inventarle un huso que nadie le puso."""
+    if ts.tzinfo is None:
+        return ts.time()
+    return ts.astimezone(MERCADO).time()
 
 
 @dataclass
@@ -41,14 +67,9 @@ def evaluate_condor_signal(bars: list[IntradayBar], settings: IntradayCondorSett
     debajo de `calm_range_pct`) y estamos dentro de la ventana horaria de entrada (hora de la última
     barra). Usa el timestamp de la última barra como 'ahora' del mercado (testeable).
 
-    ⚠️ HUSO HORARIO (verificado 2026-08-14): la comparación es contra la hora de la barra TAL CUAL
-    viene del broker, y Schwab las devuelve en **UTC** (`schwab_client.get_intraday_bars`). O sea,
-    `entry_window_start/end` del settings se interpretan en UTC, NO en hora de Nueva York. Con UTC−4
-    la ventana "10:00–14:00" del config son, en los hechos, los primeros 30 minutos de la rueda: el
-    mercado abre 09:30 ET (13:30 UTC) y la ventana se corta a las 14:00 UTC (10:00 ET). Es el horario
-    en el que el papel ganó sus 16 condors seguidos, así que se deja A PROPÓSITO — ver el bloque de
-    comentarios en `config/settings.yaml::intraday_condor`. Si algún día se convierte a hora del Este,
-    hay que mover también la ventana o la estrategia cambia de horario sin querer."""
+    HUSO HORARIO (cambiado 2026-08-27): `entry_window_start/end` se leen en **hora de Nueva York**,
+    no en UTC. Ver `hora_de_mercado`. Antes se comparaba contra la hora UTC de la barra y la ventana
+    "10:00-14:00" valía, en los hechos, 09:30-10:00 ET — solo los primeros 30 minutos de la rueda."""
     if not bars:
         return CondorSignal(False, False, 0.0, 0.0)
     price = bars[-1].close
@@ -56,7 +77,7 @@ def evaluate_condor_signal(bars: list[IntradayBar], settings: IntradayCondorSett
     lo = min(b.low for b in bars)
     ref = bars[0].open or price or 1.0
     day_range_pct = (hi - lo) / ref if ref else 1.0
-    now = bars[-1].timestamp.time()
+    now = hora_de_mercado(bars[-1].timestamp)
     in_window = _parse_hhmm(settings.entry_window_start) <= now <= _parse_hhmm(settings.entry_window_end)
     calm = day_range_pct <= settings.calm_range_pct
     # VIX QUIETO, para cualquier lado (usuario 2026-08-14: "no tiene que estar bajando ni subiendo;

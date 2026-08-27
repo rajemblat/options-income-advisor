@@ -380,7 +380,8 @@ class IntradayCondorSettings(BaseModel):
     # "Día calmo": rango intradía (máx-mín) como fracción del primer precio, por debajo de esto.
     calm_range_pct: float = 0.004        # <= 0.4% de rango = calmo
     # Ventana horaria de entrada (ET) — temprano, con tiempo para que corra el 0DTE.
-    entry_window_start: str = "10:00"
+    # Ventana de entrada en HORA DE NUEVA YORK (cambiado 2026-08-27). Antes se comparaba en UTC.
+    entry_window_start: str = "09:30"
     entry_window_end: str = "14:00"
     max_collateral: float = 1000.0       # 10 pts de ala en SPX = ~$1000 teórico (riesgo real = stop $100)
     min_credit: float = 0.0              # crédito mínimo en DÓLARES para armar (0 = sin mínimo)

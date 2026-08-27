@@ -94,16 +94,19 @@ def test_without_a_vix_ceiling_configured_the_filter_does_not_block():
     assert iron_condor.evaluate_condor_signal(barras, _settings(max_vix_change_pct=4.0)).vix_ok is True
 
 
-def test_window_is_compared_in_utc_not_new_york():
-    """CANDADO de comportamiento (verificado 2026-08-14): la ventana se compara contra la hora de la
-    barra TAL CUAL viene de Schwab, que es UTC. Con la config "10:00–14:00" eso significa, en horario
-    de verano (UTC−4), los primeros 30 minutos de la rueda: 09:31 ET (13:31 UTC) entra, 12:00 ET
-    (16:00 UTC) no. Es el horario en el que el papel ganó sus 16 condors seguidos, así que este test
-    existe para que nadie lo "arregle" sin querer y mueva la estrategia a otro horario.
-    Ver `config/settings.yaml::intraday_condor` y el docstring de `evaluate_condor_signal`."""
+def test_la_ventana_se_lee_en_hora_de_nueva_york():
+    """CANDADO (cambiado 2026-08-27). La ventana del settings es HORA DE MERCADO, no UTC.
+
+    Antes se comparaba contra la hora UTC de la barra tal cual viene de Schwab. Con "10:00-14:00"
+    eso daba 06:00-10:00 ET y, como el mercado abre 09:30, la ventana efectiva eran los primeros
+    30 minutos de la rueda. El usuario lo pidio explicito: "no quiero que solo opere la primera
+    ventana... maximo hasta las 2 pm, horario de mercado".
+
+    Este test tambien es el que desactiva la bomba del 2026-11-02: con la comparacion en hora del
+    Este, el cambio de horario de verano se resuelve solo."""
     from datetime import timezone
 
-    def _utc_bars(h, m):
+    def _utc(h, m):
         start = datetime(2026, 8, 5, h, m, tzinfo=timezone.utc)
         return [
             IntradayBar(symbol="SPX", timestamp=start + timedelta(minutes=i), open=7600.0, high=7601.0,
@@ -111,13 +114,50 @@ def test_window_is_compared_in_utc_not_new_york():
             for i in range(3)
         ]
 
-    # 13:31 UTC = 09:31 ET, apenas abrió el mercado (09:30–16:00 ET): DENTRO de la ventana.
-    assert iron_condor.evaluate_condor_signal(_utc_bars(13, 31), _settings()).in_window is True
-    # 16:00 UTC = 12:00 ET, mediodía de Nueva York: FUERA, aunque el config diga "14:00".
-    assert iron_condor.evaluate_condor_signal(_utc_bars(16, 0), _settings()).in_window is False
-    # 14:30 UTC = 09:30 ET en INVIERNO (UTC−5): la apertura misma ya cae fuera de la ventana. Cuando
-    # cambie la hora en noviembre hay que mover entry_window_end o el condor deja de abrir.
-    assert iron_condor.evaluate_condor_signal(_utc_bars(14, 30), _settings()).in_window is False
+    cfg = _settings(entry_window_start="09:30", entry_window_end="14:00")
+
+    # OJO: `_utc(h, m)` arma TRES barras (m, m+1, m+2) y la senal mira la ULTIMA. Los comentarios
+    # de abajo son la hora de esa ultima barra, no la del argumento. (Este mismo detalle hizo fallar
+    # la primera version del test: _utc(17,59) termina en 14:01 ET, un minuto FUERA de la ventana.)
+    # VERANO (UTC-4)
+    assert iron_condor.evaluate_condor_signal(_utc(13, 31), cfg).in_window is True    # 09:33 ET
+    assert iron_condor.evaluate_condor_signal(_utc(16, 0), cfg).in_window is True     # 12:02 ET
+    assert iron_condor.evaluate_condor_signal(_utc(17, 55), cfg).in_window is True    # 13:57 ET
+    assert iron_condor.evaluate_condor_signal(_utc(17, 59), cfg).in_window is False   # 14:01 ET
+    assert iron_condor.evaluate_condor_signal(_utc(18, 1), cfg).in_window is False    # 14:03 ET
+    assert iron_condor.evaluate_condor_signal(_utc(13, 0), cfg).in_window is False    # 09:02 ET
+
+    # EL MEDIODIA QUE ANTES QUEDABA AFUERA. Con la comparacion vieja en UTC, una barra de las
+    # 16:02 UTC daba in_window=False y el condor no podia abrir al mediodia (12:02 ET) aunque el
+    # dia siguiera calmo. Es exactamente lo que el usuario pidio destrabar.
+    assert iron_condor.evaluate_condor_signal(_utc(16, 0), cfg).in_window is True
+
+
+def test_el_cambio_de_horario_de_noviembre_ya_no_apaga_el_condor():
+    """En INVIERNO (UTC-5) el mercado abre 14:30 UTC. Con la ventana vieja en UTC, que terminaba a
+    las 14:00, la apertura misma ya caia afuera: el condor dejaba de abrir para siempre desde el
+    2026-11-02, en silencio y sin error. Ahora entra."""
+    from datetime import timezone
+
+    def _utc_invierno(h, m):
+        start = datetime(2026, 11, 3, h, m, tzinfo=timezone.utc)   # martes, ya en horario estandar
+        return [
+            IntradayBar(symbol="SPX", timestamp=start + timedelta(minutes=i), open=7600.0, high=7601.0,
+                        low=7599.0, close=7600.0, volume=100)
+            for i in range(3)
+        ]
+
+    cfg = _settings(entry_window_start="09:30", entry_window_end="14:00")
+    assert iron_condor.evaluate_condor_signal(_utc_invierno(14, 30), cfg).in_window is True   # 09:30 ET
+    assert iron_condor.evaluate_condor_signal(_utc_invierno(18, 0), cfg).in_window is True    # 13:00 ET
+    assert iron_condor.evaluate_condor_signal(_utc_invierno(19, 1), cfg).in_window is False   # 14:01 ET
+
+
+def test_una_barra_sin_huso_se_toma_como_hora_de_mercado():
+    """Fixtures y tests arman barras sin huso; inventarles UTC las correria 4 horas."""
+    cfg = _settings(entry_window_start="09:30", entry_window_end="14:00")
+    assert iron_condor.evaluate_condor_signal(_bars([7600, 7601, 7599], hour=10, minute=30), cfg).in_window is True
+    assert iron_condor.evaluate_condor_signal(_bars([7600, 7601, 7599], hour=15, minute=0), cfg).in_window is False
 
 
 # ---------------- Armado ----------------
