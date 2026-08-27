@@ -219,9 +219,18 @@ def should_close_condor(
     unrealized_pnl: float, entry_net_credit: float, expired: bool, settings: IntradayCondorSettings,
     age_minutes: float | None = None,
 ) -> tuple[bool, str | None]:
-    """Regla de salida (usuario 2026-08-07): si YA está a +profit_target_early_pct (40%) dentro de los
-    primeros `early_window_minutes` (20 min) de vida, cerrar temprano para poder reentrar; pasada esa
-    ventana, cerrar al +profit_target_pct (50%). También −stop_loss_dollars o vencimiento (0DTE)."""
+    """Regla de salida (usuario 2026-08-07). Se cierra con lo PRIMERO que ocurra:
+
+      1. Ganancia rápida: +profit_target_early_pct del crédito dentro de los primeros
+         `early_window_minutes` de vida (cerrar temprano permite reentrar el mismo día).
+      2. Ganancia normal: +profit_target_pct del crédito, pasada esa ventana.
+      3. Stop loss: −stop_loss_dollars, en cualquier momento.
+      4. Vencimiento (0DTE).
+
+    Los valores REALES viven en config/settings.yaml (`intraday_condor`) y hoy son 20% / 35% / 30 min
+    / $100. Este docstring decía "40%... 50%... 20 min" — números de principios de agosto que ya no
+    eran los vigentes, y confundían al verificar por qué el robot había cerrado (usuario 2026-08-24).
+    No repetimos los números acá a propósito: la config manda."""
     if expired:
         return True, "expired"
     early = age_minutes is not None and age_minutes <= settings.early_window_minutes

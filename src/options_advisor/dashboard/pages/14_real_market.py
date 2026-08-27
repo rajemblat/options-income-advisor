@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as _dt   # para formatear la fecha/hora de apertura (usuario 2026-08-19)
 from datetime import date, timedelta as _timedelta
 
+import pandas as pd
 import streamlit as st
 
 from options_advisor.config import load_settings
@@ -1069,16 +1070,82 @@ else:
         st.caption("El condor real está **apagado** — corre en papel (Simulador). Para pasarlo a real: "
                    "`intraday_condor.live_enabled: true` en el settings + trading real encendido y armado.")
 
-# Cerrados de hoy (reporte diario del condor real).
-_co_closed_today = [r for r in repo.get_closed_real_condor_positions(conn, limit=50)
-                    if (r["close_ts"] or "")[:10] == today.isoformat() and r["realized_pnl"] is not None]
-if _co_closed_today:
-    with st.expander(f"📅 Condors reales cerrados hoy ({len(_co_closed_today)})"):
-        for r in _co_closed_today:
-            _emoji = "🟢" if (r["realized_pnl"] or 0) >= 0 else "🔴"
-            st.markdown(f"{_emoji} **{r['underlying']} {r['short_put_strike']:.0f}P/{r['short_call_strike']:.0f}C** · "
-                        f"crédito \\${r['entry_net_credit'] or 0:,.0f} · motivo {r['close_reason']} · "
-                        f"P&L **\\${r['realized_pnl']:+,.2f}**")
+# ---------------------------- Cerrados (tabla) ----------------------------
+# Usuario 2026-08-24: "quiero verlo asi en real tambien, como esta en simulador". Misma tabla y mismas
+# columnas que la de condors del Simulador (12_simulador.py), con el mismo filtro por periodo.
+#
+# Diferencia deliberada con el Simulador: alla las etiquetas de motivo estan escritas a mano y dicen
+# "objetivo 60%" / "stop $100", numeros viejos que YA NO son los que usa el robot. Aca se arman desde
+# la config viva (`_cond_cfg`), asi que la pantalla no puede volver a desincronizarse del motor.
+st.subheader("Cerrados")
+_co_cerrados = repo.get_closed_real_condor_positions(conn, limit=200)
+
+
+def _co_periodo(rows):
+    """Filtro por periodo, copiado del Simulador para que se sienta igual. Usa `close_ts` (ISO)."""
+    if not rows:
+        return rows
+    _dias = sorted({(r["close_ts"] or "")[:10] for r in rows if r["close_ts"]}, reverse=True)
+    _sel = st.selectbox("📅 Buscar condors cerrados por período",
+                        ["Todo", "Hoy", "Últimos 7 días", "Este mes"] + _dias, key="pf_co_cerr")
+    if _sel == "Todo":
+        return rows
+
+    def _keep(r):
+        _t = (r["close_ts"] or "")[:10]
+        if not _t:
+            return False
+        try:
+            _d = date.fromisoformat(_t)
+        except ValueError:
+            return False
+        if _sel == "Hoy":
+            return _d == today
+        if _sel == "Últimos 7 días":
+            return _d >= today - _timedelta(days=7)
+        if _sel == "Este mes":
+            return _d.year == today.year and _d.month == today.month
+        return _t == _sel
+    return [r for r in rows if _keep(r)]
+
+
+_co_cerrados = _co_periodo(_co_cerrados)
+if _co_cerrados:
+    _CO_RSN = {
+        "profit_target": f"🟢 objetivo {_cond_cfg.profit_target_pct:.0%}",
+        "stop_loss": f"🔴 stop ${_cond_cfg.stop_loss_dollars:,.0f}",
+        "expired": "⏰ vencimiento",
+        "manual": "✋ cierre manual",
+        "cerrado_en_el_broker": "ℹ️ cerrado en el broker",
+        "no_confirmada": "⚠️ sin confirmar",
+        "apertura_no_llenó": "— no llegó a abrir",
+    }
+    _co_rows = [{
+        "Put/Call corto": f"{r['short_put_strike']:.0f} / {r['short_call_strike']:.0f}",
+        "Crédito": r["entry_net_credit"],
+        "Cierre": r["close_value"],
+        "Motivo": _CO_RSN.get(r["close_reason"], r["close_reason"] or "—"),
+        "P&L": r["realized_pnl"],
+        "Hora cierre": (r["close_ts"] or "")[11:19],
+    } for r in _co_cerrados]
+    st.dataframe(
+        pd.DataFrame(_co_rows), use_container_width=True, hide_index=True,
+        column_config={
+            "Crédito": st.column_config.NumberColumn(format="$%.2f"),
+            "Cierre": st.column_config.NumberColumn(format="$%.2f"),
+            "P&L": st.column_config.NumberColumn(format="$%.2f"),
+        },
+    )
+    # Total del periodo elegido. Solo suma las que TIENEN P&L: una fila con P&L desconocido (por
+    # ejemplo un cierre que quedo sin precio) no se cuenta como $0, porque eso mentiria el total.
+    _co_con_pnl = [r for r in _co_cerrados if r["realized_pnl"] is not None]
+    _co_period_pnl = sum(r["realized_pnl"] for r in _co_con_pnl)
+    _co_sin_pnl = len(_co_cerrados) - len(_co_con_pnl)
+    _co_nota = f" · {_co_sin_pnl} sin P&L registrado (no suman)" if _co_sin_pnl else ""
+    st.caption(f"💰 **Ganancia del período elegido: ${_co_period_pnl:,.2f}** "
+               f"({len(_co_con_pnl)} condor(s) cerrado(s){_co_nota}).")
+else:
+    st.caption("Ningún condor real cerrado en el período elegido.")
 
 st.divider()
 

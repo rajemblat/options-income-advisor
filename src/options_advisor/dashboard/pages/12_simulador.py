@@ -1231,7 +1231,15 @@ with tab_condor:
     st.subheader("Cerrados")
     ic_closed = _period_filter(ic_closed, "close_ts", "ic_cerr", "📅 Buscar condors cerrados por período")
     if ic_closed:
-        _RSN = {"profit_target": "🟢 objetivo 60%", "stop_loss": "🔴 stop $100", "expired": "vencimiento"}
+        # Los numeros salen de la CONFIG viva, no escritos a mano. Antes decia "objetivo 60%" y
+        # "stop $100" fijos: el 60% era un valor de agosto que ya no existe (hoy es 35%, o 20% en la
+        # ventana temprana), asi que la pantalla contradecia al motor y confundia al revisar
+        # operaciones reales (usuario 2026-08-24: "objetivo 60%?").
+        _RSN = {
+            "profit_target": f"🟢 objetivo {ic.profit_target_pct:.0%}",
+            "stop_loss": f"🔴 stop ${ic.stop_loss_dollars:,.0f}",
+            "expired": "vencimiento",
+        }
         crows = [{
             "Put/Call corto": f"{r['short_put_strike']:.0f} / {r['short_call_strike']:.0f}",
             "Crédito": r["entry_net_credit"],
