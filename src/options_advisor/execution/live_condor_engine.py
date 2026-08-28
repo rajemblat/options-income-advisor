@@ -381,12 +381,53 @@ def _reconcile_working_open(conn, broker, account_hash, row) -> None:
                f"alas {row['long_put_strike']:.0f}/{row['long_call_strike']:.0f}.\n"
                f"Crédito cobrado: ${entry_total:,.2f}.")
     elif status in ("REJECTED", "CANCELED", "EXPIRED"):
-        # La apertura murió sin llenar: la posición no existe. La marcamos cerrada/void (ocupa el cupo
-        # del día para no reintentar churn, pero con P&L None → no cuenta en el win rate).
+        # NUNCA se descarta una apertura con UNA sola lectura.
+        #
+        # El 2026-08-28, con dinero real: el robot dejó la orden puesta a las 09:38:58, leyó
+        # "REJECTED" 34 segundos después y tiró la fila como `apertura_no_llenó`. La orden llenó
+        # igual, a las 09:41:06 y a $1.95. La posición quedó VIVA dos horas —sin stop de $100, sin
+        # objetivo de ganancia, sin nadie mirándola— hasta que el usuario la cerró a mano. Ese día
+        # la red venía a los tumbos (2845 errores de conexión entre las 09 y las 11), así que la
+        # lectura de estado bien pudo ser basura; y cuando se reemplaza una orden, el id viejo puede
+        # quedar muerto mientras el reemplazo sigue vivo.
+        #
+        # Antes de dar por muerta una apertura le preguntamos a Schwab lo único que importa: ¿hay
+        # una orden LLENADA con estas 4 patas exactas? Es la MISMA verificación que ya se usa para
+        # las filas en 'sending'; lo que faltaba era usarla también acá.
+        adoptada = _buscar_orden_en_schwab(broker, row)
+        if adoptada is not None:
+            credito_ps, oid_real = adoptada
+            qty = row["quantity"] or 1
+            total = round(credito_ps * 100.0 * qty, 2)
+            repo.mark_real_condor_fill(conn, row["id"], entry_credit_ps=round(credito_ps, 2),
+                                       entry_net_credit=total,
+                                       open_schwab_order_id=(oid_real or oid),
+                                       entry_ts=datetime.now())
+            logger.warning("Condor-real: la apertura id=%s figuraba %s pero Schwab confirma que "
+                           "LLENÓ (orden %s, crédito $%.2f) — ADOPTADA, queda bajo gestión",
+                           row["id"], status, oid_real, total)
+            _email("🟢 Lokshn recuperó un Iron Condor REAL que se había dado por rechazado",
+                   f"La apertura del condor {row['underlying']} figuraba como {status}, pero en "
+                   f"Schwab sí se ejecutó (crédito ${total:,.2f}).\n\n"
+                   "El robot la volvió a tomar bajo su gestión: ya tiene stop y objetivo de "
+                   "ganancia activos. No hace falta que hagas nada.")
+            return
+
+        detalle = str(info.get("statusDescription") or "")[:400]
         repo.close_real_condor_position(conn, row["id"], date.today(),
                                         close_value=None, close_reason="apertura_no_llenó",
                                         realized_pnl=None, close_ts=datetime.now())
-        logger.info("Condor-real: apertura id=%s %s sin llenar — descartada", row["id"], status)
+        logger.warning("Condor-real: apertura id=%s %s sin llenar — descartada%s",
+                       row["id"], status, f" — {detalle}" if detalle else "")
+        _email("⚠️ Lokshn NO pudo abrir el Iron Condor REAL de hoy",
+               f"El robot quiso abrir un condor {row['underlying']} "
+               f"(put {row['short_put_strike']:.0f} / call {row['short_call_strike']:.0f}, "
+               f"alas {row['long_put_strike']:.0f}/{row['long_call_strike']:.0f}) y el broker "
+               f"no lo dejó.\n\n"
+               f"Estado: {status}\n"
+               f"Motivo que dio Schwab: {detalle or '(no dio motivo)'}\n\n"
+               "El robot verificó con Schwab que NO quedó ninguna posición abierta con esas patas. "
+               "Igual, si querés estar seguro, mirá tus posiciones en el broker.")
 
 
 def _manage_open_position(conn, broker, account_hash, chain, spot, as_of: date, cfg, row) -> None:
