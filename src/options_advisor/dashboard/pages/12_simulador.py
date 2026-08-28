@@ -23,6 +23,7 @@ from options_advisor.dashboard.components import (
     inject_theme,
     render_header,
     render_notification_bell,
+    utilidad_con_periodo,
 )
 from options_advisor.dashboard.simulator_table import (
     build_broker_open_position_rows,
@@ -814,7 +815,10 @@ with tab_cerradas:
         _tot = sum((r["realized_pnl"] or 0.0) for r in _disp_closed)
         _wins = [r for r in _disp_closed if (r["realized_pnl"] or 0) > 0]
         _sc1, _sc2, _sc3, _sc4 = st.columns(4)
-        _sc1.metric("Utilidad total (cerradas)", f"${_tot:,.2f}")
+        # Verde/rojo + cuánto tiempo abarca (usuario 2026-08-28: "$6.624 no dice nada si no sé
+        # en cuántos meses se hicieron").
+        utilidad_con_periodo(_sc1, "Utilidad total (cerradas)", _tot, _disp_closed,
+                             "close_date", "close_ts")
         _sc2.metric("Operaciones cerradas", len(_disp_closed))
         _sc3.metric("Ganadoras", f"{len(_wins)}/{len(_disp_closed)}")
         _sc4.metric("Win rate", f"{len(_wins) / len(_disp_closed) * 100:.0f}%")
@@ -1259,7 +1263,10 @@ with tab_condor:
         # Total del período elegido (usuario 2026-08-12: "la ganancia que se hizo en el día") — con el
         # filtro en "Hoy" es exactamente la ganancia del día; con otro rango, la de ese rango.
         _ic_period_pnl = sum((r["realized_pnl"] or 0.0) for r in ic_closed)
-        st.caption(f"💰 **Ganancia del período elegido: ${_ic_period_pnl:,.2f}** ({len(ic_closed)} condor(s) cerrado(s)).")
+        _icu1, _icu2 = st.columns([1, 2])
+        utilidad_con_periodo(_icu1, "Ganancia del período elegido", _ic_period_pnl, ic_closed,
+                             "close_ts", "close_date")
+        _icu2.caption(f"{len(ic_closed)} condor(s) cerrado(s) en el período.")
     else:
         st.caption("Todavía no cerró ningún condor.")
 

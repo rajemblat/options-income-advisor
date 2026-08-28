@@ -22,6 +22,7 @@ from options_advisor.dashboard.components import (
     inject_theme,
     render_header,
     render_notification_bell,
+    utilidad_con_periodo,
 )
 from options_advisor.dashboard.rating import _render_intraday_ratings, condor_data_rows
 from options_advisor.simulator import learning
@@ -834,8 +835,20 @@ _cond_real_pct = (_cond_pnl_per / CAPITAL_DISPONIBLE * 100.0) if CAPITAL_DISPONI
 _ccol = GOOD if _cond_pnl_per >= 0 else BAD
 _crot = {"Hoy": "de hoy", "Semana": "de esta semana", "Mes": "de este mes",
          "Año": "de este año", "Todo": "desde el primer condor"}[_cond_periodo]
-_cextra = ("" if _cond_periodo == "Todo"
-           else f" &middot; histórico total {_fmt_money(_cond_stats['total_realized_pnl'])}")
+# Con "Todo", el numero no dice nada sin el plazo (usuario 2026-08-28: "que diga cuantos meses va
+# esa utilidad"). Con cualquier otro periodo el plazo ya esta implicito en el filtro, y ahi lo util
+# es el historico. Mismo criterio que el panel de naked.
+if _cond_periodo == "Todo":
+    _cfechas = sorted((r["close_ts"] or "")[:10] for r in _cond_cerrados if r["close_ts"])
+    if _cfechas:
+        from options_advisor.dashboard.components import texto_del_periodo as _txt_per
+        _d0c = date.fromisoformat(_cfechas[0])
+        _cextra = (f" &middot; {_txt_per(_cfechas[0], _cfechas[-1])} operando "
+                   f"(desde el {_d0c.strftime('%d/%m/%Y')})")
+    else:
+        _cextra = ""
+else:
+    _cextra = f" &middot; histórico total {_fmt_money(_cond_stats['total_realized_pnl'])}"
 st.markdown(
     f"<div style='background:{_ccol}1a; border:1px solid {_ccol}55; border-radius:0.6rem; padding:0.75rem 1rem; margin:0.1rem 0 0.7rem;'>"
     f"<span style='color:{TEXT_MUTED}; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.05em;'>Ganancia realizada {_crot} &middot; Iron Condor real &middot; solo operaciones cerradas</span><br>"
@@ -1142,8 +1155,10 @@ if _co_cerrados:
     _co_period_pnl = sum(r["realized_pnl"] for r in _co_con_pnl)
     _co_sin_pnl = len(_co_cerrados) - len(_co_con_pnl)
     _co_nota = f" · {_co_sin_pnl} sin P&L registrado (no suman)" if _co_sin_pnl else ""
-    st.caption(f"💰 **Ganancia del período elegido: ${_co_period_pnl:,.2f}** "
-               f"({len(_co_con_pnl)} condor(s) cerrado(s){_co_nota}).")
+    _cou1, _cou2 = st.columns([1, 2])
+    utilidad_con_periodo(_cou1, "Ganancia del período elegido", _co_period_pnl, _co_con_pnl,
+                         "close_ts", "close_date")
+    _cou2.caption(f"{len(_co_con_pnl)} condor(s) cerrado(s){_co_nota}.")
 else:
     st.caption("Ningún condor real cerrado en el período elegido.")
 

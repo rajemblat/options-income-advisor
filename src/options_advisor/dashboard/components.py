@@ -1797,3 +1797,70 @@ def render_fear_greed_gauge(data: dict) -> None:
                       margin=dict(t=30, b=6, l=14, r=14),
                       title=dict(text=f"Índice de Miedo y Codicia · {label}", font=dict(size=14)))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+# ─────────────────────── Utilidad acumulada con su período ───────────────────────
+# Usuario 2026-08-28: "cuando pongo utilidad en 'todo' quiero que salga en números verde y que diga
+# cuántos meses va esa utilidad". Sin el período, $6.624 no dice nada: no es lo mismo ganarlos en
+# tres semanas que en dos años. Se usa en naked, iron condor e iron butterfly, papel y real.
+
+def periodo_de(filas, *campos: str) -> tuple[str, str] | None:
+    """(primera fecha, última fecha) en ISO mirando el primer campo que exista en cada fila.
+    None si no hay ninguna fecha utilizable."""
+    fechas = []
+    for r in filas or []:
+        for c in campos:
+            try:
+                v = r[c]
+            except (KeyError, IndexError, TypeError):
+                continue
+            if v:
+                fechas.append(str(v)[:10])
+                break
+    if not fechas:
+        return None
+    return min(fechas), max(fechas)
+
+
+def texto_del_periodo(desde: str, hasta: str) -> str:
+    """'2,4 meses' / '18 días' / 'un solo día'. Se elige la unidad que se entiende sola: decir
+    '0,8 meses' obliga a hacer la cuenta mental."""
+    from datetime import date as _d
+    try:
+        d0, d1 = _d.fromisoformat(desde), _d.fromisoformat(hasta)
+    except ValueError:
+        return ""
+    dias = (d1 - d0).days
+    if dias <= 0:
+        return "un solo día"
+    if dias < 45:
+        return f"{dias} días"
+    meses = dias / 30.44
+    if meses < 24:
+        return f"{meses:.1f} meses".replace(".", ",")
+    return f"{meses / 12:.1f} años".replace(".", ",")
+
+
+def utilidad_con_periodo(contenedor, etiqueta: str, total: float, filas, *campos_fecha: str) -> None:
+    """Muestra la utilidad en VERDE si es positiva (roja si no) y, debajo, cuánto tiempo abarca.
+
+    Se dibuja a mano en vez de con `st.metric` porque st.metric solo colorea el `delta`, no el
+    número, y lo que el usuario quiere ver en verde es el número."""
+    color = GOOD if total >= 0 else CRITICAL
+    per = periodo_de(filas, *campos_fecha)
+    if per:
+        desde, hasta = per
+        pie = (f"{texto_del_periodo(desde, hasta)} &nbsp;·&nbsp; "
+               f"{desde[8:10]}/{desde[5:7]} → {hasta[8:10]}/{hasta[5:7]}")
+    else:
+        pie = "&nbsp;"
+    contenedor.markdown(
+        f"<div style='padding:0.15rem 0'>"
+        f"<div style='color:{TEXT_MUTED};font-size:0.72rem;text-transform:uppercase;"
+        f"letter-spacing:0.04em'>{etiqueta}</div>"
+        f"<div style='color:{color};font-size:1.9rem;font-weight:700;line-height:1.15'>"
+        f"${total:,.2f}</div>"
+        f"<div style='color:{TEXT_MUTED};font-size:0.72rem'>{pie}</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
