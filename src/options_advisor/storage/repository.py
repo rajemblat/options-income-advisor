@@ -2113,3 +2113,27 @@ def list_ai_suggestions(conn: sqlite3.Connection, *, limit: int = 30) -> list[sq
     return conn.execute(
         "SELECT * FROM ai_suggested_orders ORDER BY id DESC LIMIT ?", (int(limit),)
     ).fetchall()
+
+
+# ─────────────── Orden de cierre VIVA del condor real ───────────────
+# Usuario 2026-08-24: "envío el cierre en 1.25, después lo sigue enviando más veces en 1.25 en vez
+# de dejarlo working... si modifica el precio sí, el mismo precio no es necesario". Guardar cuál es
+# la orden puesta es lo que permite sondearla en el próximo tick en vez de mandar otra.
+
+def set_real_condor_close_working(conn: sqlite3.Connection, position_id: int,
+                                  order_id: str | None, price: float | None) -> None:
+    """Anota (o borra, con None) la orden de cierre que quedó viva en el broker."""
+    conn.execute(
+        "UPDATE real_condor_positions SET close_working_order_id = ?, close_working_price = ? WHERE id = ?",
+        (order_id, price, position_id),
+    )
+    conn.commit()
+
+
+def get_real_condor_close_working(row) -> tuple[str | None, float | None]:
+    """(id de la orden de cierre viva, precio al que está puesta). Tolerante a filas viejas que
+    todavía no tienen las columnas — bases anteriores a la migración y fixtures de tests."""
+    try:
+        return row["close_working_order_id"], row["close_working_price"]
+    except (KeyError, IndexError, TypeError):
+        return None, None

@@ -27,6 +27,7 @@ from datetime import date, datetime
 
 from options_advisor.execution import price_walker as pw
 from options_advisor.execution import real_condor_sender as rcs
+from options_advisor.execution import schwab_orders as so
 from options_advisor.execution.live_engine import _serialized
 from options_advisor.simulator import iron_condor, iron_condor_engine, learning
 from options_advisor.simulator.iron_condor_engine import (
@@ -438,6 +439,95 @@ def _reconcile_working_open(conn, broker, account_hash, row) -> None:
                "Igual, si querés estar seguro, mirá tus posiciones en el broker.")
 
 
+# Cuánto se tiene que mover el precio objetivo para molestarse en reemplazar la orden puesta. Menos
+# que esto es ruido del mid y reemplazar solo agrega churn y riesgo de carrera.
+_CAMBIO_MINIMO_PARA_REEMPLAZAR = 0.05
+
+
+def _gestionar_cierre_puesto(conn, broker, account_hash, row, oid, precio_puesto,
+                             entry_total, qty, chain, cfg) -> str:
+    """Resuelve la recompra que quedó PUESTA en el broker. Devuelve 'llenó', 'sigue_viva' o 'murió'.
+
+    Antes el motor cancelaba la orden cada tick y ponía otra al mismo precio un minuto después. Eso
+    es lo que el usuario marcó el 24/08 —"si modifica el precio sí, el mismo precio no es
+    necesario"— y además es lo que abrió la carrera de ese día: la orden llenó justo mientras salía
+    el cancel y el robot la dio por no llenada.
+
+    Ahora la orden vive entre ticks. Acá se la sondea y solo se la reemplaza si el precio objetivo
+    se movió de verdad. Ante cualquier error de red se la deja quieta: una orden viva en el broker
+    es más segura que una cancelada a ciegas."""
+    try:
+        info = broker.get_order(account_hash, oid)
+    except Exception:  # noqa: BLE001
+        logger.debug("Condor-real: no se pudo sondear la recompra puesta de id=%s", row["id"], exc_info=True)
+        return "sigue_viva"   # sin dato, no se toca
+
+    estado = (info.get("status") or "").upper()
+
+    if estado == "FILLED":
+        debito_ps = precio_puesto if precio_puesto is not None else 0.0
+        debito_total = round(debito_ps * 100.0 * qty, 2)
+        realizado = round(entry_total - debito_total - settings_commission(cfg), 2)
+        motivo = "manual" if _manual_close_requested(row) else "profit_target"
+        repo.close_real_condor_position(conn, row["id"], date.today(), debito_total, motivo,
+                                        realizado, close_ts=datetime.now(), close_schwab_order_id=oid)
+        repo.set_real_condor_close_working(conn, row["id"], None, None)
+        _reset_cierres_fallidos(conn, row["id"])
+        logger.warning("Condor-real: id=%s CERRADO — la recompra que estaba puesta LLENÓ a $%.2f — "
+                       "P&L $%.2f", row["id"], debito_ps, realizado)
+        signo = "🟢" if realizado >= 0 else "🔴"
+        _email(f"{signo} Lokshn CERRÓ un Iron Condor REAL — P&L ${realizado:+,.2f}",
+               f"Iron Condor {row['underlying']} cerrado (motivo: {motivo}).\n"
+               f"Crédito abierto ${entry_total:,.2f} → costo de cierre ${debito_total:,.2f}.\n"
+               f"Resultado: ${realizado:+,.2f}.")
+        return "llenó"
+
+    if estado in ("CANCELED", "REJECTED", "EXPIRED"):
+        _detalle = str(info.get("statusDescription") or "")[:300]
+        repo.set_real_condor_close_working(conn, row["id"], None, None)
+        logger.warning("Condor-real: la recompra puesta de id=%s murió (%s)%s — se vuelve a intentar",
+                       row["id"], estado, f" — {_detalle}" if _detalle else "")
+        return "murió"
+
+    # Sigue viva. ¿Cambió el precio objetivo lo suficiente como para reemplazarla?
+    if chain is None or precio_puesto is None:
+        return "sigue_viva"
+    q = _combo_quotes(chain, row["short_put_strike"], row["short_call_strike"],
+                      row["long_put_strike"], row["long_call_strike"])
+    if q is None:
+        return "sigue_viva"
+    objetivo = _close_debit_ladder(*q)[-1]   # el mid: donde termina la escalera
+    if abs(objetivo - precio_puesto) < _CAMBIO_MINIMO_PARA_REEMPLAZAR:
+        return "sigue_viva"   # el mercado no se movió: se la deja trabajar
+
+    legs = _legs_de_la_fila(row)
+    if legs is None:
+        return "sigue_viva"
+    try:
+        nuevo_oid = broker.replace_order(
+            account_hash, oid,
+            so.build_iron_condor_close(legs.short_put_symbol, legs.long_put_symbol,
+                                       legs.short_call_symbol, legs.long_call_symbol,
+                                       quantity=qty, net_debit_limit=objetivo))
+    except Exception:  # noqa: BLE001
+        logger.exception("Condor-real: no se pudo reemplazar la recompra de id=%s (queda la vieja)", row["id"])
+        return "sigue_viva"
+    repo.set_real_condor_close_working(conn, row["id"], nuevo_oid, objetivo)
+    logger.info("Condor-real: recompra de id=%s reajustada $%.2f → $%.2f (orden %s)",
+                row["id"], precio_puesto, objetivo, nuevo_oid)
+    return "sigue_viva"
+
+
+def _legs_de_la_fila(row):
+    """Las 4 patas OCC guardadas al abrir. None si falta alguna — nunca se reconstruyen a mano."""
+    patas = [row["short_put_symbol"], row["long_put_symbol"],
+             row["short_call_symbol"], row["long_call_symbol"]]
+    if not all(patas) or len(set(patas)) != 4:
+        return None
+    return rcs.CondorLegs(short_put_symbol=patas[0], long_put_symbol=patas[1],
+                          short_call_symbol=patas[2], long_call_symbol=patas[3])
+
+
 def _manage_open_position(conn, broker, account_hash, chain, spot, as_of: date, cfg, row) -> None:
     """Marca a mercado un condor real abierto y lo cierra con la MISMA regla del papel."""
     expiration = date.fromisoformat(row["expiration_date"])
@@ -462,6 +552,15 @@ def _manage_open_position(conn, broker, account_hash, chain, spot, as_of: date, 
             age_minutes = (datetime.now() - datetime.fromisoformat(row["entry_ts"])).total_seconds() / 60.0
         except (ValueError, TypeError):
             age_minutes = None
+
+    # ¿Hay una recompra ya PUESTA en el broker de un tick anterior? Se resuelve primero: puede haber
+    # llenado, puede seguir viva, o puede haber muerto. Ver `_gestionar_cierre_puesto`.
+    _oid_vivo, _precio_vivo = repo.get_real_condor_close_working(row)
+    if _oid_vivo:
+        _estado = _gestionar_cierre_puesto(conn, broker, account_hash, row, _oid_vivo, _precio_vivo,
+                                           entry_total, qty, chain, cfg)
+        if _estado in ("llenó", "sigue_viva"):
+            return
 
     do_close, reason = iron_condor.should_close_condor(unrealized, entry_total, expired, cfg, age_minutes=age_minutes)
     # Cierre manual pedido desde el dashboard (usuario 2026-08-14): manda por encima de la regla, tanto si
@@ -504,8 +603,18 @@ def _manage_open_position(conn, broker, account_hash, chain, spot, as_of: date, 
                           short_call_symbol=_cierre[2], long_call_symbol=_cierre[3])
     logger.warning("Condor-real: CERRANDO id=%s motivo=%s (débito arranca $%.2f → mid)",
                    row["id"], reason, ladder[0] if ladder else 0.0)
+    # leave_resting_at_mid=True: la recompra QUEDA PUESTA en el broker en vez de cancelarse.
+    #
+    # Antes iba en False: cada tick ponía una orden, la caminaba ~28 s y la CANCELABA, para volver a
+    # poner otra al mismo precio un minuto después (usuario 2026-08-24: "lo sigue enviando más veces
+    # en 1.25 en vez de dejarlo working... si modifica el precio sí, el mismo precio no es
+    # necesario"). Ese ciclo cancelar/reponer es lo que abrió la carrera del 24/08, cuando la orden
+    # llenó justo mientras salía el cancel y el robot no se enteró.
+    #
+    # Ahora se pone una sola vez y se la deja trabajar. El próximo tick la sondea (arriba) y solo la
+    # reemplaza si el precio objetivo se movió de verdad.
     res = rcs.execute_condor_walk(broker, account_hash, rcs.SIDE_CLOSE, legs, qty, ladder,
-                                  interval_seconds=10, leave_resting_at_mid=False)
+                                  interval_seconds=10, leave_resting_at_mid=True)
     if res.filled:
         close_debit_total = round((res.fill_price or (close_value_pc)) * 100.0 * qty, 2)
         commission_rt = settings_commission(cfg)  # 0 salvo que se configure
@@ -519,8 +628,14 @@ def _manage_open_position(conn, broker, account_hash, chain, spot, as_of: date, 
                f"Crédito abierto ${entry_total:,.2f} → costo de cierre ${close_debit_total:,.2f}.\n"
                f"Resultado: ${realized:+,.2f}.")
         _reset_cierres_fallidos(conn, row["id"])
+        repo.set_real_condor_close_working(conn, row["id"], None, None)
     else:
-        # No llenó: dejamos la posición abierta, marcamos el unrealized y reintentamos el próximo tick.
+        # No llenó AHORA, pero la orden quedó PUESTA: se guarda para sondearla el próximo tick en
+        # vez de mandar otra. Si murió (rechazada/cancelada) no se guarda nada y se reintenta limpio.
+        if res.order_id and res.status not in ("CANCELED", "REJECTED", "EXPIRED"):
+            repo.set_real_condor_close_working(conn, row["id"], res.order_id, res.final_limit_price)
+            logger.info("Condor-real: recompra de id=%s queda PUESTA a $%.2f (orden %s)",
+                        row["id"], res.final_limit_price or 0.0, res.order_id)
         repo.mark_real_condor_position(conn, row["id"], datetime.now(), unrealized)
         _detalle = getattr(res, "status_detalle", "") or ""
         logger.warning("Condor-real: la recompra de id=%s no llenó (%s); se reintenta%s",

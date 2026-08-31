@@ -157,6 +157,11 @@ _NEW_COLUMNS_BY_TABLE = {
     # en NULL = sin cierre manual pedido, que es exactamente el default correcto.
     "real_condor_positions": {
         "manual_close_requested": "TEXT",
+        # Orden de cierre VIVA en el broker, para no cancelarla y reponerla al mismo precio cada
+        # tick (usuario 2026-08-24: "si modifica el precio sí, el mismo precio no es necesario,
+        # dejalo en working"). NULL = no hay ninguna puesta. Ver live_condor_engine.
+        "close_working_order_id": "TEXT",
+        "close_working_price": "REAL",
     },
 }
 
