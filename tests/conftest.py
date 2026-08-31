@@ -121,3 +121,21 @@ def _sin_avisos_reales(monkeypatch):
     colado por un import."""
     for nombre in _VARIABLES_DE_AVISO:
         monkeypatch.delenv(nombre, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _cache_de_finnhub_limpia():
+    """Cada test arranca con la cache de Finnhub vacia.
+
+    Sin esto, un test que cachea la fecha de earnings de AAPL le devuelve ese valor al siguiente
+    que espera un fallo de red, y el segundo pasa o falla segun el ORDEN en que corran -- que es la
+    peor clase de test. Paso de verdad al agregar la cache (2026-08-31):
+    `test_get_next_earnings_date_returns_none_on_http_error` recibio una fecha en vez de None
+    porque el test anterior ya la habia guardado.
+
+    Una cache a nivel de modulo es estado global; en produccion eso es lo que la hace util (un solo
+    proceso, todo el dia), y en los tests es exactamente lo que hay que aislar."""
+    from options_advisor.market_context import finnhub_client
+    finnhub_client.limpiar_cache()
+    yield
+    finnhub_client.limpiar_cache()
