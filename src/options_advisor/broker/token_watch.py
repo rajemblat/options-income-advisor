@@ -116,12 +116,22 @@ def check_and_warn(conn: sqlite3.Connection, *, token_store_path=None) -> str | 
             return None
 
         subject, body = _message(level, seconds_left)
-        notifier.send_email(subject, body)
+        enviado = notifier.send_email(subject, body)
         notifier.send_native(
             "Reconectá Schwab: corré scripts/schwab_login.py",
             title="Lokshn",
             subtitle=subject.split(": ", 1)[-1],
         )
+        # La bandera se pone SOLO si el mail salio de verdad.
+        #
+        # Antes se ponia siempre. El 30/08 el envio fallo por DNS, la bandera quedo marcada como
+        # "nivel 24h ya avisado", y el vigilante -- que corre cada hora -- no volvio a intentarlo
+        # nunca. El aviso murio por un parpadeo de internet de segundos. Ahora, si el mail no sale,
+        # no se marca nada y a la hora siguiente se reintenta.
+        if not enviado:
+            logger.error("Aviso de token nivel %s NO se pudo enviar por mail — se reintenta en la "
+                         "proxima corrida (dentro de una hora)", level)
+            return None
         set_robot_flag(conn, FLAG_KEY, f"{token_id}:{level}")
         logger.warning("Aviso de vencimiento del token de Schwab enviado (nivel %s)", level)
         return level

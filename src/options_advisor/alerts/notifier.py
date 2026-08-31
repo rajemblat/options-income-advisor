@@ -3,12 +3,18 @@ from __future__ import annotations
 import logging
 import os
 import smtplib
+import time
 import subprocess
 from email.message import EmailMessage
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# Tres intentos separados por 3 y 6 segundos. Alcanza de sobra para un corte de DNS momentaneo y no
+# demora nada perceptible: el envio corre en el job, no en el camino de mandar ordenes.
+_INTENTOS_DE_EMAIL = 3
+_ESPERA_ENTRE_INTENTOS = 3.0
 
 
 # ---------------------------------------------------------------------------
@@ -55,20 +61,35 @@ def send_email(subject: str, body: str) -> bool:
         port = int(os.environ.get("SMTP_PORT", "587"))
     except ValueError:
         port = 587
-    try:
-        msg = EmailMessage()
-        msg["Subject"] = subject
-        msg["From"] = frm
-        msg["To"] = to
-        msg.set_content(body)
-        with smtplib.SMTP(host, port, timeout=15) as server:
-            server.starttls()
-            server.login(user, password)
-            server.send_message(msg)
-        return True
-    except Exception:
-        logger.exception("Fallo al enviar el email (no afecta el trading)")
-        return False
+    # REINTENTOS. Un parpadeo de DNS de dos segundos no puede costarte un aviso.
+    #
+    # El 30/08 a las 12:07 el vigilante disparo el aviso de "tu token vence en 24 horas", el envio
+    # fallo con `socket.gaierror: nodename nor servname provided` -- DNS, no autenticacion -- y el
+    # aviso se perdio para siempre. Lo mismo el 31/08 a las 06:07 con el "ultimo llamado". El lunes
+    # el token vencio con el mercado abierto y el usuario se entero mirando el dashboard. De TODOS
+    # los mails de la semana solo fallaron 4, y dos de esos cuatro eran justo estos.
+    ultimo_error = None
+    for intento in range(_INTENTOS_DE_EMAIL):
+        try:
+            msg = EmailMessage()
+            msg["Subject"] = subject
+            msg["From"] = frm
+            msg["To"] = to
+            msg.set_content(body)
+            with smtplib.SMTP(host, port, timeout=15) as server:
+                server.starttls()
+                server.login(user, password)
+                server.send_message(msg)
+            if intento:
+                logger.warning("Email enviado en el intento %s: %s", intento + 1, subject)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            ultimo_error = exc
+            if intento + 1 < _INTENTOS_DE_EMAIL:
+                time.sleep(_ESPERA_ENTRE_INTENTOS * (intento + 1))
+    logger.error("Fallo al enviar el email tras %s intentos (no afecta el trading): %s — %s",
+                 _INTENTOS_DE_EMAIL, subject, ultimo_error)
+    return False
 
 
 
