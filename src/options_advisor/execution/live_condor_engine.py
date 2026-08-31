@@ -215,6 +215,14 @@ def process_real_condor_cycle(conn, broker, settings, as_of: date) -> None:
     if bars is None or chain is None or spot is None:
         return
 
+    # CHECKLIST DE DESPEGUE (usuario 2026-08-31: "debe verificar que el stop funciona").
+    # No se abre nada que después no se pueda cuidar. Ver `puede_cuidar_la_posicion`.
+    _ok, _porque = puede_cuidar_la_posicion(conn)
+    if not _ok:
+        logger.warning("Condor-real: NO se abre — %s. El stop de $%.0f lo ejecuta el robot, así que "
+                       "sin visión no habría protección.", _porque, getattr(cfg, "stop_loss_dollars", 0) or 0)
+        return
+
     # Mismo filtro de VIX en suba que el papel (usuario 2026-08-14) — el cfg de acá ya viene con las
     # perillas aprendidas aplicadas, así que el tope de VIX es el mismo que aprendió operando en papel.
     vix_chg = iron_condor_engine.vix_change_pct(broker)
@@ -574,6 +582,54 @@ def _avisar_si_el_cierre_no_entra(conn, row, res, unrealized: float) -> None:
     )
     logger.error("Condor-real: id=%s lleva %s cierres rechazados seguidos — avisado por mail",
                  row["id"], fallos)
+
+
+# Horas de vida que le tienen que quedar al refresh_token para animarse a abrir. El condor es 0DTE:
+# se abre y se cierra el mismo día, casi siempre en menos de dos horas. Con 3 horas de margen, una
+# posición abierta ahora llega holgada al cierre con el robot todavía viendo.
+_HORAS_DE_TOKEN_PARA_ABRIR = 3.0
+
+
+def puede_cuidar_la_posicion(conn=None) -> tuple[bool, str]:
+    """¿Está el robot en condiciones de VIGILAR un condor si lo abre ahora? (motivo si no).
+
+    El stop de $100 NO es una orden puesta en Schwab: lo dispara el robot, mirando el precio cada
+    minuto. Si el robot no ve, el stop no existe — y el usuario se queda con hasta $835 de riesgo
+    sin protección, creyendo que está cubierto.
+
+    Esta semana pasó tres veces (2026-08-27, 28 y 31): cortes de red y el token vencido dejaron al
+    robot ciego con el mercado abierto. Ninguna de esas veces había un condor abierto, pero fue
+    suerte. Regla del usuario (2026-08-31): "no puede abrir sin stop loss" — y el stop solo funciona
+    si el robot puede ver.
+
+    Solo condiciona ABRIR. Cerrar, marcar y gestionar lo que ya está abierto no pasa por acá: si ya
+    hay una posición viva, el robot tiene que seguir intentando cuidarla aunque la red venga mal."""
+    from options_advisor.broker import conectividad
+    from options_advisor.broker.schwab_auth import read_refresh_token_seconds_left
+
+    fallos, _ultimo_exito, _err = conectividad.estado()
+    # OJO: `estado()` devuelve el TIMESTAMP del último éxito, no los segundos transcurridos. Para
+    # eso está `segundos_sin_exito()` (bug atrapado al escribir esto: comparar el timestamp contra
+    # 300 daba siempre "hace 29 millones de minutos" y el condor no habría abierto nunca más).
+    sin_exito = conectividad.segundos_sin_exito()
+    if conectividad.esta_ciego():
+        return False, "el robot está sin conexión con Schwab"
+    if fallos >= 5:
+        return False, f"{fallos} fallos de red seguidos — la conexión viene inestable"
+    if sin_exito is not None and sin_exito > 300:
+        return False, f"hace {sin_exito / 60:.0f} min que ninguna llamada a Schwab funciona"
+
+    try:
+        quedan = read_refresh_token_seconds_left()
+    except Exception:  # noqa: BLE001
+        quedan = None
+    if quedan is not None:
+        if quedan <= 0:
+            return False, "el token de Schwab está vencido"
+        if quedan < _HORAS_DE_TOKEN_PARA_ABRIR * 3600:
+            return False, (f"al token de Schwab le quedan {quedan / 3600:.1f} h — no alcanza para "
+                           "vigilar la posición hasta el cierre")
+    return True, ""
 
 
 def settings_commission(cfg) -> float:
