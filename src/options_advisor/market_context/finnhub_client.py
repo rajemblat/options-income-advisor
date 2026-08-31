@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, datetime, timedelta, timezone
 
 import httpx
@@ -10,6 +11,66 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://finnhub.io/api/v1"
 _TIMEOUT = 10.0
 
+# ── Caché y freno de rate-limit ────────────────────────────────────────────────
+#
+# El robot escanea ~23 símbolos por minuto y para cada uno preguntaba la fecha de earnings. Son
+# ~1.400 llamadas por hora contra un plan gratis que no las aguanta: el 28/08 hubo 121 respuestas
+# 429 en un día, y cada una deja al análisis sin el dato de earnings de ese símbolo.
+#
+# La fecha de earnings de una empresa cambia cuatro veces al año. Preguntarla cada minuto no aporta
+# nada: se cachea 12 horas. Con eso pasan a ser ~23 llamadas por día.
+#
+# Y cuando igual llega un 429, se para de llamar por 15 minutos en vez de seguir golpeando. Insistir
+# contra un límite de tasa solo alarga el bloqueo.
+_CACHE_TTL_SEGUNDOS = 12 * 3600
+_PAUSA_TRAS_429_SEGUNDOS = 15 * 60
+
+_cache: dict[tuple, tuple[float, object]] = {}
+_pausado_hasta: float = 0.0
+
+
+def _en_pausa() -> bool:
+    return time.monotonic() < _pausado_hasta
+
+
+def _pausar_por_rate_limit() -> None:
+    global _pausado_hasta
+    _pausado_hasta = time.monotonic() + _PAUSA_TRAS_429_SEGUNDOS
+    logger.warning("Finnhub devolvió 429 (límite del plan): se deja de consultar por %d minutos",
+                   _PAUSA_TRAS_429_SEGUNDOS // 60)
+
+
+def _de_cache(clave):
+    """Valor cacheado y todavía fresco, o `_VACIO` si no hay. Se cachea también el None: "esta
+    empresa no tiene earnings a la vista" es una respuesta tan válida como una fecha."""
+    guardado = _cache.get(clave)
+    if guardado is None:
+        return _VACIO
+    puesto, valor = guardado
+    if time.monotonic() - puesto > _CACHE_TTL_SEGUNDOS:
+        _cache.pop(clave, None)
+        return _VACIO
+    return valor
+
+
+def _a_cache(clave, valor):
+    _cache[clave] = (time.monotonic(), valor)
+    return valor
+
+
+class _Vacio:
+    pass
+
+
+_VACIO = _Vacio()
+
+
+def limpiar_cache() -> None:
+    """Para los tests y para forzar una relectura a mano."""
+    global _pausado_hasta
+    _cache.clear()
+    _pausado_hasta = 0.0
+
 
 def get_next_earnings_date(symbol: str, as_of: date, api_key: str | None, lookahead_days: int = 180) -> date | None:
     """Próxima fecha de earnings conocida para `symbol` a partir de `as_of`, vía Finnhub
@@ -17,6 +78,12 @@ def get_next_earnings_date(symbol: str, as_of: date, api_key: str | None, lookah
     programados dentro de `lookahead_days` — nunca rompe el pipeline (mismo patrón que el
     resto de fuentes externas: el narrador se queda sin este dato, no sin la alerta)."""
     if not api_key:
+        return None
+    clave = ("next_earnings", symbol, as_of.isoformat(), lookahead_days)
+    guardado = _de_cache(clave)
+    if not isinstance(guardado, _Vacio):
+        return guardado
+    if _en_pausa():
         return None
     try:
         response = httpx.get(
@@ -29,11 +96,14 @@ def get_next_earnings_date(symbol: str, as_of: date, api_key: str | None, lookah
             },
             timeout=_TIMEOUT,
         )
+        if response.status_code == 429:
+            _pausar_por_rate_limit()
+            return None
         response.raise_for_status()
         rows = response.json().get("earningsCalendar", [])
         dates = [date.fromisoformat(row["date"]) for row in rows if row.get("date")]
         upcoming = [d for d in dates if d >= as_of]
-        return min(upcoming) if upcoming else None
+        return _a_cache(clave, min(upcoming) if upcoming else None)
     except Exception:
         logger.warning("Finnhub earnings calendar no disponible para %s; se omite este dato", symbol, exc_info=True)
         return None
