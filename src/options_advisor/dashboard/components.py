@@ -690,10 +690,20 @@ def render_market_session_badge() -> None:
 # para mostrar contexto — distinto de la decisión ya tomada de no integrar VIX como subyacente
 # del motor de estrategias (BACKLOG "Bloqueado", por futuros/contango): acá no se calculan
 # griegos ni se arma ningún candidato, solo se muestra la cotización.
-_VOLATILITY_BANDS = ((15.0, "Volatilidad baja", "GOOD"), (25.0, "Volatilidad normal", "WARNING"))
+# Umbrales del usuario (2026-08-31): "menos de 14 en verde, de 14.50 a 16 amarillo, y de 16.10
+# arriba en rojo". Dejó dos huecos —14.00–14.50 y 16.00–16.10— y se cierran hacia el color más
+# benigno, para que no exista un valor sin color: verde hasta 14.50, amarillo hasta 16.00 inclusive,
+# rojo por encima. Son SUS umbrales, más ajustados que los genéricos de manual (15/25) que había
+# antes: para vender prima de condor lo que importa no es si el VIX es "alto" en términos
+# históricos, sino si está lo bastante quieto para que el rango aguante el día.
+_VOLATILITY_BANDS = (
+    (14.5, "Volatilidad baja", "GOOD"),
+    (16.01, "Volatilidad media", "WARNING"),
+)
 
 
 def classify_volatility_level(vix_price: float) -> tuple[str, str]:
+    """(etiqueta, color) para el chip del VIX. Ver `_VOLATILITY_BANDS`."""
     for threshold, label, color_name in _VOLATILITY_BANDS:
         if vix_price < threshold:
             return label, GOOD if color_name == "GOOD" else WARNING

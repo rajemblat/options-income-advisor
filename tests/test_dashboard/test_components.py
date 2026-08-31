@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import pytest
+
 from options_advisor.broker.models import Mover, Quote
 from options_advisor.dashboard.components import (
     CRITICAL,
@@ -57,35 +59,51 @@ def test_capital_at_risk_empty_without_max_loss():
     assert _capital_at_risk_caveat_html(None, 50_000.0) == ""
 
 
-# --- classify_volatility_level (semáforo de volatilidad basado en VIX) ---
+# --- classify_volatility_level (semaforo de volatilidad basado en VIX) ---
+#
+# Umbrales del usuario (2026-08-31): "menos de 14 en verde, de 14.50 a 16 amarillo, y de 16.10
+# arriba en rojo". Reemplazan a los genericos de manual (15 / 25) que habia antes. Son mas
+# ajustados a proposito: para vender prima de condor no importa si el VIX es alto en terminos
+# historicos, sino si esta lo bastante quieto para que el rango aguante el dia.
+#
+# El usuario dejo dos huecos -- 14.00-14.50 y 16.00-16.10 -- y se cierran hacia el color mas
+# benigno para que ningun valor quede sin color.
 
 
-def test_classify_volatility_low_below_15():
-    label, color = classify_volatility_level(12.3)
+@pytest.mark.parametrize("vix", [8.0, 12.3, 13.99, 14.0, 14.49])
+def test_vix_bajo_es_verde(vix):
+    label, color = classify_volatility_level(vix)
     assert label == "Volatilidad baja"
     assert color == GOOD
 
 
-def test_classify_volatility_normal_between_15_and_25():
-    label, color = classify_volatility_level(18.5)
-    assert label == "Volatilidad normal"
+@pytest.mark.parametrize("vix", [14.5, 14.92, 15.0, 16.0])
+def test_vix_medio_es_amarillo(vix):
+    label, color = classify_volatility_level(vix)
+    assert label == "Volatilidad media"
     assert color == WARNING
 
 
-def test_classify_volatility_high_above_25():
-    label, color = classify_volatility_level(31.0)
+@pytest.mark.parametrize("vix", [16.01, 16.1, 18.5, 25.0, 60.0])
+def test_vix_alto_es_rojo(vix):
+    label, color = classify_volatility_level(vix)
     assert label == "Volatilidad alta"
     assert color == CRITICAL
 
 
-def test_classify_volatility_boundary_exactly_15_is_normal_not_low():
-    label, _ = classify_volatility_level(15.0)
-    assert label == "Volatilidad normal"
+def test_los_bordes_exactos_del_usuario():
+    """14.50 ya es amarillo y 16.10 ya es rojo: los dos numeros que dio textualmente."""
+    assert classify_volatility_level(14.50)[1] == WARNING
+    assert classify_volatility_level(16.10)[1] == CRITICAL
 
 
-def test_classify_volatility_boundary_exactly_25_is_alta_not_normal():
-    label, _ = classify_volatility_level(25.0)
-    assert label == "Volatilidad alta"
+def test_ningun_valor_se_queda_sin_color():
+    """Los huecos que dejo el usuario (14.00-14.50 y 16.00-16.10) tienen que estar cubiertos."""
+    v = 5.0
+    while v <= 40.0:
+        _, color = classify_volatility_level(round(v, 2))
+        assert color in (GOOD, WARNING, CRITICAL), f"VIX {v} quedo sin color"
+        v += 0.01
 
 
 # --- split_gainers_losers (bug real 2026-07-28: mismas empresas en Ganadoras Y Perdedoras) ---
