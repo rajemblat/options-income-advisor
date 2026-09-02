@@ -217,7 +217,7 @@ def process_real_condor_cycle(conn, broker, settings, as_of: date) -> None:
         _reconcile_and_manage_open(conn, broker, account_hash, chain, spot, as_of, cfg)
 
     # 1b) Última red: ¿la cuenta tiene patas de SPX que el robot no conoce? (ver la función)
-    _barrer_posiciones_huerfanas(conn, broker, as_of)
+    _huerfanas = _barrer_posiciones_huerfanas(conn, broker, as_of)
 
     # --- A partir de acá, ABRIR uno nuevo (requiere armado PROPIO + señal + cupo) ---
     # Autorización SEPARADA de los naked (usuario 2026-08-13): el condor real tiene su propio botón de
@@ -227,6 +227,14 @@ def process_real_condor_cycle(conn, broker, settings, as_of: date) -> None:
     # Pausa PROPIA del condor real (usuario 2026-08-14) además de la compartida con el papel y la maestra.
     # Cualquiera de las tres frena SOLO aperturas nuevas — lo abierto ya se gestionó arriba.
     if repo.is_condor_real_paused(conn) or repo.is_condor_paused(conn) or repo.is_all_paused(conn):
+        return
+    # ═══ SI HAY ALGO 0DTE QUE EL ROBOT NO PUEDE CUIDAR, NO ABRE NADA MÁS ═══
+    # Usuario 2026-09-02, después de perder $420 en un día: "eso debe funcionar al 100%, si no no
+    # debe abrir por seguridad". Una pata de SPX que vence hoy y que el robot no tiene registrada es
+    # una posición sin stop. Agregarle otra encima es duplicar el riesgo que ya no se está midiendo.
+    if _huerfanas:
+        logger.error("Condor-real: NO se abre — hay %d pata(s) 0DTE de SPX en la cuenta que el robot "
+                     "no tiene registradas. Primero hay que resolver eso.", _huerfanas)
         return
     _halt_n = getattr(cfg, "stop_loss_streak_halt", 0)
     if _halt_n > 0 and repo.real_condor_consecutive_stop_losses_today(conn, as_of) >= _halt_n:
@@ -351,7 +359,7 @@ def _vence_hoy(occ_symbol: str, as_of: date) -> bool:
         return False
 
 
-def _barrer_posiciones_huerfanas(conn, broker, as_of: date) -> None:
+def _barrer_posiciones_huerfanas(conn, broker, as_of: date) -> int:
     """¿Hay patas de SPX vivas en la cuenta que el robot NO tenga registradas? Avisar.
 
     El 2026-09-02, con dinero real: Schwab rechazó la apertura del condor por el precio fuera de la
@@ -368,9 +376,9 @@ def _barrer_posiciones_huerfanas(conn, broker, as_of: date) -> None:
         posiciones = broker.get_all_positions()
     except Exception:  # noqa: BLE001
         logger.debug("Condor-real: no se pudieron leer las posiciones de la cuenta", exc_info=True)
-        return
+        return 0
     if not posiciones:
-        return
+        return 0
 
     conocidas: set[str] = set()
     try:
@@ -384,7 +392,7 @@ def _barrer_posiciones_huerfanas(conn, broker, as_of: date) -> None:
                     conocidas.add(str(sym).replace(" ", ""))
     except Exception:  # noqa: BLE001
         logger.debug("Condor-real: no se pudieron listar las patas conocidas", exc_info=True)
-        return
+        return 0
 
     huerfanas = []
     for pos in posiciones:
@@ -403,7 +411,7 @@ def _barrer_posiciones_huerfanas(conn, broker, as_of: date) -> None:
         huerfanas.append(pos)
 
     if not huerfanas:
-        return
+        return 0
 
     detalle = "\n".join(
         f"  · {getattr(h, 'symbol', '?')}  cantidad {getattr(h, 'quantity', 0):+g}  "
@@ -416,11 +424,11 @@ def _barrer_posiciones_huerfanas(conn, broker, as_of: date) -> None:
     clave = _clave_huerfanas(as_of)
     try:
         if repo.get_robot_flag(conn, clave, "0") == "1":
-            return   # ya se avisó hoy
+            return len(huerfanas)   # ya se avisó hoy (el aviso es 1 por día; el freno, permanente)
         repo.set_robot_flag(conn, clave, "1")
     except Exception:  # noqa: BLE001
         logger.debug("Condor-real: no se pudo marcar el aviso de huérfanas", exc_info=True)
-        return
+        return len(huerfanas)
 
     _email("🔴 Lokshn: hay una posición de SPX en tu cuenta que el robot NO está gestionando",
            "El robot encontró patas de SPX abiertas en tu cuenta que no figuran en su registro.\n\n"
@@ -430,7 +438,9 @@ def _barrer_posiciones_huerfanas(conn, broker, as_of: date) -> None:
            "Pasó el 2026-09-02: una orden que Schwab había marcado como rechazada terminó "
            "ejecutándose igual. Si esto es eso, cerrala vos a mano desde el broker o avisale al "
            "robot. NO la adopta solo porque no sabe a qué precio entró, y con un crédito inventado "
-           "el stop también saldría inventado.")
+           "el stop también saldría inventado.\n\n"
+           "Mientras esa posición siga ahí, el robot NO abre condors nuevos.")
+    return len(huerfanas)
 
 
 def _buscar_orden_en_schwab(broker, row):
@@ -994,6 +1004,35 @@ def _log_open_for_learning(conn, as_of: date, pos_id: int, build, spot, signal, 
         logger.debug("Condor-real: no se pudo registrar la apertura para el aprendizaje", exc_info=True)
 
 
+def _rescatar_orden_viva(broker, account_hash, res):
+    """De TODOS los ids que creó el walk, ¿hay alguno que llenó o que sigue vivo? Devuelve
+    (id, estado, precio_o_None) o None si están todos muertos de verdad.
+
+    El 2026-09-02, con dinero real: la escalera hizo 1.95 → 1.90 → 1.85 → 1.82. En Schwab cada
+    reemplazo es una orden NUEVA. El reemplazo a $1.82 lo rechazaron por la grilla de 5 centavos y
+    el walk devolvió REJECTED — pero la orden de $1.85 seguía VIVA y llenó media hora después. El
+    robot solo miró el último id, dio la fila por muerta y la borró. Quedó un iron condor abierto en
+    la cuenta sin stop, sin objetivo y sin nadie mirándolo hasta que el usuario lo cerró a mano.
+
+    Un id muerto no es prueba de que no haya orden viva. Se preguntan TODOS, del más nuevo al más
+    viejo: un fill gana siempre; si no hay fill pero queda una viva, esa pasa a ser la orden de la
+    fila y la posición sigue bajo vigilancia. Recién si están todas muertas se descarta."""
+    viva = None
+    for oid in reversed(res.order_ids or []):
+        try:
+            info = broker.get_order(account_hash, oid)
+        except Exception:  # noqa: BLE001
+            logger.debug("Condor-real: no se pudo sondear la orden %s del walk", oid, exc_info=True)
+            viva = viva or (oid, "DESCONOCIDA", None)   # sin respuesta NO se da por muerta
+            continue
+        estado = (str(info.get("status") or "")).upper()
+        if estado == "FILLED":
+            return oid, "FILLED", info
+        if estado not in ("REJECTED", "CANCELED", "EXPIRED", "REPLACED"):
+            viva = viva or (oid, estado or "WORKING", info)
+    return viva
+
+
 def _open_real_condor(conn, broker, account_hash, chain, build, spot, as_of: date, cfg, lt, symbol, signal,
                       vix_chg: float | None = None) -> None:
     """Manda la orden combinada REAL para abrir el condor y registra la posición."""
@@ -1069,6 +1108,27 @@ def _open_real_condor(conn, broker, account_hash, chain, build, spot, as_of: dat
         logger.warning("Condor-real: la apertura id=%s NO se llegó a colocar (%s) — descartada, se reintenta",
                        pos_id, res.error)
         return
+
+    # ═══ NINGUNA ORDEN DEL WALK SE PIERDE (usuario 2026-09-02) ═══
+    # Si el walk terminó con el último id muerto, se preguntan todos los demás antes de seguir: uno
+    # de ellos puede estar vivo (o haber llenado). Ver `_rescatar_orden_viva`.
+    if not res.filled and (res.status or "").upper() in ("REJECTED", "CANCELED", "EXPIRED"):
+        rescate = _rescatar_orden_viva(broker, account_hash, res)
+        if rescate is not None:
+            oid_vivo, estado_vivo, _info = rescate
+            logger.warning("Condor-real: el walk de id=%s terminó %s, pero la orden %s sigue %s — "
+                           "esa pasa a ser la orden de la fila. NO se descarta nada.",
+                           pos_id, res.status, oid_vivo, estado_vivo)
+            res.order_id = oid_vivo
+            if estado_vivo == "FILLED":
+                res.filled = True
+                res.status = "FILLED"
+            else:
+                res.status = estado_vivo
+        else:
+            # Todas muertas: se cancela lo que pudiera quedar colgado y se descarta limpio.
+            logger.warning("Condor-real: todas las órdenes del walk de id=%s están muertas (%s)",
+                           pos_id, ", ".join(res.order_ids or []) or "sin ids")
 
     entry_ps = res.fill_price if (res.filled and res.fill_price is not None) else (res.final_limit_price or (build.net_credit / 100.0))
     entry_total = round(entry_ps * 100.0 * quantity, 2)

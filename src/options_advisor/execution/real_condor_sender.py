@@ -50,6 +50,17 @@ class CondorSendResult:
     replacements: int = 0
     error: str | None = None
     steps: list[dict] = field(default_factory=list)
+    # TODOS los ids de orden que este walk llegó a crear, en orden (el colocado + cada reemplazo).
+    #
+    # Existe por el 2026-09-02, con dinero real. La escalera camina 1.95 → 1.90 → 1.85 → 1.82, y en
+    # Schwab CADA reemplazo es una orden NUEVA con id propio. El reemplazo a $1.82 lo rechazaron
+    # (fuera de la grilla de 5 centavos), el walk devolvió REJECTED con el id nuevo... y la orden
+    # anterior, la de $1.85, SIGUIÓ VIVA. Llenó media hora después. El robot solo miraba el último
+    # id: dio la fila por muerta, la borró, y quedó un iron condor abierto en la cuenta que nadie
+    # vigilaba — sin stop. Lo cerró el usuario a mano, $295 de pérdida.
+    #
+    # Un id muerto NO significa que no haya orden viva. Por eso se guardan todos.
+    order_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -116,6 +127,7 @@ def execute_condor_walk(
 
     result.ok = True
     result.order_id = order_id
+    result.order_ids.append(str(order_id))
     result.final_limit_price = price
     result.steps.append({"price": price, "event": "placed", "order_id": order_id})
 
@@ -168,6 +180,8 @@ def execute_condor_walk(
             logger.exception("Condor-real: fallo al reemplazar la orden combinada")
             break
         result.order_id = new_id
+        if str(new_id) not in result.order_ids:
+            result.order_ids.append(str(new_id))
         result.final_limit_price = price
         result.replacements += 1
         result.steps.append({"price": price, "event": "replaced", "order_id": new_id})

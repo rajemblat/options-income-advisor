@@ -450,3 +450,151 @@ def test_el_motor_SI_manda_la_orden_cuando_el_credito_alcanza(conn, mails):
     assert len(broker.enviadas) == 1
     assert round(float(broker.enviadas[0]["price"]) * 100) % 5 == 0
     assert len(filas) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════
+# 7. Ninguna orden del walk se pierde (la causa REAL de los -$295)
+# ══════════════════════════════════════════════════════════════════════════════════════════
+
+class _BrokerEscalera:
+    """Reproduce lo que hizo Schwab el 2026-09-02.
+
+    La escalera camina 1.95 -> 1.90 -> 1.85 -> 1.82 y cada reemplazo crea una orden NUEVA. El
+    reemplazo a 1.82 sale REJECTED por la grilla de 5 centavos... y la orden de 1.85 sigue VIVA.
+    """
+
+    def __init__(self, estado_de_la_vieja="WORKING"):
+        self.ids = []
+        self.estado_de_la_vieja = estado_de_la_vieja
+        self.cancelados = []
+
+    def place_order(self, account_hash, payload):
+        self.ids.append("ORD-1")
+        return "ORD-1"
+
+    def replace_order(self, account_hash, order_id, payload):
+        nuevo = f"ORD-{len(self.ids) + 1}"
+        self.ids.append(nuevo)
+        return nuevo
+
+    def get_order(self, account_hash, order_id):
+        if order_id == self.ids[-1]:
+            return {"status": "REJECTED",
+                    "statusDescription": "Spread orders for SPX options must be priced in "
+                                         "5-cent increments."}
+        return {"status": self.estado_de_la_vieja}
+
+    def cancel_order(self, account_hash, order_id):
+        self.cancelados.append(order_id)
+
+
+def _resultado_del_walk(broker, escalera):
+    from options_advisor.execution import real_condor_sender as rcs
+    legs = rcs.CondorLegs(short_put_symbol=SP, long_put_symbol=LP,
+                          short_call_symbol=SC, long_call_symbol=LC)
+    return rcs.execute_condor_walk(broker, "HASH", rcs.SIDE_OPEN, legs, 1, escalera,
+                                   interval_seconds=0, poll_seconds=0, max_seconds=0,
+                                   sleep=lambda _s: None, clock=lambda: 0.0)
+
+
+def test_el_walk_guarda_todos_los_ids_que_creo():
+    """Sin la lista de ids no hay forma de preguntar por las ordenes viejas."""
+    broker = _BrokerEscalera()
+    res = _resultado_del_walk(broker, [1.95, 1.90, 1.85, 1.80])
+    assert len(res.order_ids) >= 1
+    assert res.order_ids == broker.ids
+
+
+def test_una_orden_vieja_todavia_viva_rescata_la_fila(conn, mails):
+    """EL bug de los -$295. El ultimo id figura RECHAZADO pero el anterior sigue WORKING: esa pasa a
+    ser la orden de la fila, y la posicion queda bajo vigilancia con stop en vez de descartarse."""
+    from options_advisor.execution import real_condor_sender as rcs
+    broker = _BrokerEscalera(estado_de_la_vieja="WORKING")
+    res = rcs.CondorSendResult(ok=True, filled=False, order_id="ORD-4", status="REJECTED")
+    res.order_ids = ["ORD-1", "ORD-2", "ORD-3", "ORD-4"]
+    broker.ids = list(res.order_ids)
+
+    rescate = lce._rescatar_orden_viva(broker, "HASH", res)
+    assert rescate is not None
+    oid, estado, _ = rescate
+    assert oid == "ORD-3", "tiene que quedarse con la mas nueva de las que siguen vivas"
+    assert estado == "WORKING"
+
+
+def test_una_orden_vieja_que_ya_lleno_gana_siempre(conn, mails):
+    """Si alguna de las viejas llenO, eso manda por encima de cualquier rechazo posterior."""
+    from options_advisor.execution import real_condor_sender as rcs
+
+    class _ConFill(_BrokerEscalera):
+        def get_order(self, account_hash, order_id):
+            if order_id == "ORD-2":
+                return {"status": "FILLED"}
+            if order_id == self.ids[-1]:
+                return {"status": "REJECTED"}
+            return {"status": "CANCELED"}
+
+    broker = _ConFill()
+    res = rcs.CondorSendResult(ok=True, filled=False, order_id="ORD-4", status="REJECTED")
+    res.order_ids = ["ORD-1", "ORD-2", "ORD-3", "ORD-4"]
+    broker.ids = list(res.order_ids)
+
+    oid, estado, _ = lce._rescatar_orden_viva(broker, "HASH", res)
+    assert (oid, estado) == ("ORD-2", "FILLED")
+
+
+def test_si_estan_todas_muertas_si_se_descarta(conn, mails):
+    """Cuando de verdad no quedO ninguna viva, se descarta. El arreglo no puede dejar filas zombis."""
+    from options_advisor.execution import real_condor_sender as rcs
+
+    class _TodasMuertas(_BrokerEscalera):
+        def get_order(self, account_hash, order_id):
+            return {"status": "CANCELED"}
+
+    broker = _TodasMuertas()
+    res = rcs.CondorSendResult(ok=True, filled=False, order_id="ORD-4", status="REJECTED")
+    res.order_ids = ["ORD-1", "ORD-2", "ORD-3", "ORD-4"]
+    broker.ids = list(res.order_ids)
+    assert lce._rescatar_orden_viva(broker, "HASH", res) is None
+
+
+def test_una_orden_que_no_contesta_no_se_da_por_muerta(conn, mails):
+    """Sin respuesta del broker no se concluye nada: el 28/08 la red venia a los tumbos y una lectura
+    de estado basura fue justamente lo que hizo tirar una posicion viva."""
+    from options_advisor.execution import real_condor_sender as rcs
+
+    class _Muda(_BrokerEscalera):
+        def get_order(self, account_hash, order_id):
+            if order_id == "ORD-4":
+                return {"status": "REJECTED"}
+            raise ConnectionError("la red se cayo")
+
+    broker = _Muda()
+    res = rcs.CondorSendResult(ok=True, filled=False, order_id="ORD-4", status="REJECTED")
+    res.order_ids = ["ORD-1", "ORD-2", "ORD-3", "ORD-4"]
+    broker.ids = list(res.order_ids)
+    rescate = lce._rescatar_orden_viva(broker, "HASH", res)
+    assert rescate is not None and rescate[1] == "DESCONOCIDA"
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════
+# 8. Si el stop no se puede garantizar, no abre
+# ══════════════════════════════════════════════════════════════════════════════════════════
+
+def test_el_barrido_devuelve_cuantas_huerfanas_encontro(conn, mails):
+    """El numero es lo que despues frena la apertura. Usuario 2026-09-02: "eso debe funcionar al
+    100%, si no no debe abrir por seguridad"."""
+    assert lce._barrer_posiciones_huerfanas(
+        conn, _BrokerPosiciones([_Posicion(SC), _Posicion(SP)]), date(2026, 9, 2)) == 2
+    assert lce._barrer_posiciones_huerfanas(
+        conn, _BrokerPosiciones([]), date(2026, 9, 2)) == 0
+
+
+def test_el_freno_sigue_puesto_aunque_el_aviso_ya_haya_salido(conn, mails):
+    """El mail sale una vez por dia para no ser ruido. El FRENO no: mientras la posicion sin stop
+    siga ahi, no se abre nada nuevo, tick tras tick."""
+    broker = _BrokerPosiciones([_Posicion(SC)])
+    primero = lce._barrer_posiciones_huerfanas(conn, broker, date(2026, 9, 2))
+    segundo = lce._barrer_posiciones_huerfanas(conn, broker, date(2026, 9, 2))
+    tercero = lce._barrer_posiciones_huerfanas(conn, broker, date(2026, 9, 2))
+    assert primero == segundo == tercero == 1
+    assert len(mails) == 1, "un solo mail, pero el freno se mantiene"
