@@ -167,17 +167,20 @@ def test_build_iron_condor_picks_best_paying_delta_and_wings():
     assert build is not None
     assert build.short_put_strike == 7550 and build.short_call_strike == 7650   # mejor prima con delta<=0.15
     assert build.long_put_strike == 7540 and build.long_call_strike == 7660     # alas de 10 pts
-    # crédito = (3+3)-(2+2) = 2.0 -> $200 ; pérdida máx = 10*100 - 200 = 800 (<= 1000)
-    assert build.net_credit == 200.0
-    assert build.max_loss == 800.0
+    # El crédito es el REALIZABLE, no el del mid (usuario 2026-09-02: "entro a la prima que me da
+    # pero en limit, no espero el mid, porque el SPX maneja muy poca spread"). Se venden los cortos
+    # al BID y se compran las alas al ASK: (2.9+2.9) - (2.1+2.1) = 1.8 -> $180. Al mid daban $200,
+    # pero ese precio no lo paga nadie: el papel que lo usaba mostraba ganancias que no existían.
+    assert build.net_credit == 180.0
+    assert build.max_loss == 820.0        # 10*100 - 180
     assert len(build.legs) == 4
-    # breakevens = short strikes ± crédito_ps (2.0)
-    assert build.lower_breakeven == 7548.0 and build.upper_breakeven == 7652.0
+    # breakevens = short strikes ± crédito_ps (1.8)
+    assert build.lower_breakeven == 7548.2 and build.upper_breakeven == 7651.8
 
 
 def test_build_returns_none_when_max_loss_exceeds_cap():
     build = iron_condor.build_iron_condor(_chain(), SPOT, _settings(max_collateral=100.0))
-    assert build is None   # pérdida máx 800 > 100
+    assert build is None   # pérdida máx 820 > 100
 
 
 def test_build_returns_none_when_no_delta_candidates():

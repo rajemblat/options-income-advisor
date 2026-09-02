@@ -25,7 +25,6 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime
 
-from options_advisor.execution import price_walker as pw
 from options_advisor.execution import real_condor_sender as rcs
 from options_advisor.execution import schwab_orders as so
 from options_advisor.execution.live_engine import _serialized
@@ -116,30 +115,54 @@ def _a_la_grilla(precios: list[float], *, hacia_abajo: bool) -> list[float]:
     return vistos
 
 
+# ═══ SE OPERA AL PRECIO QUE EL MERCADO OFRECE, NO AL MID (usuario 2026-09-02) ═══
+#
+# "cuando yo entro, generalmente entro a la prima que me da pero en limit, no espero el mid, porque
+# el SPX maneja muy poca spread entre el ask y el bid" — y para cerrar, lo mismo.
+#
+# Antes las dos escaleras caminaban HASTA EL MID y la orden se quedaba puesta esperando. Eso fue lo
+# que costó los $295 del 02/09: la orden de apertura quedó al mid a las 09:30 y recién llenó a las
+# 10:08, en un mercado que ya no era el que la había justificado. En paralelo, el simulador daba esa
+# misma entrada por hecha al instante y cobraba +$36 a las 09:43. Mismos strikes, mismo crédito,
+# resultado opuesto — la diferencia entera era el momento del fill.
+#
+# Ahora la escalera tiene UN SOLO peldaño, el ejecutable: se vende al bid y se compran las alas al
+# ask (crédito), o se recompra al ask y se venden las alas al bid (débito). La orden entra ya. Se
+# cobra ~$12 menos por condor —el 02/09: $165 realizable contra $177.50 al mid— y a cambio no queda
+# ninguna orden colgada decidiendo por su cuenta media hora después. En SPX, con el spread que
+# maneja, esa certeza vale mucho más que los 12 dólares.
+#
+# La escalera sigue siendo una lista porque el walk la espera así, y porque un solo peldaño es
+# además lo que elimina los reemplazos: sin reemplazos no hay ids nuevos, y sin ids nuevos no hay
+# forma de perder una orden vieja viva.
+
+def _credito_realizable(sp, sc, lp, lc) -> float:
+    """Crédito que el mercado paga AHORA por el condor: se venden los cortos al bid y se compran las
+    alas al ask."""
+    return (sp.bid + sc.bid) - (lp.ask + lc.ask)
+
+
+def _debito_realizable(sp, sc, lp, lc) -> float:
+    """Débito que cuesta salir AHORA: se recompran los cortos al ask y se venden las alas al bid."""
+    return (sp.ask + sc.ask) - (lp.bid + lc.bid)
+
+
 def _open_credit_ladder(sp, sc, lp, lc) -> list[float]:
-    """Escalera de CRÉDITO neto para ABRIR: arranca pidiendo un crédito ALTO y baja hasta el mid
-    (nunca por debajo del mid — no regala crédito). combo 'ask' = crédito más alto, 'bid' = más bajo.
-    Cada peldaño va a la grilla de 5 centavos hacia ABAJO: pedir 4 centavos menos llena; pedir un
-    número fuera de la grilla no llega ni a existir."""
-    combo_bid = (sp.bid + sc.bid) - (lp.ask + lc.ask)   # crédito más bajo (marketable)
-    combo_ask = (sp.ask + sc.ask) - (lp.bid + lc.bid)   # crédito más alto (resting)
-    if combo_ask <= 0:
+    """Precio de APERTURA: el crédito ejecutable, en la grilla de 5 centavos hacia ABAJO (pedir 4
+    centavos menos llena; un número fuera de la grilla lo rechaza Schwab). Lista vacía si el condor
+    no paga crédito positivo — ahí no hay operación."""
+    credito = _credito_realizable(sp, sc, lp, lc)
+    if credito <= 0:
         return []
-    combo_bid = max(combo_bid, 0.0)
-    ladder = pw.build_price_ladder(pw.SIDE_SELL, combo_bid, combo_ask, step=0.05, stop_at_mid=True)
-    return _a_la_grilla(ladder, hacia_abajo=True)
+    return _a_la_grilla([credito], hacia_abajo=True)
 
 
 def _close_debit_ladder(sp, sc, lp, lc) -> list[float]:
-    """Escalera de DÉBITO neto para CERRAR: arranca ofreciendo un débito BAJO y sube hasta el mid
-    (nunca por encima del mid — no paga de más). combo 'bid' = débito más bajo, 'ask' = más alto.
-    A la grilla hacia ARRIBA: si hay que redondear, se redondea del lado que SALE de la posición."""
-    combo_bid = (sp.bid + sc.bid) - (lp.ask + lc.ask)   # débito más bajo (best)
-    combo_ask = (sp.ask + sc.ask) - (lp.bid + lc.bid)   # débito más alto (marketable)
-    ladder = pw.build_price_ladder(pw.SIDE_BUY, combo_bid, combo_ask, step=0.05, stop_at_mid=True)
-    # Piso duro de $0.05: una orden de cierre a débito neto ≤ 0 no la acepta Schwab. Si el condor no
-    # vale casi nada, cerramos por el mínimo válido.
-    ladder = _a_la_grilla(ladder, hacia_abajo=False)
+    """Precio de CIERRE: el débito ejecutable, en la grilla hacia ARRIBA. Piso duro de $0.05 — una
+    orden de cierre a débito neto ≤ 0 no la acepta Schwab, y salir siempre pesa más que ahorrar
+    centavos."""
+    debito = _debito_realizable(sp, sc, lp, lc)
+    ladder = _a_la_grilla([debito], hacia_abajo=False)
     return [max(round(p, 2), _MIN_CLOSE_DEBIT) for p in ladder] or [_MIN_CLOSE_DEBIT]
 
 

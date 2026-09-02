@@ -1102,6 +1102,24 @@ with tab_condor:
     if not ic.enabled:
         st.info("Apagada. Prendela con `intraday_condor.enabled: true` en `config/settings.yaml` y reiniciá el robot.")
 
+    # AVISO SOBRE EL HISTORIAL VIEJO (usuario 2026-09-02: "el papel debe estar bien y no mentir").
+    # Hasta el 02/09 el papel armaba y cerraba los condors al MID y los daba por entrados al
+    # instante. Ese día quedó a la vista lo que eso significa: el papel abrió el condor 7595/7670 a
+    # $185 a las 09:31 y cobró +$36 a las 09:43, mientras la orden REAL de esos mismos strikes
+    # seguía esperando y recién llenó a las 10:02 — para terminar en −$295. Mismo condor, resultado
+    # opuesto. Desde el 02/09 el papel usa el precio EJECUTABLE (vende al bid, compra las alas al
+    # ask) igual que el real. Sin este cartel, cualquiera compararía los dos períodos como si
+    # fueran lo mismo, y no lo son.
+    st.warning(
+        "**Ojo al comparar con el historial:** hasta el **2 de septiembre de 2026** el simulador "
+        "calculaba las entradas y salidas al **precio medio** y daba las órdenes por ejecutadas al "
+        "instante. Eso infla las ganancias: el mid es un precio al que nadie te compra ni te vende. "
+        "Desde esa fecha usa el precio **ejecutable** (vende al bid, compra las alas al ask), el "
+        "mismo que manda el robot real. Los números de antes y los de después NO son comparables — "
+        "los viejos son optimistas.",
+        icon="📉",
+    )
+
     # --- Pausa / reanudación de la apertura de Iron Condors (usuario 2026-08) ---
     ic_paused = repo.is_condor_paused(conn)
     ic_opens_today = repo.count_condor_opens_today(conn, date.today())

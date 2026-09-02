@@ -74,10 +74,18 @@ def _mark_open_positions(conn: sqlite3.Connection, chain: OptionChain, spot: flo
     for row in repo.get_open_condor_positions(conn):
         expiration = date.fromisoformat(row["expiration_date"])
         expired = expiration < as_of   # 0DTE: sigue vivo durante el día del vencimiento
-        close_value = iron_condor.condor_close_value(
+        # El papel cierra al precio que el mercado OFRECE, no al mid (usuario 2026-09-02: "se cierra
+        # en limit pero al precio que ofrece, no se espera el mid"). Es la misma medición que usa el
+        # stop del real desde hoy, así las dos cuentas dicen lo mismo. Sin puntas, cae al mid.
+        close_value = iron_condor.condor_exit_value(
             chain, row["short_put_strike"], row["short_call_strike"],
             row["long_put_strike"], row["long_call_strike"],
         )
+        if close_value is None:
+            close_value = iron_condor.condor_close_value(
+                chain, row["short_put_strike"], row["short_call_strike"],
+                row["long_put_strike"], row["long_call_strike"],
+            )
         if close_value is None:
             if not expired:
                 continue  # hueco de datos

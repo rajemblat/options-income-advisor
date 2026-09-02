@@ -152,7 +152,25 @@ def build_iron_condor(chain: OptionChain, spot: float, settings: IntradayCondorS
     if long_put.strike >= short_put.strike or long_call.strike <= short_call.strike:
         return None
 
-    credit_ps = (short_put.mid_price + short_call.mid_price) - (long_put.mid_price + long_call.mid_price)
+    # ═══ EL CRÉDITO ES EL QUE EL MERCADO PAGA AHORA, NO EL MID (usuario 2026-09-02) ═══
+    #
+    # "cuando yo entro, generalmente entro a la prima que me da pero en limit, no espero el mid,
+    # porque el SPX maneja muy poca spread entre el ask y el bid".
+    #
+    # Antes el papel armaba el condor al MID y lo daba por entrado en el acto. Eso es doblemente
+    # optimista: el mid es un precio que nadie te paga, y una orden puesta ahí puede tardar. El
+    # 02/09 se vio en carne propia — el papel abrió el condor 7595/7670 a $185 a las 09:31 y cobró
+    # $36 a las 09:43, mientras la orden REAL de esos mismos strikes seguía esperando y recién llenó
+    # a las 10:02, para terminar en −$295. Mismos strikes, mismo crédito, resultado opuesto: la
+    # diferencia entera era el momento del fill.
+    #
+    # Vendiendo al BID y comprando las alas al ASK, la orden es ejecutable YA. Es unos $12 menos de
+    # crédito por condor (el 02/09: $165 realizable contra $177.50 al mid) y a cambio el papel deja
+    # de contar operaciones que en la realidad nunca habrían entrado.
+    _puntas = (short_put.bid, short_call.bid, long_put.ask, long_call.ask)
+    if any(x is None for x in _puntas) or long_put.ask <= 0 or long_call.ask <= 0:
+        return None   # sin puntas no se arma nada: un hueco de datos no es una oportunidad
+    credit_ps = (short_put.bid + short_call.bid) - (long_put.ask + long_call.ask)
     if credit_ps <= 0:
         return None
     net_credit = credit_ps * CONTRACT_MULTIPLIER

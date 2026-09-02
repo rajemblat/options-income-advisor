@@ -329,7 +329,14 @@ intraday_condor:
   # 09:31 y 09:54 ET, porque era el único horario en que PODÍA abrir. No es evidencia de que ese
   # horario sea el mejor — es evidencia de que era el único. Lo que abra ahora fuera de esa franja
   # es territorio nuevo: mirarlo en el papel antes de sacar conclusiones.
-  entry_window_start: "09:30"      # ventana de entrada, en HORA DE NUEVA YORK (ver el bloque de arriba)
+  # Arranca 09:35, no 09:30 (usuario 2026-09-02). Ese día el robot armó un condor a las 09:30:13
+  # —trece segundos después de la campana— y cobró $95; un minuto después, con el SPX EN EL MISMO
+  # PRECIO ($7.638), el mismo cerebro eligió otros strikes y cobró $185. No cambió el mercado:
+  # cambiaron los datos. Los bid/ask de los primeros minutos todavía se están armando. Usuario:
+  # "los bid y ask se actualizan mínimo 3 minutos después que abre el mercado, y a los 5 minutos el
+  # cerebro puede ver dónde va el precio y entrar". Los 16 condors ganadores del papel de agosto se
+  # abrieron entre 09:31 y 09:54 — ninguno a las 09:30.
+  entry_window_start: "09:35"      # ventana de entrada, en HORA DE NUEVA YORK (ver el bloque de arriba)
   entry_window_end: "14:00"        # 2 PM del mercado — deja tiempo para que corra el 0DTE
   max_collateral: 1000.0           # 10 pts de ala ≈ $1000 teórico (riesgo real = stop $100)
   # Crédito mínimo en DÓLARES para armar el condor (papel y real). Estaba en 0 = sin mínimo, y el
