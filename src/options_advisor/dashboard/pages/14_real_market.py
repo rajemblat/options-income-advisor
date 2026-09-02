@@ -1165,6 +1165,92 @@ else:
 st.divider()
 
 # ------------------------- Órdenes reales (con filtros) -------------------------
+# ─────────────────── TODO lo real del período, junto ───────────────────
+# Usuario 2026-09-02: "quiero en real ver las operaciones que se hizo hoy, un filtro así para iron y
+# naked real, que funcione porque no estaba funcionando".
+#
+# Lo que no funcionaba: "Órdenes que armó el robot" lee SOLO `live_order_log`, que es el camino de
+# los naked. Los condors viven en `real_condor_positions` y nunca pasan por ahí. El 02/09 el robot
+# abrió y cerró un condor real y la tabla decía "no hay órdenes" — correcta para naked, inútil para
+# saber qué pasó en el día. Acá van los dos en una sola lista.
+st.markdown("### 🧾 Todo lo que operó en REAL")
+_tr1, _tr2 = st.columns([1, 3])
+_todo_periodo = _tr1.selectbox("Período", _PERIODOS, key="rm_todo_periodo")
+_todo_desde = _desde_periodo(_todo_periodo, today)
+
+
+def _dentro(fecha_iso: str | None) -> bool:
+    if not fecha_iso:
+        return False
+    return _todo_desde is None or str(fecha_iso)[:10] >= _todo_desde.isoformat()
+
+
+_filas_todo = []
+
+# NAKED: solo las que se ENVIARON de verdad (sent=1). Las frenadas por el guardián están abajo.
+for _o in conn.execute(
+    "SELECT log_ts, sent_ts, symbol, strike, expiration, final_contracts, fill_price, "
+    "       order_status, closed, close_fill_price, realized_pnl, close_reason "
+    "FROM live_order_log WHERE sent = 1 ORDER BY id DESC").fetchall():
+    _cuando = _o["sent_ts"] or _o["log_ts"]
+    if not _dentro(_cuando):
+        continue
+    _filas_todo.append({
+        "Hora": str(_cuando)[11:19],
+        "Fecha": str(_cuando)[:10],
+        "Tipo": "Naked put",
+        "Detalle": f"{_o['symbol']} {_o['strike']:g} × {_o['final_contracts'] or 1}",
+        "Entrada": (_o["fill_price"] or 0) * 100 * (_o["final_contracts"] or 1),
+        "Estado": "cerrada" if _o["closed"] else (_o["order_status"] or "abierta"),
+        "P&L": _o["realized_pnl"],
+        "Motivo": _o["close_reason"] or "—",
+    })
+
+# CONDOR REAL: todas las filas que llegaron a existir en el broker.
+for _cd in conn.execute(
+    "SELECT id, entry_ts, entry_date, underlying, short_put_strike, short_call_strike, "
+    "       entry_net_credit, status, close_value, realized_pnl, close_reason, close_ts "
+    "FROM real_condor_positions ORDER BY id DESC").fetchall():
+    _cuando = _cd["entry_ts"] or _cd["entry_date"]
+    if not _dentro(_cuando):
+        continue
+    _filas_todo.append({
+        "Hora": str(_cuando)[11:19] if len(str(_cuando)) > 10 else "—",
+        "Fecha": str(_cuando)[:10],
+        "Tipo": "Iron Condor",
+        "Detalle": f"{_cd['underlying']} {_cd['short_put_strike']:.0f}P/{_cd['short_call_strike']:.0f}C",
+        "Entrada": _cd["entry_net_credit"],
+        "Estado": _cd["status"],
+        "P&L": _cd["realized_pnl"],
+        "Motivo": _cd["close_reason"] or "—",
+    })
+
+_filas_todo.sort(key=lambda r: (r["Fecha"], r["Hora"]), reverse=True)
+
+if _filas_todo:
+    st.dataframe(
+        pd.DataFrame(_filas_todo), use_container_width=True, hide_index=True,
+        column_config={
+            "Entrada": st.column_config.NumberColumn("Prima/crédito", format="$%.2f"),
+            "P&L": st.column_config.NumberColumn(format="$%.2f"),
+        },
+    )
+    # El total suma SOLO lo que tiene P&L cerrado. Una posición abierta no es ganancia todavía, y
+    # una fila sin P&L conocido no puede contarse como $0 sin mentir el total.
+    _con_pnl = [r for r in _filas_todo if r["P&L"] is not None]
+    _tot_todo = sum(r["P&L"] for r in _con_pnl)
+    _abiertas = [r for r in _filas_todo if r["Estado"] in ("open", "working", "sending", "abierta")]
+    _nota_ab = f" · {len(_abiertas)} todavía abierta(s)" if _abiertas else ""
+    utilidad_con_periodo(_tr2, f"Resultado · {_todo_periodo.lower()}", _tot_todo, _filas_todo, "Fecha")
+    st.caption(f"{len(_filas_todo)} operación(es) real(es): "
+               f"{sum(1 for r in _filas_todo if r['Tipo'] == 'Naked put')} naked · "
+               f"{sum(1 for r in _filas_todo if r['Tipo'] == 'Iron Condor')} condor"
+               f"{_nota_ab}. El total suma las {len(_con_pnl)} que ya tienen resultado.")
+else:
+    st.caption("No hubo operaciones reales en el período elegido — ni naked ni condor.")
+
+st.divider()
+
 st.markdown("### 📋 Órdenes que armó el robot")
 
 # Filtro por PERÍODO y por ESTADO (usuario 2026-08-10: "mostrar las que alcanzó a entrar y las que no,

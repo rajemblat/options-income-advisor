@@ -332,11 +332,20 @@ intraday_condor:
   entry_window_start: "09:30"      # ventana de entrada, en HORA DE NUEVA YORK (ver el bloque de arriba)
   entry_window_end: "14:00"        # 2 PM del mercado — deja tiempo para que corra el 0DTE
   max_collateral: 1000.0           # 10 pts de ala ≈ $1000 teórico (riesgo real = stop $100)
-  min_credit: 0.0
+  # Crédito mínimo en DÓLARES para armar el condor (papel y real). Estaba en 0 = sin mínimo, y el
+  # 2026-09-02 el robot abrió uno cobrando $95 contra $905 de riesgo. Los condors que venía armando
+  # cobraban entre $165 y $195; $150 deja pasar esos y corta los que no pagan el riesgo.
+  min_credit: 150.0
   # Paso a DINERO REAL del condor (usuario 2026-08-13). Apagado por default: se prende acá cuando el
   # usuario dé el OK, junto con live_trading.enabled=true. El mismo cerebro del papel, mismo stop/profit.
   live_enabled: true               # true = manda condors REALES (requiere también live_trading.enabled + START del día)
   live_max_per_day: 1              # tope duro de condors reales por día (usuario 2026-08-13: "1 por día")
+  # Piso DURO de crédito para el condor REAL, que el aprendizaje NO puede bajar (a diferencia de
+  # min_credit). Usuario 2026-09-02: "tampoco puede abrir con esa prima de .95".
+  live_min_credit: 150.0
+  # Una apertura que quedó puesta y no llenó se cancela pasados estos minutos, en vez de llenar 38
+  # minutos después en un mercado distinto (lo que pasó el 2026-09-02).
+  open_working_max_minutes: 5.0
 
 # ==========================================================================================
 # TRADING REAL en Schwab (usuario 2026-08-07). TODO APAGADO hasta activarlo explícitamente

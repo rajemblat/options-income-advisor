@@ -102,25 +102,44 @@ def _combo_quotes(chain, sp_k, sc_k, lp_k, lc_k):
     return sp, sc, lp, lc
 
 
+def _a_la_grilla(precios: list[float], *, hacia_abajo: bool) -> list[float]:
+    """Lleva cada peldaño a la grilla de 5 centavos que exige SPX y saca los repetidos, conservando el
+    orden. La escalera camina de 5 en 5 pero el ÚLTIMO peldaño se clava en el mid exacto, que casi
+    nunca cae en la grilla: así nació el $1.82 que Schwab rechazó el 2026-09-02. `build_iron_condor_*`
+    igual redondea antes de mandar; acá se hace también para que el precio que el robot GUARDA y
+    LOGUEA sea el mismo que el que sale, y no dos números distintos en la auditoría."""
+    vistos: list[float] = []
+    for precio in precios:
+        ajustado = so.redondear_a_tick(precio, hacia_abajo=hacia_abajo)
+        if ajustado > 0 and ajustado not in vistos:
+            vistos.append(ajustado)
+    return vistos
+
+
 def _open_credit_ladder(sp, sc, lp, lc) -> list[float]:
     """Escalera de CRÉDITO neto para ABRIR: arranca pidiendo un crédito ALTO y baja hasta el mid
-    (nunca por debajo del mid — no regala crédito). combo 'ask' = crédito más alto, 'bid' = más bajo."""
+    (nunca por debajo del mid — no regala crédito). combo 'ask' = crédito más alto, 'bid' = más bajo.
+    Cada peldaño va a la grilla de 5 centavos hacia ABAJO: pedir 4 centavos menos llena; pedir un
+    número fuera de la grilla no llega ni a existir."""
     combo_bid = (sp.bid + sc.bid) - (lp.ask + lc.ask)   # crédito más bajo (marketable)
     combo_ask = (sp.ask + sc.ask) - (lp.bid + lc.bid)   # crédito más alto (resting)
     if combo_ask <= 0:
         return []
     combo_bid = max(combo_bid, 0.0)
-    return pw.build_price_ladder(pw.SIDE_SELL, combo_bid, combo_ask, step=0.05, stop_at_mid=True)
+    ladder = pw.build_price_ladder(pw.SIDE_SELL, combo_bid, combo_ask, step=0.05, stop_at_mid=True)
+    return _a_la_grilla(ladder, hacia_abajo=True)
 
 
 def _close_debit_ladder(sp, sc, lp, lc) -> list[float]:
     """Escalera de DÉBITO neto para CERRAR: arranca ofreciendo un débito BAJO y sube hasta el mid
-    (nunca por encima del mid — no paga de más). combo 'bid' = débito más bajo, 'ask' = más alto."""
+    (nunca por encima del mid — no paga de más). combo 'bid' = débito más bajo, 'ask' = más alto.
+    A la grilla hacia ARRIBA: si hay que redondear, se redondea del lado que SALE de la posición."""
     combo_bid = (sp.bid + sc.bid) - (lp.ask + lc.ask)   # débito más bajo (best)
     combo_ask = (sp.ask + sc.ask) - (lp.bid + lc.bid)   # débito más alto (marketable)
     ladder = pw.build_price_ladder(pw.SIDE_BUY, combo_bid, combo_ask, step=0.05, stop_at_mid=True)
     # Piso duro de $0.05: una orden de cierre a débito neto ≤ 0 no la acepta Schwab. Si el condor no
     # vale casi nada, cerramos por el mínimo válido.
+    ladder = _a_la_grilla(ladder, hacia_abajo=False)
     return [max(round(p, 2), _MIN_CLOSE_DEBIT) for p in ladder] or [_MIN_CLOSE_DEBIT]
 
 
@@ -196,6 +215,9 @@ def process_real_condor_cycle(conn, broker, settings, as_of: date) -> None:
     # 1) Reconciliar/cerrar lo abierto SIEMPRE (aunque no esté armado ni haya señal — hay que poder salir).
     if chain is not None and spot is not None:
         _reconcile_and_manage_open(conn, broker, account_hash, chain, spot, as_of, cfg)
+
+    # 1b) Última red: ¿la cuenta tiene patas de SPX que el robot no conoce? (ver la función)
+    _barrer_posiciones_huerfanas(conn, broker, as_of)
 
     # --- A partir de acá, ABRIR uno nuevo (requiere armado PROPIO + señal + cupo) ---
     # Autorización SEPARADA de los naked (usuario 2026-08-13): el condor real tiene su propio botón de
@@ -305,6 +327,93 @@ def _reconcile_sending(conn, broker, account_hash) -> None:
             logger.exception("Condor-real: fallo reconciliando la fila 'sending' id=%s", row["id"])
 
 
+
+# Clave del aviso de posiciones huérfanas: lleva la fecha, así el aviso sale UNA vez por día y no
+# se convierte en un mail por minuto mientras la posición siga ahí.
+def _clave_huerfanas(as_of: date) -> str:
+    return f"condor_real_huerfanas_{as_of.isoformat()}"
+
+
+def _barrer_posiciones_huerfanas(conn, broker, as_of: date) -> None:
+    """¿Hay patas de SPX vivas en la cuenta que el robot NO tenga registradas? Avisar.
+
+    El 2026-09-02, con dinero real: Schwab rechazó la apertura del condor por el precio fuera de la
+    grilla de 5 centavos, el robot la dio por no llenada y borró la fila. La posición terminó viva
+    igual. Durante casi una hora hubo un iron condor abierto en la cuenta que el robot no marcaba,
+    no le calculaba P&L y —lo grave— no le aplicaba el stop. Lo cerró el usuario a mano, en pérdida.
+
+    Las verificaciones que ya existían miran ÓRDENES (`_buscar_orden_en_schwab`). Esta mira lo único
+    que no se puede discutir: las POSICIONES que hay en la cuenta ahora mismo. Es la última red.
+
+    No adopta sola a propósito: sin saber a qué crédito entró, cualquier stop o P&L que calculara
+    sería inventado. Avisa, con las patas exactas, para que el usuario decida."""
+    try:
+        posiciones = broker.get_all_positions()
+    except Exception:  # noqa: BLE001
+        logger.debug("Condor-real: no se pudieron leer las posiciones de la cuenta", exc_info=True)
+        return
+    if not posiciones:
+        return
+
+    conocidas: set[str] = set()
+    try:
+        for fila in repo.get_open_real_condor_positions(conn) or []:
+            for col in ("short_put_symbol", "long_put_symbol", "short_call_symbol", "long_call_symbol"):
+                try:
+                    sym = fila[col]
+                except (IndexError, KeyError):
+                    sym = None
+                if sym:
+                    conocidas.add(str(sym).replace(" ", ""))
+    except Exception:  # noqa: BLE001
+        logger.debug("Condor-real: no se pudieron listar las patas conocidas", exc_info=True)
+        return
+
+    huerfanas = []
+    for pos in posiciones:
+        if (getattr(pos, "asset_type", "") or "").upper() != "OPTION":
+            continue
+        if not float(getattr(pos, "quantity", 0) or 0):
+            continue
+        sub = (getattr(pos, "underlying_symbol", "") or "").upper().lstrip("$")
+        sym = str(getattr(pos, "symbol", "") or "")
+        if sub not in ("SPX", "SPXW") and not sym.upper().startswith(("SPX", "SPXW")):
+            continue   # los naked del robot son de acciones y los lleva otro registro
+        if sym.replace(" ", "") in conocidas:
+            continue
+        huerfanas.append(pos)
+
+    if not huerfanas:
+        return
+
+    detalle = "\n".join(
+        f"  · {getattr(h, 'symbol', '?')}  cantidad {getattr(h, 'quantity', 0):+g}  "
+        f"P&L no realizado ${getattr(h, 'unrealized_pnl', 0.0):+,.2f}"
+        for h in huerfanas
+    )
+    logger.error("Condor-real: HAY %d pata(s) de SPX en la cuenta que el robot NO tiene registradas "
+                 "— sin stop ni gestión:\n%s", len(huerfanas), detalle)
+
+    clave = _clave_huerfanas(as_of)
+    try:
+        if repo.get_robot_flag(conn, clave, "0") == "1":
+            return   # ya se avisó hoy
+        repo.set_robot_flag(conn, clave, "1")
+    except Exception:  # noqa: BLE001
+        logger.debug("Condor-real: no se pudo marcar el aviso de huérfanas", exc_info=True)
+        return
+
+    _email("🔴 Lokshn: hay una posición de SPX en tu cuenta que el robot NO está gestionando",
+           "El robot encontró patas de SPX abiertas en tu cuenta que no figuran en su registro.\n\n"
+           f"{detalle}\n\n"
+           "Eso significa que esa posición NO tiene el stop del robot ni objetivo de ganancia: "
+           "nadie la está cuidando.\n\n"
+           "Pasó el 2026-09-02: una orden que Schwab había marcado como rechazada terminó "
+           "ejecutándose igual. Si esto es eso, cerrala vos a mano desde el broker o avisale al "
+           "robot. NO la adopta solo porque no sabe a qué precio entró, y con un crédito inventado "
+           "el stop también saldría inventado.")
+
+
 def _buscar_orden_en_schwab(broker, row):
     """¿Schwab tiene una orden LLENADA con exactamente las 4 patas de esta fila? Devuelve
     (crédito por acción, order_id) o None. Es la única fuente de verdad admitida acá."""
@@ -335,7 +444,7 @@ def _reconcile_and_manage_open(conn, broker, account_hash, chain, spot, as_of: d
     for row in repo.get_open_real_condor_positions(conn):
         try:
             if row["status"] == "working":
-                _reconcile_working_open(conn, broker, account_hash, row)
+                _reconcile_working_open(conn, broker, account_hash, row, cfg)
             else:
                 _manage_open_position(conn, broker, account_hash, chain, spot, as_of, cfg, row)
         except Exception:
@@ -351,7 +460,64 @@ def _manual_close_requested(row) -> bool:
         return False
 
 
-def _reconcile_working_open(conn, broker, account_hash, row) -> None:
+def _minutos_de_la_orden(info) -> float | None:
+    """Hace cuántos minutos Schwab recibió esta orden, según el propio broker (`enteredTime`).
+    None si no vino el dato o no se puede leer — sin dato no se cancela nada."""
+    crudo = info.get("enteredTime") or info.get("enteredTime".lower()) or ""
+    if not crudo:
+        return None
+    try:
+        from datetime import timezone
+        texto = str(crudo).replace("Z", "+00:00")
+        # Schwab manda el offset sin dos puntos ("+0000"). Python 3.11 lo acepta; 3.10 no, y el
+        # servidor de Debian corre 3.13 pero los tests pueden correr en otra versión. Normalizamos.
+        if len(texto) >= 5 and texto[-5] in "+-" and texto[-3] != ":":
+            texto = texto[:-2] + ":" + texto[-2:]
+        entrada = datetime.fromisoformat(texto)
+        if entrada.tzinfo is None:
+            entrada = entrada.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - entrada).total_seconds() / 60.0
+    except (ValueError, TypeError):
+        return None
+
+
+def _caducar_apertura_colgada(broker, account_hash, row, info, cfg) -> bool:
+    """¿Esta apertura lleva demasiado tiempo puesta sin llenar? Si sí, la CANCELA y devuelve True.
+
+    El 2026-09-02 una orden de apertura quedó colgada 38 minutos —de 09:30 a 10:08— y llenó recién
+    ahí, en un mercado que ya no era el que la había justificado. El robot había decidido esa entrada
+    con los precios de las 09:30; a las 10:08 el SPX se había movido y nadie volvió a preguntarse si
+    la entrada seguía teniendo sentido. Entró igual, y salió por stop loss 14 minutos después.
+
+    Una orden puesta no es gratis: es una decisión vieja esperando ejecutarse. Pasado el plazo se
+    cancela. NO se cierra la fila acá a propósito — el próximo tick va a leer CANCELED y va a pasar
+    por `_buscar_orden_en_schwab` antes de descartar nada, que es la ruta que ya sabe distinguir
+    "no llenó" de "llenó justo mientras salía el cancel"."""
+    tope = float(getattr(cfg, "open_working_max_minutes", 0.0) or 0.0)
+    if tope <= 0:
+        return False
+    minutos = _minutos_de_la_orden(info)
+    if minutos is None or minutos < tope:
+        return False
+    try:
+        broker.cancel_order(account_hash, row["open_schwab_order_id"])
+    except Exception:  # noqa: BLE001
+        logger.exception("Condor-real: no se pudo cancelar la apertura vieja id=%s (se reintenta)", row["id"])
+        return False
+    logger.warning("Condor-real: apertura id=%s llevaba %.1f min puesta sin llenar (tope %.1f) — "
+                   "CANCELADA. Los precios que la justificaron ya no son los de ahora; si la "
+                   "oportunidad sigue, se rearma con la cadena de este momento.",
+                   row["id"], minutos, tope)
+    _email("🟡 Lokshn canceló una apertura de Iron Condor que llevaba mucho puesta",
+           f"La orden para abrir el condor {row['underlying']} "
+           f"(put {row['short_put_strike']:.0f} / call {row['short_call_strike']:.0f}) llevaba "
+           f"{minutos:.0f} minutos esperando fill y se canceló.\n\n"
+           "Motivo: una orden vieja llena con precios de hace media hora, en un mercado que ya "
+           "cambió. Si la oportunidad sigue en pie, el robot la vuelve a armar con precios de ahora.")
+    return True
+
+
+def _reconcile_working_open(conn, broker, account_hash, row, cfg=None) -> None:
     """La apertura combinada quedó puesta (working): ¿ya llenó o murió?"""
     oid = row["open_schwab_order_id"]
     if not oid:
@@ -375,6 +541,11 @@ def _reconcile_working_open(conn, broker, account_hash, row) -> None:
         logger.debug("Condor-real: no se pudo leer el estado de la apertura id=%s", row["id"], exc_info=True)
         return
     status = (info.get("status") or "").upper()
+    # Una apertura que sigue viva pero lleva demasiado puesta se cancela. Solo si NO llenó y NO está
+    # ya muerta: si llenó, gana el fill; si está muerta, la resuelve el bloque de abajo.
+    if cfg is not None and status not in ("FILLED", "REJECTED", "CANCELED", "EXPIRED"):
+        if _caducar_apertura_colgada(broker, account_hash, row, info, cfg):
+            return
     if status == "FILLED":
         qty = row["quantity"] or 1
         credit_ps = row["entry_credit_ps"] if row["entry_credit_ps"] is not None else (
@@ -546,6 +717,27 @@ def _manage_open_position(conn, broker, account_hash, chain, spot, as_of: date, 
     entry_total = row["entry_net_credit"] or 0.0
     unrealized = round(entry_total - close_value_total, 2)
 
+    # ═══ EL STOP SE MIDE AL PRECIO REAL DE SALIDA, NO AL MID (usuario 2026-09-02) ═══
+    #
+    # "deje que el stop loss es de 100 maximo 110, y cerro asi la perdida de hoy" — y la pérdida fue
+    # de $125. No era un error de cuentas: el crédito ($95) y el débito ($220) estaban bien anotados.
+    # El problema es que la posición se MEDÍA al mid y se SALÍA al precio de verdad. Cuando el mid
+    # marcaba −$100, salir de verdad ya costaba −$125; la orden llenó ahí y esa fue la pérdida.
+    #
+    # Ahora el stop mira `condor_exit_value`: lo que cuesta salir YA (recomprar los cortos al ask,
+    # vender las alas al bid). Dispara un poco antes, y la pérdida realizada cae DENTRO del límite.
+    # El objetivo de GANANCIA se sigue midiendo al mid: para cobrar no hay apuro y la orden espera.
+    unrealized_estricto = None
+    if not expired:
+        try:
+            salida_pc = iron_condor.condor_exit_value(
+                chain, row["short_put_strike"], row["short_call_strike"],
+                row["long_put_strike"], row["long_call_strike"])
+        except Exception:  # noqa: BLE001
+            salida_pc = None
+        if salida_pc is not None:
+            unrealized_estricto = round(entry_total - round(salida_pc * qty, 2), 2)
+
     age_minutes = None
     if row["entry_ts"]:
         try:
@@ -562,7 +754,13 @@ def _manage_open_position(conn, broker, account_hash, chain, spot, as_of: date, 
         if _estado in ("llenó", "sigue_viva"):
             return
 
-    do_close, reason = iron_condor.should_close_condor(unrealized, entry_total, expired, cfg, age_minutes=age_minutes)
+    do_close, reason = iron_condor.should_close_condor(unrealized, entry_total, expired, cfg,
+                                                      age_minutes=age_minutes,
+                                                      unrealized_para_stop=unrealized_estricto)
+    if do_close and reason == "stop_loss" and unrealized_estricto is not None:
+        logger.warning("Condor-real: STOP de id=%s — al mid la posición marca $%.2f, pero salir de "
+                       "verdad cuesta $%.2f (esa es la que manda)", row["id"], unrealized,
+                       unrealized_estricto)
     # Cierre manual pedido desde el dashboard (usuario 2026-08-14): manda por encima de la regla, tanto si
     # todavía no llegó al objetivo de ganancia como si está en pérdida. El motivo queda como 'manual' para
     # que no se confunda con un profit_target/stop_loss en el historial ni en la racha de stop-loss del día.
@@ -795,6 +993,25 @@ def _open_real_condor(conn, broker, account_hash, chain, build, spot, as_of: dat
         return
 
     quantity = 1   # usuario 2026-08-13: 1 condor por día, 1 contrato
+
+    # ═══ PISO DURO DE CRÉDITO (usuario 2026-09-02) ═══
+    #
+    # "tampoco puede abrir con esa prima de .95". Ese día el robot abrió un condor cobrando $95
+    # contra $905 de riesgo máximo — 1 a 9.5, cuando los que venía armando pagaban entre $165 y $195
+    # (1 a 5). `min_credit` no lo frenó porque estaba en 0, y además es una perilla que el
+    # aprendizaje puede bajar sola. Este piso es aparte y el aprendizaje NO lo toca.
+    #
+    # Se mide contra el ÚLTIMO peldaño de la escalera (el mid), que es el crédito más BAJO que
+    # aceptaríamos: si ni siquiera ese llega al piso, la operación no vale el riesgo. Mirar el
+    # primer peldaño sería engañarse — ese precio casi nunca llena.
+    _piso = float(getattr(cfg, "live_min_credit", 0.0) or 0.0)
+    if _piso > 0:
+        _credito_peor_caso = round(ladder[-1] * 100.0 * quantity, 2)
+        if _credito_peor_caso < _piso:
+            logger.warning("Condor-real: NO se abre — el crédito que se llegaría a cobrar ($%.2f) no "
+                           "alcanza el piso de $%.2f (put %.0f/call %.0f)", _credito_peor_caso, _piso,
+                           build.short_put_strike, build.short_call_strike)
+            return
     # Vencimiento 0DTE de las patas armadas (todas comparten el mismo vencimiento).
     expiration = build.legs[0][2].expiration if build.legs else (chain.contracts[0].expiration if chain.contracts else as_of)
 

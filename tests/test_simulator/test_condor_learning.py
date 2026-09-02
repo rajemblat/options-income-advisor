@@ -118,7 +118,11 @@ def test_raises_the_minimum_credit_when_the_thin_premiums_are_the_losers():
     out = learning.review_condor(conn, _cfg())
     cambios = {c["param"]: c for c in out["applied"] + out["proposed"]}
     assert "min_credit" in cambios
-    assert cambios["min_credit"]["to"] > cambios["min_credit"]["from"] == 0.0
+    # Antes esto exigía además que el mínimo de partida fuera 0.0. Dejó de ser cierto el 2026-09-02,
+    # cuando el config pasó a traer un mínimo real ($150) porque el robot abrió un condor cobrando
+    # $95 contra $905 de riesgo. Lo que este test tiene que probar es la DIRECCIÓN del aprendizaje
+    # —si las perdedoras cobraban poco, subí el mínimo—, no cuánto vale el mínimo en el config.
+    assert cambios["min_credit"]["to"] > cambios["min_credit"]["from"]
 
 
 def test_learns_the_vix_ceiling_from_the_worst_winner_not_the_average():

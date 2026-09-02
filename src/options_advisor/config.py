@@ -402,6 +402,19 @@ class IntradayCondorSettings(BaseModel):
     # Tope DURO de condors REALES abiertos por día (usuario 2026-08-13: "1 condor por día"). Es un
     # conteo SEPARADO del condor de papel — el real lleva el suyo. 0 = sin tope (no recomendado).
     live_max_per_day: int = 1
+    # Crédito MÍNIMO en dólares para abrir un condor REAL. Es un piso DURO y aparte de `min_credit`
+    # a propósito: `min_credit` es una perilla que el aprendizaje puede mover (y puede bajarla hasta
+    # 0), y el 2026-09-02 el robot abrió un condor cobrando $95 contra $905 de riesgo — 1 a 9.5,
+    # cuando lo normal en este libro venía siendo 1 a 5. El usuario fue explícito: "tampoco puede
+    # abrir con esa prima de .95". Este piso NO lo toca el aprendizaje. 0 = sin piso.
+    live_min_credit: float = 0.0
+    # Cuántos minutos como máximo puede quedar PUESTA una apertura que todavía no llenó. El
+    # 2026-09-02 una orden quedó colgada 38 minutos (09:30 → 10:08) y llenó en un mercado que ya no
+    # era el que la había justificado: el precio se había movido, la volatilidad también, y nadie
+    # volvió a preguntarse si esa entrada seguía teniendo sentido. Pasado este plazo se cancela y,
+    # si la oportunidad sigue viva, el próximo tick la vuelve a armar con precios de AHORA.
+    # 0 = sin caducidad (comportamiento viejo).
+    open_working_max_minutes: float = 5.0
 
 
 class LiveTradingSettings(BaseModel):

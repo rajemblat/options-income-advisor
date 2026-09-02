@@ -199,6 +199,38 @@ def condor_close_value(
     return round(net * CONTRACT_MULTIPLIER, 2)
 
 
+def condor_exit_value(
+    chain: OptionChain, short_put_strike: float, short_call_strike: float,
+    long_put_strike: float, long_call_strike: float,
+) -> float | None:
+    """Costo en dólares de SALIR YA del condor: recomprar los cortos pagando el ASK y vender las alas
+    cobrando el BID. Es el peor precio realista, el que se paga cuando hay que salir sin negociar.
+
+    Existe por el 2026-09-02, con dinero real. El stop estaba en $100 y la pérdida realizada fue de
+    $125. No fue un error de contabilidad: el robot MEDÍA la posición al mid (`condor_close_value`)
+    pero SALÍA al precio de verdad. Cuando el mid decía −$100 el mercado ya cobraba −$125 por dejarte
+    ir, y para cuando la orden llenó, esa era la pérdida.
+
+    Medir el stop con esta función hace que dispare un poco antes —cuando salir de verdad cuesta
+    $100— y que la pérdida realizada caiga DENTRO del límite que puso el usuario, no por encima.
+    El objetivo de ganancia se sigue midiendo al mid: ahí no hay apuro, la orden puede esperar.
+
+    None si falta alguna pata en la cadena viva o si alguna cotización no sirve (hueco de datos):
+    sin precio real no se inventa uno."""
+    sp = _leg_at(chain, "put", short_put_strike)
+    sc = _leg_at(chain, "call", short_call_strike)
+    lp = _leg_at(chain, "put", long_put_strike)
+    lc = _leg_at(chain, "call", long_call_strike)
+    if None in (sp, sc, lp, lc):
+        return None
+    asks = (sp.ask, sc.ask)
+    bids = (lp.bid, lc.bid)
+    if any(a is None or a <= 0 for a in asks) or any(b is None or b < 0 for b in bids):
+        return None
+    net = (sp.ask + sc.ask) - (lp.bid + lc.bid)
+    return round(net * CONTRACT_MULTIPLIER, 2)
+
+
 def condor_intrinsic_close_value(
     spot: float, short_put_strike: float, short_call_strike: float,
     long_put_strike: float, long_call_strike: float,
@@ -238,7 +270,7 @@ def condor_unrealized(entry_net_credit: float, close_value: float) -> float:
 
 def should_close_condor(
     unrealized_pnl: float, entry_net_credit: float, expired: bool, settings: IntradayCondorSettings,
-    age_minutes: float | None = None,
+    age_minutes: float | None = None, unrealized_para_stop: float | None = None,
 ) -> tuple[bool, str | None]:
     """Regla de salida (usuario 2026-08-07). Se cierra con lo PRIMERO que ocurra:
 
@@ -258,6 +290,11 @@ def should_close_condor(
     target = settings.profit_target_early_pct if early else settings.profit_target_pct
     if target > 0 and unrealized_pnl >= target * entry_net_credit:
         return True, "profit_target"
-    if settings.stop_loss_dollars > 0 and unrealized_pnl <= -settings.stop_loss_dollars:
+    # El stop se mide con `unrealized_para_stop` si nos lo dan: es el P&L calculado al precio REAL de
+    # salida (ver `condor_exit_value`), no al mid. Sin él se cae al mid de siempre — así el papel y
+    # los tests viejos no cambian de comportamiento, y solo el motor real, que sí tiene las puntas de
+    # la cadena viva, usa la medición estricta.
+    _para_stop = unrealized_pnl if unrealized_para_stop is None else unrealized_para_stop
+    if settings.stop_loss_dollars > 0 and _para_stop <= -settings.stop_loss_dollars:
         return True, "stop_loss"
     return False, None

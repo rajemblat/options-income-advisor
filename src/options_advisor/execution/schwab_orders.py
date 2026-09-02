@@ -93,6 +93,36 @@ def _condor_leg(instruction: str, occ_symbol: str, quantity: int) -> dict:
     return {"instruction": instruction, "quantity": quantity, "instrument": {"symbol": occ_symbol, "assetType": "OPTION"}}
 
 
+# ═══ PRECIO NETO DE UN SPREAD DE ÍNDICE: MÚLTIPLOS DE 5 CENTAVOS ═══
+#
+# El 2026-09-02, con dinero real: el robot mandó un iron condor de SPX a $1.82 de crédito neto y
+# Schwab lo RECHAZÓ — "Spread orders for SPX options must be priced in 5-cent increments." La fila
+# se descartó, pero la posición terminó viva en la cuenta sin que el robot la vigilara: sin stop,
+# sin objetivo. La cerró el usuario a mano, en pérdida.
+#
+# El $1.82 no salió de la nada: la escalera camina de 5 en 5 pero termina clavada en el MID exacto,
+# y el mid casi nunca cae en la grilla. Por eso el redondeo va acá, en el armado del payload: es el
+# único lugar por el que pasan TODAS las órdenes de condor, incluidos los reemplazos.
+#
+# Dirección del redondeo — siempre en contra nuestra, nunca a favor:
+#   · CRÉDITO al abrir  → hacia ABAJO (pedimos un poco menos, la orden es válida y llena).
+#   · DÉBITO al cerrar  → hacia ARRIBA (ofrecemos un poco más; salir siempre pesa más que ahorrar
+#     4 centavos, sobre todo cuando el que cierra es el stop loss).
+CONDOR_PRICE_TICK = 0.05
+
+
+def redondear_a_tick(precio: float, *, hacia_abajo: bool, tick: float = CONDOR_PRICE_TICK) -> float:
+    """Ajusta `precio` a la grilla de `tick` (default 5 centavos, la regla de SPX). `hacia_abajo`
+    trunca (para créditos), si no redondea hacia arriba (para débitos). Trabaja en centavos enteros
+    para no arrastrar el error binario de los flotantes (0.05 no es exacto en binario)."""
+    if tick <= 0:
+        return round(precio, 2)
+    paso = int(round(tick * 100))
+    centavos = int(round(precio * 100))
+    ajustado = (centavos // paso) * paso if hacia_abajo else -((-centavos) // paso) * paso
+    return round(ajustado / 100.0, 2)
+
+
 def build_iron_condor_open(
     short_put_symbol: str, long_put_symbol: str, short_call_symbol: str, long_call_symbol: str,
     quantity: int, net_credit_limit: float, *, duration: str = "DAY", session: str = "NORMAL",
@@ -108,6 +138,9 @@ def build_iron_condor_open(
     las alas; nunca es una venta desnuda."""
     if quantity < 1:
         raise ValueError("quantity debe ser ≥ 1")
+    # Grilla de 5 centavos: hacia ABAJO. Se ajusta ANTES de validar, para que un crédito de $0.03
+    # (que redondea a 0) muera acá y no salga a Schwab.
+    net_credit_limit = redondear_a_tick(net_credit_limit, hacia_abajo=True)
     if net_credit_limit <= 0:
         raise ValueError("el crédito neto (net_credit_limit) debe ser > 0 — un iron condor SIEMPRE se abre a crédito")
     syms = [short_put_symbol, long_put_symbol, short_call_symbol, long_call_symbol]
@@ -142,6 +175,9 @@ def build_iron_condor_close(
     $2.00 = pagar ~$1.00 de débito."""
     if quantity < 1:
         raise ValueError("quantity debe ser ≥ 1")
+    # Grilla de 5 centavos: hacia ARRIBA. Pagar hasta 4 centavos de más es baratísimo comparado con
+    # que Schwab rechace la recompra y la posición quede abierta.
+    net_debit_limit = redondear_a_tick(net_debit_limit, hacia_abajo=False)
     if net_debit_limit < 0:
         raise ValueError("el débito neto (net_debit_limit) no puede ser negativo")
     syms = [short_put_symbol, long_put_symbol, short_call_symbol, long_call_symbol]
