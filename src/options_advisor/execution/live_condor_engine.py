@@ -334,6 +334,23 @@ def _clave_huerfanas(as_of: date) -> str:
     return f"condor_real_huerfanas_{as_of.isoformat()}"
 
 
+def _vence_hoy(occ_symbol: str, as_of: date) -> bool:
+    """¿Esta pata vence HOY? Se lee del propio simbolo OCC (root de 6 + YYMMDD en [6:12]), que es el
+    formato estable — nunca del texto de la descripcion.
+
+    El barrido de huerfanas solo mira 0DTE porque el condor real SOLO opera 0DTE. El usuario tiene
+    ademas spreads de SPX propios con vencimientos mas largos (bull puts y bear calls a 12-15 dias):
+    esos no son del robot, el robot no tiene por que gestionarlos, y avisarle todos los dias de algo
+    que el abrio a proposito convierte la alerta en ruido — y una alerta que se ignora no sirve para
+    nada el dia que importa."""
+    if len(occ_symbol) < 12:
+        return False
+    try:
+        return datetime.strptime(occ_symbol[6:12], "%y%m%d").date() == as_of
+    except ValueError:
+        return False
+
+
 def _barrer_posiciones_huerfanas(conn, broker, as_of: date) -> None:
     """¿Hay patas de SPX vivas en la cuenta que el robot NO tenga registradas? Avisar.
 
@@ -379,6 +396,8 @@ def _barrer_posiciones_huerfanas(conn, broker, as_of: date) -> None:
         sym = str(getattr(pos, "symbol", "") or "")
         if sub not in ("SPX", "SPXW") and not sym.upper().startswith(("SPX", "SPXW")):
             continue   # los naked del robot son de acciones y los lleva otro registro
+        if not _vence_hoy(sym, as_of):
+            continue   # el condor real es 0DTE; lo demas es del usuario (ver `_vence_hoy`)
         if sym.replace(" ", "") in conocidas:
             continue
         huerfanas.append(pos)

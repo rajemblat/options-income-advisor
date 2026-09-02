@@ -344,6 +344,29 @@ def test_no_avisa_por_las_patas_que_el_robot_si_esta_gestionando(conn, mails):
     assert mails == []
 
 
+def test_no_avisa_por_los_spreads_de_spx_del_usuario_a_mas_dias(conn, mails):
+    """Falso positivo real, visto en vivo el 2026-09-02 apenas se encendio el barrido: aviso por 6
+    patas de SPXW que vencian el 08/09 — dos bull put spreads y un bear call spread que el usuario
+    habia abierto el 24 y el 27 de agosto. No son del robot y el robot no tiene que gestionarlos.
+    El condor real SOLO opera 0DTE: lo que vence otro dia no es asunto suyo."""
+    lejos = ["SPXW  260908P07450000", "SPXW  260908P07460000",
+             "SPXW  260908C07840000", "SPXW  260908C07830000"]
+    lce._barrer_posiciones_huerfanas(
+        conn, _BrokerPosiciones([_Posicion(s) for s in lejos]), date(2026, 9, 2))
+    assert mails == []
+
+
+def test_si_avisa_por_una_pata_0dte_desconocida(conn, mails):
+    """La misma cuenta, el mismo dia: una pata que vence HOY y que el robot no registro SI es el
+    agujero del 2026-09-02, y tiene que avisar aunque haya spreads a mas dias en la cuenta."""
+    lejos = [_Posicion("SPXW  260908P07450000"), _Posicion("SPXW  260908C07830000")]
+    lce._barrer_posiciones_huerfanas(
+        conn, _BrokerPosiciones(lejos + [_Posicion(SC)]), date(2026, 9, 2))
+    assert len(mails) == 1
+    assert SC in mails[0][1]
+    assert "260908" not in mails[0][1], "no tiene que mezclar las posiciones del usuario en el aviso"
+
+
 def test_no_avisa_por_los_naked_de_acciones(conn, mails):
     """Los naked put del robot son de acciones y los lleva otro registro. Este barrido es del condor."""
     lce._barrer_posiciones_huerfanas(
