@@ -1185,25 +1185,49 @@ def _dentro(fecha_iso: str | None) -> bool:
     return _todo_desde is None or str(fecha_iso)[:10] >= _todo_desde.isoformat()
 
 
+def _toca_el_periodo(apertura, cierre) -> bool:
+    """Una operación entra en el período si ABRIÓ o si CERRÓ dentro de él.
+
+    Filtrar solo por la apertura dejaba afuera lo más importante del día: el 02/09 el robot cerró
+    UAL (+$63) y NU (+$22), abiertos el 01/09 y el 28/08. Con "Hoy" no aparecían, y "las operaciones
+    que se hizo hoy" son justamente esas — cerrar una posición es operar. Ahora una fila abierta
+    ayer y cerrada hoy sale en los dos días, con las dos fechas a la vista."""
+    return _dentro(apertura) or _dentro(cierre)
+
+
+def _hora_de(sello) -> str:
+    return str(sello)[11:19] if sello and len(str(sello)) > 10 else "—"
+
+
+def _cuando_txt(sello) -> str:
+    if not sello:
+        return "—"
+    _h = _hora_de(sello)
+    return f"{str(sello)[:10]} {_h}" if _h != "—" else str(sello)[:10]
+
+
 _filas_todo = []
 
 # NAKED: solo las que se ENVIARON de verdad (sent=1). Las frenadas por el guardián están abajo.
 for _o in conn.execute(
     "SELECT log_ts, sent_ts, symbol, strike, expiration, final_contracts, fill_price, "
-    "       order_status, closed, close_fill_price, realized_pnl, close_reason "
+    "       order_status, closed, close_ts, close_fill_price, realized_pnl, close_reason "
     "FROM live_order_log WHERE sent = 1 ORDER BY id DESC").fetchall():
     _cuando = _o["sent_ts"] or _o["log_ts"]
-    if not _dentro(_cuando):
+    _cerro = _o["close_ts"] if _o["closed"] else None
+    if not _toca_el_periodo(_cuando, _cerro):
         continue
     _filas_todo.append({
-        "Hora": str(_cuando)[11:19],
+        "Hora": _hora_de(_cuando),
         "Fecha": str(_cuando)[:10],
         "Tipo": "Naked put",
         "Detalle": f"{_o['symbol']} {_o['strike']:g} × {_o['final_contracts'] or 1}",
         "Entrada": (_o["fill_price"] or 0) * 100 * (_o["final_contracts"] or 1),
+        "Cerrada": _cuando_txt(_cerro),
         "Estado": "cerrada" if _o["closed"] else (_o["order_status"] or "abierta"),
         "P&L": _o["realized_pnl"],
         "Motivo": _o["close_reason"] or "—",
+        "_orden": str(_cerro or _cuando),
     })
 
 # CONDOR REAL: todas las filas que llegaron a existir en el broker.
@@ -1212,20 +1236,27 @@ for _cd in conn.execute(
     "       entry_net_credit, status, close_value, realized_pnl, close_reason, close_ts "
     "FROM real_condor_positions ORDER BY id DESC").fetchall():
     _cuando = _cd["entry_ts"] or _cd["entry_date"]
-    if not _dentro(_cuando):
+    _cerro = _cd["close_ts"] if _cd["status"] == "closed" else None
+    if not _toca_el_periodo(_cuando, _cerro):
         continue
     _filas_todo.append({
-        "Hora": str(_cuando)[11:19] if len(str(_cuando)) > 10 else "—",
+        "Hora": _hora_de(_cuando),
         "Fecha": str(_cuando)[:10],
         "Tipo": "Iron Condor",
         "Detalle": f"{_cd['underlying']} {_cd['short_put_strike']:.0f}P/{_cd['short_call_strike']:.0f}C",
         "Entrada": _cd["entry_net_credit"],
+        "Cerrada": _cuando_txt(_cerro),
         "Estado": _cd["status"],
         "P&L": _cd["realized_pnl"],
         "Motivo": _cd["close_reason"] or "—",
+        "_orden": str(_cerro or _cuando),
     })
 
-_filas_todo.sort(key=lambda r: (r["Fecha"], r["Hora"]), reverse=True)
+# Ordena por el ÚLTIMO movimiento (el cierre si lo hubo, si no la apertura): lo que pasó recién
+# queda arriba, que es para lo que se mira esta tabla.
+_filas_todo.sort(key=lambda r: r["_orden"], reverse=True)
+for _f in _filas_todo:
+    _f.pop("_orden", None)
 
 if _filas_todo:
     st.dataframe(
