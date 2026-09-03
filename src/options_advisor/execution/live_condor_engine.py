@@ -600,8 +600,17 @@ def _reconcile_working_open(conn, broker, account_hash, row, cfg=None) -> None:
             return
     if status == "FILLED":
         qty = row["quantity"] or 1
+        # El crédito REAL de la ejecución manda sobre el límite guardado al mandar la orden: es el que
+        # fija el objetivo de ganancia y el stop loss de esta posición (2026-09-03: se mandó a $1.65 y
+        # llenó a $1.75). Si Schwab todavía no publicó las ejecuciones, se cae al límite guardado.
+        _real_ps = rcs.extract_condor_net_fill_price(info, rcs.SIDE_OPEN)
         credit_ps = row["entry_credit_ps"] if row["entry_credit_ps"] is not None else (
             (row["entry_net_credit"] or 0.0) / (100.0 * qty))
+        if _real_ps is not None:
+            if abs(_real_ps - (credit_ps or 0.0)) >= 0.005:
+                logger.warning("Condor-real: apertura id=%s llenó a $%.2f, no al límite $%.2f — se "
+                               "registra el crédito REAL", row["id"], _real_ps, credit_ps or 0.0)
+            credit_ps = _real_ps
         entry_total = round(credit_ps * 100.0 * qty, 2)
         repo.mark_real_condor_fill(conn, row["id"], entry_credit_ps=round(credit_ps, 2),
                                    entry_net_credit=entry_total, open_schwab_order_id=oid,
@@ -688,7 +697,13 @@ def _gestionar_cierre_puesto(conn, broker, account_hash, row, oid, precio_puesto
     estado = (info.get("status") or "").upper()
 
     if estado == "FILLED":
-        debito_ps = precio_puesto if precio_puesto is not None else 0.0
+        # Lo que se PAGÓ de verdad por recomprar, no el límite al que quedó puesta la orden. Va directo
+        # al P&L realizado de la operación.
+        _real_ps = rcs.extract_condor_net_fill_price(info, rcs.SIDE_CLOSE)
+        debito_ps = _real_ps if _real_ps is not None else (precio_puesto if precio_puesto is not None else 0.0)
+        if _real_ps is not None and precio_puesto is not None and abs(_real_ps - precio_puesto) >= 0.005:
+            logger.info("Condor-real: la recompra puesta de id=%s llenó a $%.2f (límite $%.2f) — manda "
+                        "el débito REAL", row["id"], _real_ps, precio_puesto)
         debito_total = round(debito_ps * 100.0 * qty, 2)
         realizado = round(entry_total - debito_total - settings_commission(cfg), 2)
         motivo = "manual" if _manual_close_requested(row) else "profit_target"

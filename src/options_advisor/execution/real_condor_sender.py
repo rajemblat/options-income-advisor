@@ -11,10 +11,14 @@ Seguridad: la orden se arma con `build_iron_condor_open/close`, que fija la comp
 patas (dirección de cada una testeada) — acá solo caminamos el PRECIO neto, nunca tocamos las patas ni la
 cantidad. La red se inyecta vía `broker`; `sleep`/`clock` son inyectables para testear sin tocar Schwab.
 
-Nota sobre el precio de fill: para una orden límite combinada, el fill nunca es PEOR que el límite (un
-crédito llena por ≥ el límite; un débito por ≤ el límite). Registramos como precio de entrada/salida el
-ÚLTIMO límite al que quedó la orden cuando llenó — conservador y suficiente para el P&L (usuario: poco
-capital, prioridad seguridad). El valor exacto se reconcilia contra Schwab en el marcado si hiciera falta.
+Precio de fill: se registra el precio REAL al que Schwab ejecutó las 4 patas, leído de
+`orderActivityCollection[].executionLegs[]`. El límite que mandamos queda solo como respaldo.
+
+Antes se anotaba el último límite, con el argumento de que un fill nunca es peor que el límite y por lo
+tanto era "conservador". El 2026-09-03, con dinero real: el robot mandó el condor a $1.65 de crédito y
+Schwab llenó a $1.75 — quedó anotado $165 en vez de $175. No es solo P&L subestimado: el objetivo de
+ganancia y el STOP LOSS del condor se calculan SOBRE EL CRÉDITO de entrada, así que un crédito equivocado
+corre los dos umbrales de la posición. El precio al que se ejecutó no se estima: se pregunta.
 """
 
 from __future__ import annotations
@@ -45,7 +49,10 @@ class CondorSendResult:
     # oversold/overbought position..."). Antes se tiraba a la basura y el log solo decía "REJECTED",
     # que no alcanzaba para entender nada (auditoría 2026-08-24).
     status_detalle: str = ""
-    fill_price: float | None = None   # precio NETO (por acción) al que quedó cuando llenó
+    fill_price: float | None = None   # precio NETO (por acción) al que REALMENTE se ejecutó
+    # De dónde salió `fill_price`: "schwab" (ejecuciones reales) o "limite" (respaldo, Schwab todavía
+    # no publicó los fills). Se loguea y se guarda para poder auditar un crédito raro después.
+    fill_price_origen: str = ""
     final_limit_price: float | None = None
     replacements: int = 0
     error: str | None = None
@@ -70,6 +77,79 @@ class CondorLegs:
     long_put_symbol: str
     short_call_symbol: str
     long_call_symbol: str
+
+
+def extract_condor_net_fill_price(order_info: dict, side: str) -> float | None:
+    """Precio NETO por acción al que Schwab REALMENTE ejecutó el condor, a partir de las ejecuciones
+    (`orderActivityCollection[].executionLegs[]`) cruzadas con las patas de la orden
+    (`orderLegCollection`, que trae la instrucción de cada `legId`).
+
+    Neto = Σ(patas vendidas) − Σ(patas compradas), la misma cuenta que hace la adopción de condors
+    huérfanos en `live_condor_engine`. Se devuelve SIEMPRE positivo en el sentido de la operación:
+    crédito al abrir, débito al cerrar.
+
+    Devuelve None —y el que llama se queda con el límite— si el dato no es confiable:
+      · no hay ejecuciones publicadas todavía (Schwab tarda unos segundos en llenar este bloque);
+      · no llegan las 4 patas ejecutadas (un neto de 3 patas no significa nada);
+      · las patas llenaron cantidades distintas (condor a medio armar: el neto no es interpretable);
+      · el signo sale al revés (crédito ≤ 0 al abrir, débito < 0 al cerrar) → algo se leyó mal.
+    NUNCA inventa: ante la duda, None. Un crédito inventado mueve el stop loss."""
+    if side not in (SIDE_OPEN, SIDE_CLOSE):
+        return None
+
+    # legId → instrucción de esa pata (SELL_* cobra, BUY_* paga).
+    patas: dict[object, str] = {}
+    for leg in order_info.get("orderLegCollection") or []:
+        leg_id = leg.get("legId")
+        instr = str(leg.get("instruction") or "").upper()
+        if leg_id is None or not instr:
+            continue
+        patas[leg_id] = instr
+    if len(patas) != 4:
+        return None
+
+    ejecuciones: dict[object, dict] = {}
+    for activity in order_info.get("orderActivityCollection") or []:
+        for exec_leg in activity.get("executionLegs") or []:
+            leg_id = exec_leg.get("legId")
+            if leg_id not in patas:
+                continue
+            try:
+                qty = float(exec_leg.get("quantity") or 0.0)
+                price = float(exec_leg.get("price") or 0.0)
+            except (TypeError, ValueError):
+                return None
+            if qty <= 0:
+                continue
+            acc = ejecuciones.setdefault(leg_id, {"qty": 0.0, "notional": 0.0})
+            acc["qty"] += qty
+            acc["notional"] += qty * price
+
+    if len(ejecuciones) != 4:
+        return None
+    cantidades = [d["qty"] for d in ejecuciones.values()]
+    if min(cantidades) <= 0 or abs(max(cantidades) - min(cantidades)) > 1e-6:
+        # Condor a medio armar (o fills parciales desparejos entre patas): no hay "precio neto".
+        return None
+
+    neto = 0.0
+    for leg_id, acc in ejecuciones.items():
+        promedio = acc["notional"] / acc["qty"]
+        instr = patas[leg_id]
+        if instr.startswith("SELL"):
+            neto += promedio
+        elif instr.startswith("BUY"):
+            neto -= promedio
+        else:
+            return None
+
+    if side == SIDE_CLOSE:
+        neto = -neto            # cerrar es un DÉBITO: se devuelve positivo, como el límite
+        if neto < 0:
+            return None
+    elif neto <= 0:
+        return None             # un iron condor SIEMPRE se abre a crédito
+    return round(neto, 4)
 
 
 def _make_condor_payload(side: str, legs: CondorLegs, quantity: int, net_price: float) -> dict:
@@ -144,8 +224,24 @@ def execute_condor_walk(
             result.status_detalle = str(_detalle)[:400]
         if status == FILLED:
             result.filled = True
-            result.fill_price = result.final_limit_price   # límite al que quedó = fill conservador
-            result.steps.append({"price": result.final_limit_price, "event": "filled"})
+            _real = extract_condor_net_fill_price(info, side)
+            if _real is None:
+                # Schwab dice FILLED pero todavía no publicó las ejecuciones: se anota el límite y se
+                # deja constancia de que es un respaldo, no el precio de verdad.
+                result.fill_price = result.final_limit_price
+                result.fill_price_origen = "limite"
+                logger.warning("Condor-real: LLENÓ (orden %s) pero Schwab no publicó las ejecuciones — "
+                               "se registra el LÍMITE $%.2f como precio de fill",
+                               result.order_id, result.final_limit_price or 0.0)
+            else:
+                result.fill_price = _real
+                result.fill_price_origen = "schwab"
+                _lim = result.final_limit_price
+                if _lim is not None and abs(_real - _lim) >= 0.005:
+                    logger.info("Condor-real: fill REAL $%.2f distinto del límite $%.2f (%s) — manda el "
+                                "real: el objetivo y el stop se calculan sobre él", _real, _lim, side)
+            result.steps.append({"price": result.final_limit_price, "event": "filled",
+                                 "fill_price": result.fill_price, "origen": result.fill_price_origen})
             return FILLED
         if status in _DEAD_STATES:
             return status

@@ -62,8 +62,10 @@ def test_open_places_net_credit_combo_with_exact_symbols():
     assert payload["price"] == "1.90"
     syms = [l["instrument"]["symbol"] for l in payload["orderLegCollection"]]
     assert syms == [SP, LP, SC, LC]     # composición y símbolos EXACTOS
-    # el fill se registra al límite en el que quedó (conservador para un crédito: recibís ≥ eso)
+    # este broker falso no publica ejecuciones, así que se cae al respaldo: el límite en el que
+    # quedó. El precio REAL del fill se lee de las ejecuciones — ver test_condor_fill_real.py
     assert res.fill_price == 1.90
+    assert res.fill_price_origen == "limite"
 
 
 def test_close_places_net_debit_combo():
