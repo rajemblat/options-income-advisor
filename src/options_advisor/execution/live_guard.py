@@ -87,6 +87,10 @@ class LiveLimits:
     min_account_cash_buffer: float = 0.0
     allowed_symbols: tuple[str, ...] = ()
     price_cap_exempt_symbols: tuple[str, ...] = ()   # símbolos exentos del tope de precio (usuario: SPY)
+    # Prima mínima como fracción del strike (0 = desactivado). Segundo cinturón del piso que ya
+    # aplica el cerebro: acá se evalúa la orden CONCRETA, con su precio límite, justo antes de
+    # mandarla. Ver `config.LiveTradingSettings.min_premium_pct_of_strike`.
+    min_premium_pct_of_strike: float = 0.0
 
 
 @dataclass
@@ -119,6 +123,7 @@ def limits_from_settings(live) -> LiveLimits:
         max_underlying_price=live.max_underlying_price,
         min_account_cash_buffer=live.min_account_cash_buffer,
         allowed_symbols=tuple(live.allowed_symbols or ()),
+        min_premium_pct_of_strike=float(getattr(live, "min_premium_pct_of_strike", 0.0) or 0.0),
     )
 
 
@@ -178,6 +183,18 @@ def evaluate(
         reasons.append(f"Ya se alcanzó el tope de {limits.max_orders_per_day} órdenes reales por día.")
     if limits.max_orders_per_week > 0 and day.orders_this_week >= limits.max_orders_per_week:
         reasons.append(f"Ya se alcanzó el tope de {limits.max_orders_per_week} órdenes reales por semana.")
+    # LA PRIMA TIENE QUE PAGAR LA EXPOSICIÓN (usuario 2026-09-04). Rechaza, no recorta: bajar
+    # contratos no arregla una prima que no paga — prima y exposición escalan igual, así que el
+    # cociente no cambia. Es el mismo piso que aplica el cerebro, repetido acá porque esta capa es
+    # la última antes de mandar la orden y no depende de qué haya decidido el scoring.
+    if limits.min_premium_pct_of_strike > 0 and order.strike > 0:
+        _piso_ps = limits.min_premium_pct_of_strike * order.strike
+        if order.limit_price < _piso_ps:
+            reasons.append(
+                f"Prima ${order.limit_price * CONTRACT_MULTIPLIER:,.0f} por contrato: no llega al piso de "
+                f"${_piso_ps * CONTRACT_MULTIPLIER:,.0f} ({limits.min_premium_pct_of_strike:.1%} del strike "
+                f"${order.strike:,.2f}) — no paga la exposición."
+            )
 
     if reasons:
         return GuardDecision(False, 0, 0.0, reasons, limits.dry_run)

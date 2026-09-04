@@ -114,6 +114,7 @@ def _select_put_scored(
     scored: list[tuple[OptionContract, float]] = []
     n_dte = 0
     n_over_ceiling = 0
+    n_prima_baja = 0
     for ct in chain.contracts:
         if ct.option_type != "put":
             continue
@@ -134,6 +135,17 @@ def _select_put_scored(
             continue  # liquidez sí es un requisito duro (poder operarlo), no una "cercanía al ideal"
         coverage = rules.put_coverage_pct(underlying_price, ct.strike)
         fill = ct.bid if settings.use_bid_ask_fills else ct.mid_price
+        # PRIMA MÍNIMA PROPORCIONAL A LA EXPOSICIÓN — filtro DURO, no una dimensión más del puntaje.
+        #
+        # Va acá y no en el score a propósito (usuario 2026-09-04, tras el AAPL 250 por $26). El
+        # puntaje busca equilibrio y compensa: en ese put, cobertura, POP y theta sacaron 1.000
+        # perfecto JUSTAMENTE porque el strike estaba lejísimos, y taparon el 0.000 del delta. Una
+        # prima que no paga la exposición no es "una dimensión floja que las otras compensan": es
+        # motivo para no abrir. Si el techo de soporte deja solo strikes que no pagan, no se abre
+        # nada — usuario: "si no paga nada no la abran".
+        if settings.min_premium_pct_of_strike > 0 and fill < settings.min_premium_pct_of_strike * ct.strike:
+            n_prima_baja += 1
+            continue
         cost = rules.per_contract_cost(underlying_price, ct.strike, fill, settings)
         annualized = rules.annualized_return_on_cost(fill, cost, dte)  # sobre el margen naked
         features = {
@@ -146,6 +158,9 @@ def _select_put_scored(
         scored.append((ct, score))
     if not scored:
         _extra = f"; {n_over_ceiling} descartados por strike sobre el soporte objetivo" if n_over_ceiling else ""
+        if n_prima_baja:
+            _extra += (f"; {n_prima_baja} descartados por prima menor al "
+                       f"{settings.min_premium_pct_of_strike:.1%} del strike (no paga la exposición)")
         return None, f"Sin puts con IV/liquidez válidas en la ventana de DTE (evaluados {n_dte}{_extra})"
     best_ct, best_score = max(scored, key=lambda x: x[1])
     if best_score < settings.min_entry_score:
@@ -200,6 +215,9 @@ def _select_put(
         f["pop"] += 1
         fill = ct.bid if settings.use_bid_ask_fills else ct.mid_price
         if fill < settings.min_credit:
+            continue
+        # Mismo piso proporcional que el cerebro flexible: la prima tiene que pagar la exposición.
+        if settings.min_premium_pct_of_strike > 0 and fill < settings.min_premium_pct_of_strike * ct.strike:
             continue
         f["credito"] += 1
         annualized = rules.annualized_return_on_collateral(fill, ct.strike, dte)

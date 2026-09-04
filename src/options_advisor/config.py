@@ -158,6 +158,24 @@ class SimulatorSettings(BaseModel):
     min_probability_otm: float = 0.0
     # Crédito mínimo por contrato (en $ por acción) para que valga comprometer la garantía.
     min_credit: float = 0.0
+    # PRIMA MÍNIMA PROPORCIONAL A LA EXPOSICIÓN (usuario 2026-09-04). `min_credit` es un piso en
+    # dólares por acción y no sirve para esto: $0.10 es lo mismo para un put de AAL de $13 que para
+    # uno de AAPL de $250, cuando la exposición es 19 veces más grande.
+    #
+    # El 2026-09-04, con dinero real: el robot vendió un AAPL 250 (21% abajo del precio) por $26 de
+    # prima, comprometiendo $25.000 de exposición de asignación por 42 días. Usuario: "en una
+    # exposición de AAPL no puede solo tener una prima de 26, mínimo debe ser 250".
+    #
+    # Se expresa como fracción del STRIKE porque así escala solo con el tamaño de la exposición: la
+    # prima por acción debe ser ≥ `min_premium_pct_of_strike` × strike. Un mismo porcentaje pide
+    # cientos de dólares en un AAPL de $250 y unos pocos en un AAL de $13, que es exactamente la
+    # proporción entre las dos exposiciones.
+    #
+    # El nivel vive en settings.yaml, no acá: el usuario lo eligió mirando sus propias operaciones.
+    #
+    # Los contratos se cancelan en la cuenta (prima y exposición escalan igual), así que el piso vale
+    # por contrato y no depende de cuántos se manden. 0 = desactivado.
+    min_premium_pct_of_strike: float = 0.0
     # Retorno anualizado mínimo sobre la garantía (prima/strike * 365/DTE). El robot descarta lo
     # que no llega y, entre los que pasan, elige el de MAYOR retorno anualizado (usuario: apunta a
     # 40-50% anualizado, hoy saca >50%). 0 = desactivado.
@@ -442,6 +460,13 @@ class LiveTradingSettings(BaseModel):
     max_orders_per_week: int = 0             # tope duro por semana (0 = sin tope; Fase 1 = 5, usuario 2026-08-09)
     max_total_deployed: float = 50_000.0     # tope duro de capital comprometido total (colateral) por día
     max_underlying_price: float = 700.0      # no operar acciones por encima de este precio
+    # Piso DURO de prima para una apertura REAL, como fracción del strike (usuario 2026-09-04). Es
+    # el mismo criterio que `simulator.min_premium_pct_of_strike`, repetido acá a propósito: aquel
+    # vive en el cerebro (y el aprendizaje puede mover las perillas de al lado), este es el segundo
+    # cinturón, evaluado justo antes de mandar la orden. Mismo patrón que `live_min_credit` en el
+    # condor, que existe porque el 2026-09-02 una perilla aprendida dejó abrir cobrando $95.
+    # 0 = desactivado.
+    min_premium_pct_of_strike: float = 0.0
     min_account_cash_buffer: float = 0.0     # dejar siempre este cash libre en la cuenta
     allowed_symbols: list[str] = []          # whitelist: si no está vacía, SOLO estos símbolos
     account_number: str = ""                 # cuenta Schwab a operar (vacío = la primera vinculada)

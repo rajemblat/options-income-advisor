@@ -181,6 +181,29 @@ simulator:
   # Probabilidad OTM mínima (~1 - |delta|).
   min_probability_otm: 0.70
   min_credit: 0.10
+  # PRIMA MÍNIMA SEGÚN LA EXPOSICIÓN (usuario 2026-09-04): la prima por acción debe ser al menos
+  # este % del strike. `min_credit` no alcanzaba — $0.10 le pide lo mismo a un AAL de $13 que a un
+  # AAPL de $250, cuando la exposición es 19 veces más grande.
+  #
+  # Ese día, con dinero real, el robot vendió un AAPL 250 por $26 de prima contra $25.000 de
+  # exposición de asignación por 42 días. Usuario: "en una exposición de AAPL no puede solo tener
+  # una prima de 26, mínimo debe ser 250". 1% del strike = $250 en ese put, y escala solo: pide $13
+  # en un AAL de $13, donde la exposición también es 19 veces menor.
+  #
+  # NIVEL ELEGIDO: 0,85%. Sale de sus propios ejemplos, ese mismo día: "Meta vale 595, si me da 500
+  # yo lo abriría"; "AMD vale 470, si me da una prima de 400 yo la abriría". Los dos son ~0,85% del
+  # strike. O sea: es el mínimo que él mismo aceptaría a ojo, escrito como número.
+  #
+  # Contra las 21 aperturas reales hechas hasta ese día, este piso frena 4: el AAPL 250 ($26, el que
+  # motivó todo), los dos NVDA 170 ($69 y $117) y el AMZN 220 ($136). El DIS 100 ($92) pasa raspando
+  # con 0,92%, y de ahí para arriba pasa todo lo demás.
+  #
+  # Referencia rápida: AAPL 250 → $212 · META 595 → $506 · AMD 470 → $400 · AAL 13 → $11.
+  #
+  # OJO al bajarlo: entre el AAPL de $26 (0,10%) y la siguiente operación (NVDA, 0,41%) hay un hueco
+  # enorme. Cualquier valor entre 0,15% y 0,40% frena SOLO el error del AAPL sin tocar nada más, por
+  # si algún día este piso resulta demasiado exigente y hay que aflojarlo sin quedarse sin red.
+  min_premium_pct_of_strike: 0.0085
   # Retorno anualizado mínimo. Bajado a 10% el 2026-08-04 para DESTRABAR (con 25% + cobertura no
   # encontraba nada). El robot igual ELIGE el de mejor retorno entre los que pasan. Subir cuando
   # ya opere y quieras ser más exigente.
@@ -394,6 +417,11 @@ live_trading:
   max_underlying_price: 700.0      # no operar acciones por encima de este precio...
   price_cap_exempt_symbols: [SPY]  # ...salvo SPY, que se opera aunque supere los $700 (usuario 2026-08-09)
   min_account_cash_buffer: 0.0     # (el tope de colateral ya limita el uso de cash)
+  # Piso DURO de prima para el envío REAL, como fracción del strike (usuario 2026-09-04). Mismo
+  # criterio que simulator.min_premium_pct_of_strike, repetido acá como segundo cinturón: aquel vive
+  # en el cerebro, este se evalúa sobre la orden concreta justo antes de mandarla. Es el equivalente
+  # de `live_min_credit` del condor, que existe porque una perilla aprendida dejó abrir con $95.
+  min_premium_pct_of_strike: 0.0085  # AAPL 250 → mínimo $212 · META 595 → $506 · AMD 470 → $400
   account_number: "74257810"       # cuenta LLC TRADING (la de $180k). Sin esto usaba la 1ª (vacía) y Schwab rebotaba
   # Fase 1 (usuario 2026-08-10): whitelist real acotada. Solo estos símbolos pueden generar una orden real.
   # Whitelist real (usuario 2026-08-10): Fase 1 + NVDA + tanda ampliada.
