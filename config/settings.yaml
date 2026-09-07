@@ -435,6 +435,12 @@ live_trading:
   # en el cerebro, este se evalúa sobre la orden concreta justo antes de mandarla. Es el equivalente
   # de `live_min_credit` del condor, que existe porque una perilla aprendida dejó abrir con $95.
   min_premium_pct_of_strike: 0.0085  # AAPL 250 → mínimo $212 · META 595 → $506 · AMD 470 → $400
+  # UNA sola posición real viva por subyacente (usuario 2026-09-07). El tope que ya existía solo
+  # miraba el día en curso: el 17 y el 18 de agosto entraron dos AAL 13P del MISMO vencimiento y
+  # quedaron las dos abiertas — la misma apuesta al doble de tamaño, por acumulación y no por
+  # decisión. Cuando una cierra, ese símbolo vuelve a estar disponible.
+  # Subir a 2 si algún día querés poder promediar a propósito. 0 = apagado.
+  max_open_real_per_symbol: 1
   account_number: "74257810"       # cuenta LLC TRADING (la de $180k). Sin esto usaba la 1ª (vacía) y Schwab rebotaba
   # Fase 1 (usuario 2026-08-10): whitelist real acotada. Solo estos símbolos pueden generar una orden real.
   # Whitelist real (usuario 2026-08-10): Fase 1 + NVDA + tanda ampliada.

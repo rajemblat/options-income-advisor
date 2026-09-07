@@ -876,6 +876,24 @@ def has_live_committed_order_for_symbol_today(conn: sqlite3.Connection, symbol: 
     return row is not None
 
 
+def count_open_real_puts_for_symbol(conn: sqlite3.Connection, symbol: str) -> int:
+    """Cuántas posiciones REALES de put siguen ABIERTAS sobre este símbolo, de cualquier día.
+
+    Distinto de `has_live_committed_order_for_symbol_today`, que solo mira HOY. Esa evita repetir el
+    símbolo dentro de la misma rueda, pero no ve lo de ayer: el 17 y el 18 de agosto el robot abrió
+    dos AAL 13P del MISMO vencimiento con un día de diferencia, y quedaron las dos vivas — la misma
+    apuesta al doble de tamaño sin que nadie lo decidiera (usuario 2026-09-07, viéndolas juntas en
+    rojo en el dashboard).
+
+    Cuenta posiciones VIVAS, no órdenes: una que ya cerró libera el lugar."""
+    row = conn.execute(
+        "SELECT COUNT(*) FROM live_order_log WHERE symbol = ? AND action = 'SELL_TO_OPEN' "
+        "AND dry_run = 0 AND sent = 1 AND order_status = 'FILLED' AND COALESCE(closed, 0) = 0",
+        (symbol,),
+    ).fetchone()
+    return row[0] if row else 0
+
+
 def get_live_orders_today(conn: sqlite3.Connection, day: date) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM live_order_log WHERE log_date = ? ORDER BY log_ts DESC", (day.isoformat(),)

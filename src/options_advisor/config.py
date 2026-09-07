@@ -460,6 +460,14 @@ class LiveTradingSettings(BaseModel):
     max_orders_per_week: int = 0             # tope duro por semana (0 = sin tope; Fase 1 = 5, usuario 2026-08-09)
     max_total_deployed: float = 50_000.0     # tope duro de capital comprometido total (colateral) por día
     max_underlying_price: float = 700.0      # no operar acciones por encima de este precio
+    # Máximo de posiciones REALES vivas sobre el MISMO subyacente, contando TODOS los días
+    # (usuario 2026-09-07). El tope que ya existía solo miraba el día en curso, así que el robot
+    # podía volver al mismo símbolo mañana y pasado mañana: quedaron dos AAL 13P del mismo
+    # vencimiento, abiertos el 17 y el 18 de agosto, doblando la apuesta a la misma acción sin que
+    # nadie lo decidiera. Cuenta posiciones ABIERTAS, no órdenes: cuando una cierra se libera el
+    # lugar. No aplica a las órdenes pedidas por chat, que saltean los topes a propósito.
+    # 0 = desactivado.
+    max_open_real_per_symbol: int = 0
     # Piso DURO de prima para una apertura REAL, como fracción del strike (usuario 2026-09-04). Es
     # el mismo criterio que `simulator.min_premium_pct_of_strike`, repetido acá a propósito: aquel
     # vive en el cerebro (y el aprendizaje puede mover las perillas de al lado), este es el segundo

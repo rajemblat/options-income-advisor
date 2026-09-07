@@ -784,16 +784,22 @@ def _manage_open_position(conn, broker, account_hash, chain, spot, as_of: date, 
     entry_total = row["entry_net_credit"] or 0.0
     unrealized = round(entry_total - close_value_total, 2)
 
-    # ═══ EL STOP SE MIDE AL PRECIO REAL DE SALIDA, NO AL MID (usuario 2026-09-02) ═══
+    # ═══ LAS DOS SALIDAS SE MIDEN AL PRECIO REAL DE SALIDA, NO AL MID ═══
     #
-    # "deje que el stop loss es de 100 maximo 110, y cerro asi la perdida de hoy" — y la pérdida fue
-    # de $125. No era un error de cuentas: el crédito ($95) y el débito ($220) estaban bien anotados.
-    # El problema es que la posición se MEDÍA al mid y se SALÍA al precio de verdad. Cuando el mid
-    # marcaba −$100, salir de verdad ya costaba −$125; la orden llenó ahí y esa fue la pérdida.
+    # EL STOP, desde el 2026-09-02: "deje que el stop loss es de 100 maximo 110, y cerro asi la
+    # perdida de hoy" — y la pérdida fue de $125. No era un error de cuentas: el crédito ($95) y el
+    # débito ($220) estaban bien anotados. El problema es que la posición se MEDÍA al mid y se SALÍA
+    # al precio de verdad. Cuando el mid marcaba −$100, salir ya costaba −$125.
     #
-    # Ahora el stop mira `condor_exit_value`: lo que cuesta salir YA (recomprar los cortos al ask,
-    # vender las alas al bid). Dispara un poco antes, y la pérdida realizada cae DENTRO del límite.
-    # El objetivo de GANANCIA se sigue midiendo al mid: para cobrar no hay apuro y la orden espera.
+    # EL OBJETIVO DE GANANCIA, desde el 2026-09-07: acá decía que la ganancia se seguía midiendo al
+    # mid "porque para cobrar no hay apuro y la orden espera". Era falso: `_close_debit_ladder`
+    # devuelve UN solo peldaño, el precio ejecutable, así que la orden sale y llena al instante —
+    # nunca espera nada. El 2026-09-04, con dinero real: crédito $175, el objetivo disparó con el mid
+    # en +$35 y salir costó $150 → +$25. Usuario: "el objetivo dijo 35 y cobré 25".
+    #
+    # Las dos miran ahora `condor_exit_value`: lo que cuesta salir YA (recomprar los cortos al ask,
+    # vender las alas al bid). El stop dispara un poco antes y la pérdida cae dentro del límite; la
+    # ganancia dispara un poco después y cobra lo que el porcentaje promete.
     unrealized_estricto = None
     if not expired:
         try:
@@ -823,7 +829,7 @@ def _manage_open_position(conn, broker, account_hash, chain, spot, as_of: date, 
 
     do_close, reason = iron_condor.should_close_condor(unrealized, entry_total, expired, cfg,
                                                       age_minutes=age_minutes,
-                                                      unrealized_para_stop=unrealized_estricto)
+                                                      unrealized_de_salida=unrealized_estricto)
     if do_close and reason == "stop_loss" and unrealized_estricto is not None:
         logger.warning("Condor-real: STOP de id=%s — al mid la posición marca $%.2f, pero salir de "
                        "verdad cuesta $%.2f (esa es la que manda)", row["id"], unrealized,

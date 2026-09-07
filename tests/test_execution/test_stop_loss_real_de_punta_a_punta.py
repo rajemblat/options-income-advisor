@@ -216,5 +216,5 @@ def test_un_credito_mal_anotado_corre_el_stop(conn, mails):
     anotado = round(165.0 - salida_pc, 2)         # el límite que se anotaba antes
     assert real != anotado
     assert iron_condor.should_close_condor(real, CREDITO, False, cfg,
-                                           unrealized_para_stop=real)[1] == "stop_loss"
+                                           unrealized_de_salida=real)[1] == "stop_loss"
     assert abs(anotado - real) == pytest.approx(10.0, abs=0.01)

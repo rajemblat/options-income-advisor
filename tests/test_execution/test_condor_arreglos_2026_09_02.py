@@ -148,21 +148,46 @@ def test_el_stop_dispara_con_la_perdida_de_salida_no_con_la_del_mid():
     assert cerrar_mid is False, "al mid todavia no llega al stop"
 
     cerrar, motivo = iron_condor.should_close_condor(-92.0, 95.0, False, cfg, age_minutes=14.0,
-                                                    unrealized_para_stop=-118.0)
+                                                    unrealized_de_salida=-118.0)
     assert (cerrar, motivo) == (True, "stop_loss")
 
 
-def test_la_ganancia_se_sigue_midiendo_al_mid():
-    """Para COBRAR no hay apuro: la orden puede quedar puesta y esperar. Meter el precio de salida
-    tambien en el objetivo de ganancia haria que el robot cobre mas tarde y de menos, y eso el
-    usuario no lo pidio."""
+def test_la_ganancia_TAMBIEN_se_mide_al_precio_de_salida():
+    """CAMBIADO el 2026-09-07. Antes este test fijaba lo contrario: que la ganancia se midiera al
+    mid, con el argumento de que "para cobrar no hay apuro, la orden queda puesta y espera".
+
+    Ese argumento era falso. `_close_debit_ladder` devuelve UN solo peldaño —el precio ejecutable—,
+    así que la orden de cierre sale y llena al instante: no espera nada. El 2026-09-04, con dinero
+    real, el condor cobró $175, el objetivo disparó con el MID marcando +$35, y salir de verdad
+    costó $150: +$25 cobrados. Usuario: "el objetivo dijo 35 y cobré 25".
+
+    Ahora las dos salidas miran el mismo precio, el de salida. Al mid esto marcaría +$70 sobre $190
+    (36%, por encima del 35%) y cerraría; medido a lo que de verdad se cobra son +$10, así que
+    espera. Cuando diga 35%, van a ser 35% de lo que entra en la cuenta."""
     from options_advisor.config import load_settings
     cfg = load_settings().intraday_condor.model_copy(
         update={"profit_target_pct": 0.35, "profit_target_early_pct": 0.20,
                 "early_window_minutes": 30.0, "stop_loss_dollars": 100.0})
     cerrar, motivo = iron_condor.should_close_condor(70.0, 190.0, False, cfg, age_minutes=60.0,
-                                                    unrealized_para_stop=10.0)
+                                                    unrealized_de_salida=10.0)
+    assert (cerrar, motivo) == (False, None), "Cobró al mid otra vez: son 25 en vez de 35"
+
+    # Con la salida real ya en el objetivo, sí cierra.
+    cerrar, motivo = iron_condor.should_close_condor(90.0, 190.0, False, cfg, age_minutes=60.0,
+                                                    unrealized_de_salida=67.0)   # 67 >= 0.35*190
     assert (cerrar, motivo) == (True, "profit_target")
+
+
+def test_el_caso_real_del_04_09_ahora_espera():
+    """El condor de ese día, con los números exactos: crédito $175, objetivo temprano del 20%.
+    Al mid marcaba +$35 (justo el 20%) pero salir costaba $150, o sea +$25 reales."""
+    from options_advisor.config import load_settings
+    cfg = load_settings().intraday_condor.model_copy(
+        update={"profit_target_early_pct": 0.20, "early_window_minutes": 30.0,
+                "stop_loss_dollars": 100.0})
+    cerrar, _ = iron_condor.should_close_condor(35.0, 175.0, False, cfg, age_minutes=12.0,
+                                               unrealized_de_salida=25.0)
+    assert cerrar is False, "Volvió a cerrar cobrando $25 cuando el objetivo pedía $35"
 
 
 def test_sin_medicion_estricta_el_stop_se_comporta_como_siempre():

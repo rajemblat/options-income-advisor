@@ -174,10 +174,34 @@ launchctl bootout gui/$(id -u)/com.robertoajemblat.options-income-advisor.schedu
 
 **2. Copiar la base de nuevo.** La Mac siguió operando durante toda la validación, así que su base
 tiene operaciones que la copia del servidor no. Ahora sí se copia con el robot ya apagado, o sea
-consistente:
+consistente.
+
+> ⚠️ **NO copiar `app.db` con `rsync` a secas.** Esta guía decía justamente eso, y estaba mal. La
+> base corre en modo WAL: las operaciones recientes viven en `app.db-wal`, no dentro de `app.db`. El
+> día de la mudanza (07/09) el WAL tenía 4 MB — copiar solo `app.db` le habría dejado al servidor
+> una base sin las últimas operaciones, incluidas las 5 posiciones que estaban abiertas.
+
+La forma correcta es pedirle a SQLite que arme la copia: junta todo en un solo archivo y funciona
+aunque el dashboard esté leyendo.
+
 ```
-rsync -av ~/options-income-advisor/data/app.db lokshn@LA_IP:~/options-income-advisor/data/
+# En la Mac, con el robot YA apagado:
+sqlite3 ~/options-income-advisor/data/app.db ".backup /tmp/app_mudanza.db"
+scp /tmp/app_mudanza.db lokshn@LA_IP:/tmp/
 ```
+
+```
+# En el servidor, con los servicios DETENIDOS:
+systemctl --user stop lokshn-robot lokshn-dashboard
+cd ~/options-income-advisor
+cp data/app.db data/app.db.antes-mudanza          # respaldo por si hay que volver
+mv /tmp/app_mudanza.db data/app.db
+rm -f data/app.db-wal data/app.db-shm             # ← IMPRESCINDIBLE
+```
+
+Ese `rm` no es limpieza: son los archivos WAL de la base VIEJA del servidor. Si quedan, SQLite los
+mezcla con la base nueva y corrompe los datos. El instalador verifica la integridad de lo que llegó
+(paso 1b), así que si algo sale mal avisa antes de instalar nada.
 
 **3. Pasar el servidor a real.**
 ```
@@ -194,6 +218,25 @@ tail -f ~/options-income-advisor/data/logs/robot.log
 systemctl --user restart lokshn-robot
 systemctl --user stop lokshn-robot            # apagarlo
 ```
+
+### Después de CADA `git pull`: reiniciar los dos servicios
+
+```
+cd ~/options-income-advisor
+git stash && git pull && git stash pop        # el settings.yaml del servidor tiene cambios locales
+systemctl --user restart lokshn-robot lokshn-dashboard
+```
+
+El reinicio no es opcional y **el dashboard se olvida más fácil que el robot**. Los dos cargan el
+código en memoria al arrancar: sin reiniciar siguen corriendo la versión vieja, sin ningún aviso.
+
+Pasó el 04/09: el dashboard llevaba **11 días** sin reiniciarse desde el 23/08. Las páginas nuevas
+del repo pedían una función que su `components.py` en memoria —el de once días antes— no tenía, y
+Real Market moría con un `ImportError`. El archivo en disco estaba perfecto; el proceso no.
+
+El `git stash` de la primera línea hace falta porque el servidor tiene el `settings.yaml` con sus
+propios cambios (modo y ritmo). Si el commit que bajás también toca ese archivo, sin el stash el
+pull aborta.
 
 Dashboard: `http://<IP-de-tailscale>:8501`
 

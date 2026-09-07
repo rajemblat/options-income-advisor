@@ -288,7 +288,7 @@ def condor_unrealized(entry_net_credit: float, close_value: float) -> float:
 
 def should_close_condor(
     unrealized_pnl: float, entry_net_credit: float, expired: bool, settings: IntradayCondorSettings,
-    age_minutes: float | None = None, unrealized_para_stop: float | None = None,
+    age_minutes: float | None = None, unrealized_de_salida: float | None = None,
 ) -> tuple[bool, str | None]:
     """Regla de salida (usuario 2026-08-07). Se cierra con lo PRIMERO que ocurra:
 
@@ -298,21 +298,29 @@ def should_close_condor(
       3. Stop loss: −stop_loss_dollars, en cualquier momento.
       4. Vencimiento (0DTE).
 
-    Los valores REALES viven en config/settings.yaml (`intraday_condor`) y hoy son 20% / 35% / 30 min
-    / $100. Este docstring decía "40%... 50%... 20 min" — números de principios de agosto que ya no
-    eran los vigentes, y confundían al verificar por qué el robot había cerrado (usuario 2026-08-24).
-    No repetimos los números acá a propósito: la config manda."""
+    Los valores REALES viven en config/settings.yaml (`intraday_condor`). No los repetimos acá a
+    propósito: este docstring alguna vez tuvo números viejos y confundió al usuario mientras
+    verificaba por qué el robot había cerrado (2026-08-24). La config manda.
+
+    LAS DOS SALIDAS SE MIDEN AL PRECIO REAL DE SALIDA (`unrealized_de_salida`), no al mid.
+
+    El stop ya se medía así desde el 2026-09-02. El objetivo de ganancia seguía mirando el mid, con
+    el argumento de que para cobrar no hay apuro y la orden podía esperar. Pero la escalera de
+    cierre tiene un solo peldaño —el precio ejecutable—, así que la orden sale y llena al instante:
+    la espera nunca ocurría. Resultado, el 2026-09-04 con dinero real: crédito $175, el objetivo del
+    20% disparó cuando el MID marcaba +$35, y salir de verdad costó $150 → +$25 cobrados. Usuario:
+    "el objetivo dijo 35 y cobré 25".
+
+    Ahora, cuando decimos 30%, son 30% de lo que vas a cobrar. Dispara un poco más tarde y cobra lo
+    que promete. Sin el dato (`None`) se cae al mid de siempre, así el papel y los tests viejos no
+    cambian de comportamiento."""
     if expired:
         return True, "expired"
+    salida = unrealized_pnl if unrealized_de_salida is None else unrealized_de_salida
     early = age_minutes is not None and age_minutes <= settings.early_window_minutes
     target = settings.profit_target_early_pct if early else settings.profit_target_pct
-    if target > 0 and unrealized_pnl >= target * entry_net_credit:
+    if target > 0 and salida >= target * entry_net_credit:
         return True, "profit_target"
-    # El stop se mide con `unrealized_para_stop` si nos lo dan: es el P&L calculado al precio REAL de
-    # salida (ver `condor_exit_value`), no al mid. Sin él se cae al mid de siempre — así el papel y
-    # los tests viejos no cambian de comportamiento, y solo el motor real, que sí tiene las puntas de
-    # la cadena viva, usa la medición estricta.
-    _para_stop = unrealized_pnl if unrealized_para_stop is None else unrealized_para_stop
-    if settings.stop_loss_dollars > 0 and _para_stop <= -settings.stop_loss_dollars:
+    if settings.stop_loss_dollars > 0 and salida <= -settings.stop_loss_dollars:
         return True, "stop_loss"
     return False, None

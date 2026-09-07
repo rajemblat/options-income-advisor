@@ -238,6 +238,21 @@ def maybe_log_live_order(conn, symbol, result, snapshot, settings, as_of: date, 
             return   # sin START del día, ni en dry-run ensayamos
         if repo.has_live_committed_order_for_symbol_today(conn, symbol, as_of):
             return   # ya hay una posición/orden real viva de este símbolo hoy — buscamos otra distinta
+        # TOPE DE POSICIONES VIVAS POR SÍMBOLO (usuario 2026-09-07). El chequeo de arriba solo mira
+        # HOY, así que no impedía acumular el mismo subyacente día tras día: el 17 y el 18 de agosto
+        # entraron dos AAL 13P del mismo vencimiento y quedaron las dos abiertas, doblando la
+        # exposición a la misma acción sin que nadie lo decidiera. El usuario las vio juntas en rojo
+        # en el dashboard tres semanas después.
+        #
+        # NO se aplica a las órdenes pedidas por chat: esas las pide el usuario a mano y saltean los
+        # topes del robot automático a propósito (2026-08-11). 0 = tope apagado.
+        _tope_sym = int(getattr(lt, "max_open_real_per_symbol", 0) or 0)
+        if _tope_sym > 0:
+            _vivas = repo.count_open_real_puts_for_symbol(conn, symbol)
+            if _vivas >= _tope_sym:
+                logger.info("Live: %s ya tiene %d posición(es) real(es) abierta(s) (tope %d por "
+                            "símbolo) — se busca otra acción", symbol, _vivas, _tope_sym)
+                return
         contract = getattr(result, "contract", None)
         if contract is None:
             return

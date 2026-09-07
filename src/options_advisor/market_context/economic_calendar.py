@@ -12,6 +12,16 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://finnhub.io/api/v1"
 _TIMEOUT = 10.0
 
+# El 403 de Finnhub NO es un error a investigar: es el plan free diciendo que `/calendar/economic`
+# es premium. Ya está previsto y el fallback (FOMC + FRED) cubre lo mismo. Pero se logueaba como
+# WARNING con traceback completo en CADA corrida: en el log del 2026-09-03 hay decenas de esos
+# tracebacks idénticos, y ese ruido es justamente lo que hace que un error de verdad pase
+# desapercibido. Se avisa UNA vez por proceso y después silencio.
+#
+# Cualquier otro fallo (timeout, 500, red caída) SÍ se sigue logueando cada vez y con detalle:
+# esos son transitorios y pueden significar algo.
+_aviso_403_dado = False
+
 # Fallback de bajo mantenimiento si /calendar/economic de Finnhub no está disponible en el
 # plan (Finnhub mueve endpoints entre free/premium con frecuencia): calendario oficial de
 # reuniones FOMC publicado por la Fed (federalreserve.gov/monetarypolicy/fomccalendars.htm),
@@ -77,6 +87,21 @@ def get_upcoming_macro_events(
                     ),
                     key=lambda e: e["date"],
                 )
+        except httpx.HTTPStatusError as exc:
+            global _aviso_403_dado
+            if exc.response is not None and exc.response.status_code in (401, 403):
+                if not _aviso_403_dado:
+                    _aviso_403_dado = True
+                    logger.info(
+                        "Finnhub: /calendar/economic no está incluido en el plan (HTTP %s). Es lo "
+                        "esperado en el plan free — el calendario se arma con FOMC + FRED, que "
+                        "cubre lo mismo. No se vuelve a avisar en esta corrida.",
+                        exc.response.status_code,
+                    )
+            else:
+                logger.warning("Finnhub economic calendar devolvió HTTP %s; se arma el calendario "
+                               "con FOMC + FRED",
+                               exc.response.status_code if exc.response is not None else "?")
         except Exception:
             logger.warning("Finnhub economic calendar no disponible; se arma el calendario con FOMC + FRED", exc_info=True)
 
