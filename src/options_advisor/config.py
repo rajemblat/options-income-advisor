@@ -455,6 +455,10 @@ class LiveTradingSettings(BaseModel):
     # queda un tamaño comparable. 0 en cualquiera de los dos = regla apagada.
     cheap_strike_max: float = 0.0            # strike POR DEBAJO de esto = "barato"
     cheap_strike_contracts: int = 0          # ...y ahí se piden estos contratos
+    # Colateral OBJETIVO por posición, en dólares. Cuando está en >0, la cantidad de contratos sale
+    # de dividir este objetivo por lo que traba UN contrato, en vez de mirar el número del strike.
+    # 0 = apagado (se usa la regla vieja por strike). Ver `contracts_for_collateral`.
+    target_collateral_per_position: float = 0.0
     max_notional_per_order: float = 40_000.0 # tope duro de notional (strike×100×contratos) por orden
     max_orders_per_day: int = 5              # tope duro de órdenes reales por día
     max_orders_per_week: int = 0             # tope duro por semana (0 = sin tope; Fase 1 = 5, usuario 2026-08-09)

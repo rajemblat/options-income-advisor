@@ -417,6 +417,14 @@ live_trading:
   # El guardián sigue mandando: si 4 no entran por colateral, cash o notional, recorta o frena.
   cheap_strike_max: 30.0           # strike por debajo de $30 = "barato"
   cheap_strike_contracts: 4        # ...y ahí pide 4 contratos
+  # Colateral OBJETIVO por posición (usuario 2026-09-08). La cantidad de contratos sale de dividir
+  # esto por lo que traba UN contrato. Antes se miraba el número del strike, y por eso el 08/09 WFC
+  # ($551 de colateral) abrió 1 solo contrato mientras AAPL ($1.415) abría también 1: la misma
+  # decisión del cerebro apostada con montos 2,6 veces distintos. Usuario: "por el tamaño de mi
+  # cuenta debería abrir mínimo 2 de ese monto de tiquet".
+  # Con $1.100: WFC → 2 ($1.102) · UAL → 2 ($1.244) · DIS → 1 · COIN → 1 · AAPL → 1.
+  # El techo `max_contracts_per_order` y el guardián siguen mandando: esto PIDE, no autoriza.
+  target_collateral_per_position: 1100.0
   max_notional_per_order: 0        # Fase 1: sin tope de EXPOSICIÓN por orden (el freno real es el colateral;
                                    #         el cap por exposición diaria lo agregamos "más adelante", usuario)
   max_orders_per_day: 2            # 2 posiciones reales por día (usuario 2026-08-10: "quiero una operación más hoy")

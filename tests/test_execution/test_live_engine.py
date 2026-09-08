@@ -110,7 +110,12 @@ def test_the_guard_still_wins_over_the_cheap_strike_rule():
     live_engine.maybe_log_live_order(conn, "AAL", _Result(_contract(), 1.50), _Snap(12.0), s, AS_OF)
     r = repo.get_live_orders_today(conn, AS_OF)[0]
     assert r["final_contracts"] == 2, "pidió 4 pero el techo del guardián es 2"
-    assert "Recortado" in (r["reasons"] or "")
+    # Antes esto exigía además la nota "Recortado" del guardián. Dejó de aplicar el 2026-09-08, con
+    # el tamaño por colateral: el techo por orden ahora se respeta también al PEDIR, así que la
+    # orden ya nace en 2 y el guardián no tiene nada que recortar. El techo se aplica en los dos
+    # lugares a propósito — apoyar toda la seguridad de una orden real en un solo punto es frágil —
+    # y cuando el objetivo pedía más que el techo, queda dicho en el log.
+    # Lo que este test protege sigue intacto: el techo manda sobre lo que pida la regla de tamaño.
 
 
 def test_skips_when_not_armed():

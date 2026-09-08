@@ -192,6 +192,49 @@ def contracts_for_strike(strike: float | None, lt) -> int:
     return base
 
 
+def contracts_for_collateral(margen_por_contrato: float | None, strike: float | None, lt) -> int:
+    """Cuántos contratos PEDIR según la PLATA que traba la posición, no según el número del strike.
+
+    Por qué cambió (usuario 2026-09-08). La regla vieja miraba el strike: menos de $30 → 4 contratos,
+    todo lo demás → 1. Ese día WFC strike $80 abrió UN contrato trabando $551, mientras AAPL $250
+    también abría uno pero trabando $1.415. La misma decisión del cerebro, apostada con montos 2,6
+    veces distintos — y NCLH, con $144, diez veces más chica. Usuario: "por el tamaño de mi cuenta
+    debería abrir mínimo 2 de ese monto de tiquet".
+
+    No es solo una cuestión de tamaño: el aprendizaje compara ganadoras contra perdedoras, y estaba
+    comparando operaciones de $130 con operaciones de $1.415 como si pesaran lo mismo.
+
+    Ahora: contratos = objetivo ÷ lo que traba un contrato, redondeado al entero más cercano. Con el
+    objetivo en $1.100 y los números reales de esa semana:
+        WFC   $551/contrato → 2 ($1.102)      DIS   $809/contrato → 1
+        UAL   $622/contrato → 2 ($1.244)      COIN  $1.023      → 1
+        AAPL  $1.415        → 1               NU    $105        → 10, recortado a 4 por el techo
+
+    El piso de `cheap_strike_*` se conserva por si el margen no se puede calcular. Y esto es lo que
+    se PIDE: el guardián después solo puede RECORTAR (colateral total, notional, cash, techo por
+    orden), nunca subir. "El guardián manda" (usuario 2026-08-17).
+
+    Con `target_collateral_per_position` en 0 se cae a la regla vieja por strike, intacta."""
+    objetivo = float(getattr(lt, "target_collateral_per_position", 0.0) or 0.0)
+    por_strike = contracts_for_strike(strike, lt)
+    if objetivo <= 0 or not margen_por_contrato or margen_por_contrato <= 0:
+        return por_strike
+    techo = max(1, int(getattr(lt, "max_contracts_per_order", 1) or 1))
+    # Redondeo al entero más cercano, explícito: round() de Python redondea el .5 al par y acá eso
+    # sería una sorpresa silenciosa sobre el tamaño de una posición real.
+    cuantos = max(1, int(objetivo / float(margen_por_contrato) + 0.5))
+    cuantos = max(cuantos, por_strike if por_strike > 1 else 1)
+    if cuantos > techo:
+        # El techo se aplica ACÁ además de en el guardián: pedir 55 contratos de un strike de $5 y
+        # confiar en que alguien más lo frene es apoyar toda la seguridad en un solo punto. Pero
+        # queda dicho en el log, porque "el objetivo pedía más que el techo" es justamente el dato
+        # que hace falta para saber si el techo quedó chico.
+        logger.info("Live: el objetivo de $%.0f por posición pedía %d contratos (traba $%.0f cada "
+                    "uno); el techo por orden los deja en %d", objetivo, cuantos,
+                    float(margen_por_contrato), techo)
+    return max(1, min(techo, cuantos))
+
+
 def contracts_after_diversification(base: int, entradas_abiertas: int) -> int:
     """Cuantos contratos pedir segun cuantas entradas vivas ya hay de ESE simbolo (usuario 2026-08-21:
     "si el lunes vendio -4 put de AAL, que el miercoles no agregue 4 mas, sino 2 o 1 o ninguna").
@@ -262,7 +305,7 @@ def maybe_log_live_order(conn, symbol, result, snapshot, settings, as_of: date, 
         # --- Escalera de DIVERSIFICACION (usuario 2026-08-21) ---
         # El tamano base lo sigue fijando la regla por precio/strike de siempre; aca solo lo achicamos
         # si ya hay posiciones vivas del mismo simbolo, para no apilar 9 contratos de AAL.
-        _base_ctr = contracts_for_strike(contract.strike, lt)
+        _base_ctr = contracts_for_collateral(margin, contract.strike, lt)
         _abiertas_sym = repo.count_open_real_entries_for_symbol(conn, symbol)
         _ctr_pedidos = contracts_after_diversification(_base_ctr, _abiertas_sym)
         if _ctr_pedidos <= 0:
