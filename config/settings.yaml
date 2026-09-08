@@ -461,7 +461,11 @@ live_trading:
   # PARA MUDARSE AL SERVIDOR: apagar primero el robot de la Mac, y recién después poner "lokshn"
   # acá. En el mismo commit el servidor empieza a poder operar y la Mac deja de poder — no hay
   # ningún momento en que las dos puedan.
-  real_machine_hostname: "MacBook-Pro-8"
+  # MUDADO AL SERVIDOR el 2026-09-08. Antes decía "MacBook-Pro-8". Cambiar esta línea ES el
+  # interruptor de la mudanza: desde este commit el servidor puede operar y la Mac —aunque alguien
+  # la encienda por error— se niega a arrancar en modo real. No hay ningún momento en que las dos
+  # puedan. Para volver atrás: apagar el robot del servidor y poner "MacBook-Pro-8" de nuevo.
+  real_machine_hostname: "lokshn"
   account_number: "74257810"       # cuenta LLC TRADING (la de $180k). Sin esto usaba la 1ª (vacía) y Schwab rebotaba
   # Fase 1 (usuario 2026-08-10): whitelist real acotada. Solo estos símbolos pueden generar una orden real.
   # Whitelist real (usuario 2026-08-10): Fase 1 + NVDA + tanda ampliada.
