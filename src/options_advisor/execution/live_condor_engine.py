@@ -365,105 +365,109 @@ def _clave_huerfanas(as_of: date) -> str:
     return f"condor_real_huerfanas_{as_of.isoformat()}"
 
 
-def _vence_hoy(occ_symbol: str, as_of: date) -> bool:
-    """¿Esta pata vence HOY? Se lee del propio simbolo OCC (root de 6 + YYMMDD en [6:12]), que es el
-    formato estable — nunca del texto de la descripcion.
-
-    El barrido de huerfanas solo mira 0DTE porque el condor real SOLO opera 0DTE. El usuario tiene
-    ademas spreads de SPX propios con vencimientos mas largos (bull puts y bear calls a 12-15 dias):
-    esos no son del robot, el robot no tiene por que gestionarlos, y avisarle todos los dias de algo
-    que el abrio a proposito convierte la alerta en ruido — y una alerta que se ignora no sirve para
-    nada el dia que importa."""
-    if len(occ_symbol) < 12:
-        return False
-    try:
-        return datetime.strptime(occ_symbol[6:12], "%y%m%d").date() == as_of
-    except ValueError:
-        return False
-
-
 def _barrer_posiciones_huerfanas(conn, broker, as_of: date) -> int:
-    """¿Hay patas de SPX vivas en la cuenta que el robot NO tenga registradas? Avisar.
+    """¿Algún condor que el robot dio por CERRADO sigue vivo en la cuenta? Avisar y frenar.
 
-    El 2026-09-02, con dinero real: Schwab rechazó la apertura del condor por el precio fuera de la
-    grilla de 5 centavos, el robot la dio por no llenada y borró la fila. La posición terminó viva
-    igual. Durante casi una hora hubo un iron condor abierto en la cuenta que el robot no marcaba,
-    no le calculaba P&L y —lo grave— no le aplicaba el stop. Lo cerró el usuario a mano, en pérdida.
+    El 2026-09-02, con dinero real: Schwab rechazó la apertura por el precio fuera de la grilla de 5
+    centavos, el robot dio la fila por no llenada y la cerró. La posición terminó viva igual. Durante
+    casi una hora hubo un iron condor abierto que el robot no marcaba, no le calculaba P&L y —lo
+    grave— no le aplicaba el stop. Lo cerró el usuario a mano, en pérdida.
 
-    Las verificaciones que ya existían miran ÓRDENES (`_buscar_orden_en_schwab`). Esta mira lo único
-    que no se puede discutir: las POSICIONES que hay en la cuenta ahora mismo. Es la última red.
+    La primera versión de este barrido preguntaba al revés: "¿hay patas de SPX que no conozco?". Eso
+    estaba mal y el 2026-09-08 quedó a la vista — avisó por ocho patas que eran spreads que el
+    usuario había abierto a mano el 24/08, el 27/08 y el 02/09, y que resulta que vencían ese día.
+    Encima el freno le impedía al robot abrir su propio condor. Usuario: "las posiciones que no las
+    hace el robot no debe preocuparse, las trabajo yo".
 
-    No adopta sola a propósito: sin saber a qué crédito entró, cualquier stop o P&L que calculara
-    sería inventado. Avisa, con las patas exactas, para que el usuario decida."""
+    La pregunta correcta no es "¿qué hay acá que no conozco?" sino "¿algo MÍO que creo cerrado sigue
+    abierto?". Solo se miran las patas de los condors que el robot armó HOY y anotó como cerrados: si
+    una de esas sigue en la cuenta, el robot y la realidad no coinciden y eso sí es su problema. Lo
+    que el usuario opere por su cuenta no se toca ni se cuenta."""
+    try:
+        filas = repo.get_open_real_condor_positions(conn) or []
+    except Exception:  # noqa: BLE001
+        logger.debug("Condor-real: no se pudieron listar las posiciones vivas del robot", exc_info=True)
+        return 0
+
+    def _patas(fila) -> set[str]:
+        out = set()
+        for col in ("short_put_symbol", "long_put_symbol", "short_call_symbol", "long_call_symbol"):
+            try:
+                sym = fila[col]
+            except (IndexError, KeyError):
+                sym = None
+            if sym:
+                out.add(str(sym).replace(" ", ""))
+        return out
+
+    vivas: set[str] = set()
+    for fila in filas:
+        vivas |= _patas(fila)
+
+    # Las que el robot armó HOY y ya dio por cerradas. Solo estas pueden ser una desincronización
+    # suya; cualquier otra cosa en la cuenta es del usuario.
+    cerradas_hoy: set[str] = set()
+    try:
+        cur = conn.execute(
+            "SELECT * FROM real_condor_positions WHERE entry_date = ? AND status = 'closed'",
+            (as_of.isoformat(),))
+        for fila in cur.fetchall():
+            cerradas_hoy |= _patas(fila)
+    except Exception:  # noqa: BLE001
+        logger.debug("Condor-real: no se pudieron listar los condors cerrados de hoy", exc_info=True)
+        return 0
+    cerradas_hoy -= vivas
+    if not cerradas_hoy:
+        return 0   # nada que el robot crea cerrado: no hay con qué desincronizarse
+
     try:
         posiciones = broker.get_all_positions()
     except Exception:  # noqa: BLE001
         logger.debug("Condor-real: no se pudieron leer las posiciones de la cuenta", exc_info=True)
         return 0
-    if not posiciones:
-        return 0
 
-    conocidas: set[str] = set()
-    try:
-        for fila in repo.get_open_real_condor_positions(conn) or []:
-            for col in ("short_put_symbol", "long_put_symbol", "short_call_symbol", "long_call_symbol"):
-                try:
-                    sym = fila[col]
-                except (IndexError, KeyError):
-                    sym = None
-                if sym:
-                    conocidas.add(str(sym).replace(" ", ""))
-    except Exception:  # noqa: BLE001
-        logger.debug("Condor-real: no se pudieron listar las patas conocidas", exc_info=True)
-        return 0
-
-    huerfanas = []
-    for pos in posiciones:
+    zombis = []
+    for pos in posiciones or []:
         if (getattr(pos, "asset_type", "") or "").upper() != "OPTION":
             continue
         if not float(getattr(pos, "quantity", 0) or 0):
             continue
-        sub = (getattr(pos, "underlying_symbol", "") or "").upper().lstrip("$")
-        sym = str(getattr(pos, "symbol", "") or "")
-        if sub not in ("SPX", "SPXW") and not sym.upper().startswith(("SPX", "SPXW")):
-            continue   # los naked del robot son de acciones y los lleva otro registro
-        if not _vence_hoy(sym, as_of):
-            continue   # el condor real es 0DTE; lo demas es del usuario (ver `_vence_hoy`)
-        if sym.replace(" ", "") in conocidas:
-            continue
-        huerfanas.append(pos)
+        if str(getattr(pos, "symbol", "") or "").replace(" ", "") in cerradas_hoy:
+            zombis.append(pos)
 
-    if not huerfanas:
+    if not zombis:
         return 0
 
     detalle = "\n".join(
-        f"  · {getattr(h, 'symbol', '?')}  cantidad {getattr(h, 'quantity', 0):+g}  "
-        f"P&L no realizado ${getattr(h, 'unrealized_pnl', 0.0):+,.2f}"
-        for h in huerfanas
+        f"  · {getattr(z, 'symbol', '?')}  cantidad {getattr(z, 'quantity', 0):+g}  "
+        f"P&L no realizado ${getattr(z, 'unrealized_pnl', 0.0):+,.2f}"
+        for z in zombis
     )
-    logger.error("Condor-real: HAY %d pata(s) de SPX en la cuenta que el robot NO tiene registradas "
-                 "— sin stop ni gestión:\n%s", len(huerfanas), detalle)
+    logger.error("Condor-real: %d pata(s) de un condor que el robot dio por CERRADO siguen vivas en "
+                 "la cuenta — sin stop ni gestión:\n%s", len(zombis), detalle)
 
     clave = _clave_huerfanas(as_of)
     try:
         if repo.get_robot_flag(conn, clave, "0") == "1":
-            return len(huerfanas)   # ya se avisó hoy (el aviso es 1 por día; el freno, permanente)
+            return len(zombis)   # ya se avisó hoy (el aviso es 1 por día; el freno, permanente)
         repo.set_robot_flag(conn, clave, "1")
     except Exception:  # noqa: BLE001
-        logger.debug("Condor-real: no se pudo marcar el aviso de huérfanas", exc_info=True)
-        return len(huerfanas)
+        logger.debug("Condor-real: no se pudo marcar el aviso de zombis", exc_info=True)
+        return len(zombis)
 
-    _email("🔴 Lokshn: hay una posición de SPX en tu cuenta que el robot NO está gestionando",
-           "El robot encontró patas de SPX abiertas en tu cuenta que no figuran en su registro.\n\n"
+    _email("🔴 Lokshn: un condor que di por cerrado sigue ABIERTO en tu cuenta",
+           "El robot armó un iron condor hoy, lo anotó como cerrado, y sin embargo estas patas "
+           "siguen vivas en tu cuenta:\n\n"
            f"{detalle}\n\n"
-           "Eso significa que esa posición NO tiene el stop del robot ni objetivo de ganancia: "
-           "nadie la está cuidando.\n\n"
+           "Eso significa que esa posición NO tiene el stop del robot ni objetivo de ganancia.\n\n"
            "Pasó el 2026-09-02: una orden que Schwab había marcado como rechazada terminó "
-           "ejecutándose igual. Si esto es eso, cerrala vos a mano desde el broker o avisale al "
-           "robot. NO la adopta solo porque no sabe a qué precio entró, y con un crédito inventado "
-           "el stop también saldría inventado.\n\n"
-           "Mientras esa posición siga ahí, el robot NO abre condors nuevos.")
-    return len(huerfanas)
+           "ejecutándose igual. Cerrala vos a mano desde el broker, o avisale al robot. NO la adopta "
+           "solo porque no sabe a qué precio entró, y con un crédito inventado el stop también "
+           "saldría inventado.\n\n"
+           "Mientras siga así, el robot NO abre condors nuevos.\n\n"
+           "(Las posiciones que abriste vos por tu cuenta no entran acá: el robot no las mira ni "
+           "las cuenta.)")
+    return len(zombis)
 
 
 def _buscar_orden_en_schwab(broker, row):

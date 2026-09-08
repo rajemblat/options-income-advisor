@@ -343,60 +343,85 @@ class _BrokerPosiciones:
         return self._posiciones
 
 
-def test_avisa_cuando_hay_una_pata_de_spx_que_el_robot_no_registro(conn, mails):
-    """Exactamente el agujero del 2026-09-02: Schwab dijo REJECTED, el robot borro la fila, y la
-    posicion siguio viva casi una hora sin stop."""
-    lce._barrer_posiciones_huerfanas(conn, _BrokerPosiciones([_Posicion(SC)]), date(2026, 9, 2))
-    assert mails, "tiene que avisar: esa posicion no tiene stop"
+def _fila_cerrada_hoy(conn, status="closed"):
+    """Un condor que el robot armó HOY y anotó como cerrado — el escenario del 02/09."""
+    pid = repo.insert_real_condor_position(
+        conn, underlying="$SPX", entry_date=date(2026, 9, 2), expiration_date=date(2026, 9, 2),
+        short_put_strike=7595, short_call_strike=7670, long_put_strike=7585, long_call_strike=7680,
+        short_put_symbol=SP, long_put_symbol=LP, short_call_symbol=SC, long_call_symbol=LC,
+        quantity=1, entry_net_credit=182.5, max_loss=817.5, max_profit=182.5,
+        lower_breakeven=7593.2, upper_breakeven=7671.8, entry_spot=7638.0,
+        open_schwab_order_id="ORD-X", status=status)
+    if status == "closed":
+        repo.close_real_condor_position(conn, pid, date(2026, 9, 2), close_value=None,
+                                        close_reason="apertura_no_llenó", realized_pnl=None)
+    return pid
+
+
+def test_avisa_cuando_un_condor_que_dio_por_cerrado_sigue_vivo(conn, mails):
+    """El agujero del 2026-09-02: Schwab dijo REJECTED, el robot cerró la fila, y la posición siguió
+    viva casi una hora sin stop."""
+    _fila_cerrada_hoy(conn)
+    n = lce._barrer_posiciones_huerfanas(
+        conn, _BrokerPosiciones([_Posicion(SC)]), date(2026, 9, 2))
+    assert n == 1
+    assert mails, "tiene que avisar: esa posición no tiene stop"
     asunto, cuerpo = mails[0]
-    assert "SPX" in asunto
     assert SC in cuerpo
 
 
-def test_no_avisa_dos_veces_el_mismo_dia(conn, mails):
-    """La posicion puede seguir ahi horas. Un mail por minuto no es una alerta, es ruido."""
-    broker = _BrokerPosiciones([_Posicion(SC)])
-    for _ in range(4):
-        lce._barrer_posiciones_huerfanas(conn, broker, date(2026, 9, 2))
-    assert len(mails) == 1
+def test_NO_avisa_por_las_posiciones_que_abrio_el_usuario(conn, mails):
+    """Falso positivo real del 2026-09-08: el robot mandó un mail por ocho patas de SPXW que eran
+    spreads que el usuario había abierto a mano el 24/08, el 27/08 y el 02/09 y que vencían ese día.
+    Encima el freno le impedía abrir su propio condor. Usuario: "las posiciones que no las hace el
+    robot no debe preocuparse, las trabajo yo".
+
+    El robot solo mira lo SUYO: si nunca armó un condor con esas patas, no es asunto suyo."""
+    _fila_cerrada_hoy(conn)
+    del_usuario = ["SPXW  260908C07765000", "SPXW  260908C07755000",
+                   "SPXW  260908P07450000", "SPXW  260908P07460000",
+                   "SPXW  260908C07840000", "SPXW  260908C07830000",
+                   "SPXW  260908P07470000", "SPXW  260908P07480000"]
+    n = lce._barrer_posiciones_huerfanas(
+        conn, _BrokerPosiciones([_Posicion(s) for s in del_usuario]), date(2026, 9, 2))
+    assert n == 0
+    assert mails == []
 
 
-def test_no_avisa_por_las_patas_que_el_robot_si_esta_gestionando(conn, mails):
-    """Las 4 patas del condor que el robot tiene abierto no son huerfanas."""
-    _fila_puesta(conn)
-    lce._barrer_posiciones_huerfanas(
+def test_no_avisa_por_un_condor_que_el_robot_SI_esta_gestionando(conn, mails):
+    """Una posición abierta y bajo gestión no es un zombi: tiene stop y objetivo."""
+    _fila_cerrada_hoy(conn, status="open")
+    n = lce._barrer_posiciones_huerfanas(
         conn, _BrokerPosiciones([_Posicion(s) for s in (SP, LP, SC, LC)]), date(2026, 9, 2))
+    assert n == 0
     assert mails == []
 
 
-def test_no_avisa_por_los_spreads_de_spx_del_usuario_a_mas_dias(conn, mails):
-    """Falso positivo real, visto en vivo el 2026-09-02 apenas se encendio el barrido: aviso por 6
-    patas de SPXW que vencian el 08/09 — dos bull put spreads y un bear call spread que el usuario
-    habia abierto el 24 y el 27 de agosto. No son del robot y el robot no tiene que gestionarlos.
-    El condor real SOLO opera 0DTE: lo que vence otro dia no es asunto suyo."""
-    lejos = ["SPXW  260908P07450000", "SPXW  260908P07460000",
-             "SPXW  260908C07840000", "SPXW  260908C07830000"]
-    lce._barrer_posiciones_huerfanas(
-        conn, _BrokerPosiciones([_Posicion(s) for s in lejos]), date(2026, 9, 2))
-    assert mails == []
+def test_sin_condors_cerrados_hoy_ni_se_consulta_al_broker(conn, mails):
+    """Si el robot no cerró nada hoy no hay con qué desincronizarse, y no gasta una llamada."""
+    class _Explota:
+        def get_all_positions(self):
+            raise AssertionError("no tendría que preguntar")
+
+    assert lce._barrer_posiciones_huerfanas(conn, _Explota(), date(2026, 9, 2)) == 0
 
 
-def test_si_avisa_por_una_pata_0dte_desconocida(conn, mails):
-    """La misma cuenta, el mismo dia: una pata que vence HOY y que el robot no registro SI es el
-    agujero del 2026-09-02, y tiene que avisar aunque haya spreads a mas dias en la cuenta."""
-    lejos = [_Posicion("SPXW  260908P07450000"), _Posicion("SPXW  260908C07830000")]
-    lce._barrer_posiciones_huerfanas(
-        conn, _BrokerPosiciones(lejos + [_Posicion(SC)]), date(2026, 9, 2))
-    assert len(mails) == 1
-    assert SC in mails[0][1]
-    assert "260908" not in mails[0][1], "no tiene que mezclar las posiciones del usuario en el aviso"
+def test_no_avisa_dos_veces_el_mismo_dia(conn, mails):
+    """La posición puede seguir ahí horas. Un mail por minuto no es una alerta, es ruido — pero el
+    FRENO se mantiene en cada tick."""
+    _fila_cerrada_hoy(conn)
+    broker = _BrokerPosiciones([_Posicion(SC)])
+    ns = [lce._barrer_posiciones_huerfanas(conn, broker, date(2026, 9, 2)) for _ in range(4)]
+    assert ns == [1, 1, 1, 1], "el freno se evalúa siempre"
+    assert len(mails) == 1, "el mail sale una sola vez"
 
 
 def test_no_avisa_por_los_naked_de_acciones(conn, mails):
-    """Los naked put del robot son de acciones y los lleva otro registro. Este barrido es del condor."""
-    lce._barrer_posiciones_huerfanas(
+    """Los naked put del robot son de acciones y los lleva otro registro."""
+    _fila_cerrada_hoy(conn)
+    assert lce._barrer_posiciones_huerfanas(
         conn, _BrokerPosiciones([_Posicion("UAL   261016P00092500", underlying="UAL")]),
-        date(2026, 9, 2))
+        date(2026, 9, 2)) == 0
     assert mails == []
 
 
@@ -605,21 +630,11 @@ def test_una_orden_que_no_contesta_no_se_da_por_muerta(conn, mails):
 # 8. Si el stop no se puede garantizar, no abre
 # ══════════════════════════════════════════════════════════════════════════════════════════
 
-def test_el_barrido_devuelve_cuantas_huerfanas_encontro(conn, mails):
-    """El numero es lo que despues frena la apertura. Usuario 2026-09-02: "eso debe funcionar al
+def test_el_barrido_devuelve_cuantas_patas_zombis_encontro(conn, mails):
+    """El número es lo que después frena la apertura. Usuario 2026-09-02: "eso debe funcionar al
     100%, si no no debe abrir por seguridad"."""
+    _fila_cerrada_hoy(conn)
     assert lce._barrer_posiciones_huerfanas(
         conn, _BrokerPosiciones([_Posicion(SC), _Posicion(SP)]), date(2026, 9, 2)) == 2
     assert lce._barrer_posiciones_huerfanas(
         conn, _BrokerPosiciones([]), date(2026, 9, 2)) == 0
-
-
-def test_el_freno_sigue_puesto_aunque_el_aviso_ya_haya_salido(conn, mails):
-    """El mail sale una vez por dia para no ser ruido. El FRENO no: mientras la posicion sin stop
-    siga ahi, no se abre nada nuevo, tick tras tick."""
-    broker = _BrokerPosiciones([_Posicion(SC)])
-    primero = lce._barrer_posiciones_huerfanas(conn, broker, date(2026, 9, 2))
-    segundo = lce._barrer_posiciones_huerfanas(conn, broker, date(2026, 9, 2))
-    tercero = lce._barrer_posiciones_huerfanas(conn, broker, date(2026, 9, 2))
-    assert primero == segundo == tercero == 1
-    assert len(mails) == 1, "un solo mail, pero el freno se mantiene"
