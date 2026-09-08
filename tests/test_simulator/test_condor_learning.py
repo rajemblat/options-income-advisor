@@ -228,3 +228,38 @@ def test_effective_condor_is_a_noop_without_anything_learned():
     conn = db.connect(":memory:")
     cfg = _cfg()
     assert learning.effective_condor(conn, cfg) == cfg
+
+
+def test_el_aprendizaje_no_puede_bajar_el_minimo_por_debajo_del_piso_del_usuario():
+    """El 2026-09-07 el aprendizaje bajo min_credit a $25. Con eso el PAPEL volvia a abrir condors
+    cobrando $25 contra $975 de riesgo — exactamente lo que el usuario prohibio el 02/09 despues de
+    perder $420 en un dia ("tampoco puede abrir con esa prima de .95").
+
+    La plata real ya estaba a salvo por `live_min_credit`, que el aprendizaje no toca. El papel no,
+    y un papel que abre operaciones que el real jamas haria no sirve para decidir nada. Usuario
+    2026-09-08: "el papel debe hacer los cambios para que se comporte como real para que sirva"."""
+    conn = db.connect(":memory:")
+    base = _cfg().model_copy(update={"min_credit": 150.0, "live_min_credit": 150.0})
+    conn.execute("INSERT OR REPLACE INTO learning_state (key, value) VALUES (?, ?)",
+                 (learning._CD_CREDIT_KEY, 25.0))
+    efectivo = learning.effective_condor(conn, base)
+    assert efectivo.min_credit == 150.0, "el piso del usuario manda sobre lo aprendido"
+
+
+def test_el_aprendizaje_SI_puede_subir_el_minimo():
+    """El piso es un suelo, no un techo: si el aprendizaje descubre que las perdedoras cobraban
+    poco, tiene que poder exigir mas. Lo unico que no puede es bajar de lo que el usuario fijo."""
+    conn = db.connect(":memory:")
+    base = _cfg().model_copy(update={"min_credit": 150.0, "live_min_credit": 150.0})
+    conn.execute("INSERT OR REPLACE INTO learning_state (key, value) VALUES (?, ?)",
+                 (learning._CD_CREDIT_KEY, 260.0))
+    assert learning.effective_condor(conn, base).min_credit == 260.0
+
+
+def test_sin_piso_configurado_el_aprendizaje_manda_como_siempre():
+    """Si el usuario no puso piso (live_min_credit = 0), no se inventa uno."""
+    conn = db.connect(":memory:")
+    base = _cfg().model_copy(update={"min_credit": 100.0, "live_min_credit": 0.0})
+    conn.execute("INSERT OR REPLACE INTO learning_state (key, value) VALUES (?, ?)",
+                 (learning._CD_CREDIT_KEY, 25.0))
+    assert learning.effective_condor(conn, base).min_credit == 25.0

@@ -612,6 +612,24 @@ def effective_condor(conn: sqlite3.Connection, cfg: IntradayCondorSettings) -> I
         learned = state.get(key)
         if learned is not None:
             update[field] = learned
+    # ═══ EL PISO DEL USUARIO GANA SIEMPRE (usuario 2026-09-08) ═══
+    #
+    # El aprendizaje puede mover `min_credit` entre 0 y 400, y el 07/09 lo bajó a $25. Con eso el
+    # PAPEL volvía a abrir condors cobrando $25 contra $975 de riesgo — justo lo que el usuario
+    # prohibió el 02/09 después de perder $420 ("tampoco puede abrir con esa prima de .95").
+    #
+    # La plata real ya estaba protegida por `live_min_credit`, un piso aparte que el aprendizaje no
+    # toca. Pero el papel no lo estaba, y un papel que abre operaciones que el real jamás haría deja
+    # de servir para decidir nada: es la misma trampa del mid, con otro disfraz. Usuario: "el papel
+    # debe hacer los cambios para que se comporte como real para que sirva".
+    #
+    # El piso se lee del config, no se repite acá: una sola fuente de verdad. El aprendizaje sigue
+    # libre de SUBIR el mínimo todo lo que quiera — lo único que no puede es bajarlo por debajo de
+    # lo que el usuario fijó.
+    _piso = float(getattr(cfg, "live_min_credit", 0.0) or 0.0)
+    if _piso > 0 and update.get("min_credit", cfg.min_credit) < _piso:
+        update["min_credit"] = _piso
+
     if not update:
         return cfg
     return cfg.model_copy(update=update)
