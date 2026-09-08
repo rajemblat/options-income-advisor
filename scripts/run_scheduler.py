@@ -20,7 +20,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 from options_advisor.broker import get_broker_client  # noqa: E402
 from options_advisor.config import configure_logging, load_scan_symbols, load_settings  # noqa: E402
 from options_advisor.scheduler import single_instance  # noqa: E402
-from options_advisor.scheduler import zona_horaria  # noqa: E402
+from options_advisor.scheduler import maquina_real, zona_horaria  # noqa: E402
 from options_advisor.scheduler.runner import build_scheduler  # noqa: E402
 from options_advisor.storage import db  # noqa: E402
 
@@ -56,6 +56,26 @@ def main() -> None:
         print(exc)
         print("=" * 70 + "\n")
         sys.exit(1)
+
+    # CANDADO DE MÁQUINA (2026-09-08). Va pegado al de zona horaria y por el mismo motivo: es un
+    # error que no se ve. El 07/09 el servidor quedó en modo real y la Mac nunca se apagó — dos
+    # robots reales sobre la misma cuenta, más de un día, sin una sola línea de error. Cada uno
+    # lleva sus topes en su propia base, así que "1 condor por día" habrían sido dos.
+    try:
+        maquina_real.exigir_maquina_real(getattr(settings.live_trading, "real_machine_hostname", ""))
+    except maquina_real.MaquinaEquivocada as exc:
+        _lt0 = settings.live_trading
+        if _lt0.enabled and not _lt0.dry_run and not _lt0.kill_switch:
+            print("\n" + "=" * 70)
+            print("  EL ROBOT NO ARRANCA — ESTA MÁQUINA NO ES LA QUE OPERA")
+            print("=" * 70)
+            print(exc)
+            print("=" * 70 + "\n")
+            logging.getLogger("options_advisor").error("Arranque abortado: %s", exc)
+            sys.exit(1)
+        # En modo prueba no molesta: mirar desde cualquier máquina es justamente lo que se quiere.
+        logging.getLogger("options_advisor").info(
+            "Esta máquina no es la designada para operar en real, pero arranca en modo prueba.")
 
     # Decir EN VOZ ALTA en qué modo arranca. Durante la mudanza (agosto 2026) conviven el robot de
     # la Mac —que opera de verdad— y el del servidor —que solo mira—, y confundirlos es la única

@@ -481,6 +481,11 @@ class LiveTradingSettings(BaseModel):
     min_premium_pct_of_strike: float = 0.0
     min_account_cash_buffer: float = 0.0     # dejar siempre este cash libre en la cuenta
     allowed_symbols: list[str] = []          # whitelist: si no está vacía, SOLO estos símbolos
+    # Nombre de red de la ÚNICA computadora autorizada a operar con plata real. Cualquier otra que
+    # arranque en modo real se niega y explica cómo corregirlo (ver `scheduler/maquina_real.py`).
+    # Vacío = candado apagado. Mudarse de máquina es cambiar ESTA línea: en el mismo commit una
+    # empieza a poder operar y la otra deja de poder.
+    real_machine_hostname: str = ""
     account_number: str = ""                 # cuenta Schwab a operar (vacío = la primera vinculada)
     price_cap_exempt_symbols: list[str] = []  # exentos del tope de precio (usuario 2026-08-09: SPY)
     # Negociación del spread ("caminar el precio", usuario 2026-08-09): órdenes límite que se reemplazan

@@ -449,6 +449,19 @@ live_trading:
   # decisión. Cuando una cierra, ese símbolo vuelve a estar disponible.
   # Subir a 2 si algún día querés poder promediar a propósito. 0 = apagado.
   max_open_real_per_symbol: 1
+  # La ÚNICA computadora autorizada a operar con plata real (usuario 2026-09-08). Cualquier otra que
+  # arranque en modo real se niega y explica cómo corregirlo. El '.local' y las mayúsculas no
+  # importan: se compara la primera etiqueta en minúsculas.
+  #
+  # Existe porque el 07/09, durante la mudanza, el servidor quedó en MODO REAL y el robot de la Mac
+  # nunca se apagó. Dos robots reales sobre la misma cuenta, más de un día, sin una sola línea de
+  # error — y cada uno lleva sus topes en su propia base, así que "1 condor por día" habrían sido
+  # dos. El 08/09 el usuario dio START en el dashboard del servidor creyendo que era el de la Mac.
+  #
+  # PARA MUDARSE AL SERVIDOR: apagar primero el robot de la Mac, y recién después poner "lokshn"
+  # acá. En el mismo commit el servidor empieza a poder operar y la Mac deja de poder — no hay
+  # ningún momento en que las dos puedan.
+  real_machine_hostname: "MacBook-Pro-8"
   account_number: "74257810"       # cuenta LLC TRADING (la de $180k). Sin esto usaba la 1ª (vacía) y Schwab rebotaba
   # Fase 1 (usuario 2026-08-10): whitelist real acotada. Solo estos símbolos pueden generar una orden real.
   # Whitelist real (usuario 2026-08-10): Fase 1 + NVDA + tanda ampliada.

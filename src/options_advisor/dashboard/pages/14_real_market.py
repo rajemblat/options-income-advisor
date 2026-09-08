@@ -45,6 +45,30 @@ lt = settings.live_trading
 today = date.today()
 armed = repo.is_live_armed(conn, today)
 
+# ═══ QUÉ MÁQUINA ES ESTA, EN GRANDE Y ARRIBA DE TODO (usuario 2026-09-08) ═══
+#
+# La Mac y el servidor corren dashboards IDÉNTICOS, los dos en el puerto 8501. Ese día el usuario
+# dio START del día en el del servidor creyendo que era el de la Mac: el robot real quedó sin armar
+# y no abrió nada hasta que nos dimos cuenta, media hora después. La única forma de distinguirlos
+# era mirar la barra de direcciones del navegador.
+#
+# Dos páginas iguales, una que opera con plata real y otra que no, es un accidente esperando pasar.
+import platform as _platform  # noqa: E402
+
+_soy = _platform.node().split(".")[0]
+_designada = (getattr(lt, "real_machine_hostname", "") or "").split(".")[0]
+_opera = lt.enabled and not lt.dry_run and not lt.kill_switch
+if _opera and (not _designada or _soy.lower() == _designada.lower()):
+    _tono, _icono, _que = "#b71c1c", "🔴", "OPERA CON DINERO REAL"
+else:
+    _tono, _icono, _que = "#1565c0", "🔵", "SOLO MIRA · no manda órdenes"
+st.markdown(
+    f"<div style='background:{_tono};color:#fff;padding:10px 16px;border-radius:8px;"
+    f"font-size:1.05rem;font-weight:700;letter-spacing:.3px;margin-bottom:12px'>"
+    f"{_icono}&nbsp; {_soy.upper()} &nbsp;·&nbsp; {_que}</div>",
+    unsafe_allow_html=True,
+)
+
 
 def _status_of(row) -> str:
     try:
