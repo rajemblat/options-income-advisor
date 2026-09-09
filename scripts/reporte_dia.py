@@ -138,8 +138,18 @@ def main() -> None:
     print()
 
     print("-- POSICIONES ABIERTAS (segun ESTA base) --")
+    # COALESCE(closed, 0), no `closed = 0`. En SQL un campo vacío no es igual a 0: es desconocido, y
+    # `NULL = 0` no da ni verdadero ni falso, así que la fila queda AFUERA de la cuenta.
+    #
+    # Se vio el 2026-09-09, el primer día operando desde el servidor: el reporte decía 3 naked reales
+    # abiertos cuando había 5. Las dos que faltaban —WFC y otra— nunca tuvieron ese campo escrito, y
+    # el reporte las daba por inexistentes. El motor NUNCA se equivocó: sus consultas ya usaban
+    # COALESCE y las estaba gestionando bien. El que mentía era este resumen, que es justamente el
+    # que el usuario mira para saber si está todo en orden. Un tablero que subcuenta posiciones
+    # reales es peor que no tener tablero.
     print(_linea("naked put reales", uno(
-        "select count(*) from live_order_log where sent=1 and order_status='FILLED' and closed=0")))
+        "select count(*) from live_order_log where sent=1 and order_status='FILLED' "
+        "and COALESCE(closed, 0) = 0")))
     print(_linea("iron condor reales", uno(
         "select count(*) from real_condor_positions where status not in ('closed','cancelled')")))
     print(_linea("simuladas", uno(
