@@ -435,6 +435,28 @@ class IntradayCondorSettings(BaseModel):
     open_working_max_minutes: float = 5.0
 
 
+class RollSettings(BaseModel):
+    """Roll automático de puts cortos que quedaron dentro del dinero (usuario 2026-09-09).
+
+    Nació de dos AAL de strike $13 que vencían en 9 días con la acción en $12.92: camino a la
+    asignación, y el robot sin nada que hacer al respecto — no roleaba ni cerraba antes de vencer.
+
+    La regla, textual del usuario: "cuando está ITM en los 20 días a expirar, roll semanal si paga,
+    si no mensual, no más de 40 días; el que pague mejor porcentualmente". Y los detalles que
+    definió después: el strike SIEMPRE se mantiene, se compara por crédito POR DÍA, y a débito
+    NUNCA — si nada paga dentro de los 40 días, el robot avisa y decide él.
+
+    Nace APAGADO: es la primera función que cierra Y abre posiciones reales por su cuenta."""
+
+    enabled: bool = False            # se prende explícitamente, con el usuario presente
+    dte_trigger: int = 20            # se evalúa cuando faltan estos días o menos
+    solo_itm: bool = True            # ...y solo si el put está dentro del dinero
+    max_dte: int = 40                # no se rolea más allá de este plazo
+    # Tope de rolls por posición. Rolear sin límite convierte una pérdida chica en una posición
+    # eterna que se rolea sola mes tras mes: al llegar al tope el robot avisa y decide el usuario.
+    max_rolls: int = 2
+
+
 class LiveTradingSettings(BaseModel):
     """Topes DUROS de trading REAL en Schwab (usuario 2026-08-07, poco capital: "buena seguridad, que
     no me ponga más de lo que pedí, que sea perfecto"). TODO apagado por default: hasta que `enabled`
@@ -517,6 +539,7 @@ class Settings(BaseModel):
     # Trading REAL en Schwab (Entrega en preparación, usuario 2026-08-07). Opcional con default para no
     # romper configs/tests existentes; SIEMPRE apagado hasta activarlo explícitamente.
     live_trading: LiveTradingSettings = LiveTradingSettings()
+    roll: RollSettings = RollSettings()
 
 
 class SymbolsConfig(BaseModel):

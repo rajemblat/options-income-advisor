@@ -488,3 +488,23 @@ live_trading:
   price_walk_wide_threshold: 0.50  # spread mayor a $0.50 = grande → usa el paso de $5
   price_walk_interval_seconds: 10  # reemplaza la orden cada 10 segundos (usuario 2026-08-09)
   price_walk_stop_at_mid: true     # no cruza el mid price (piso al vender / techo al comprar)
+
+# ==========================================================================================
+# ROLL AUTOMÁTICO de puts cortos dentro del dinero (usuario 2026-09-09)
+# ==========================================================================================
+# Nació de dos AAL de strike $13 que vencían en 9 días con la acción en $12.92: camino a la
+# asignación, y el robot sin nada que hacer — no roleaba ni cerraba antes de vencer.
+#
+# La regla, textual: "cuando está ITM en los 20 días a expirar, roll semanal si paga, si no
+# mensual, no más de 40 días; el que pague mejor porcentualmente". Y los detalles: el strike
+# SIEMPRE se mantiene, se compara por crédito POR DÍA (un mensual siempre paga más dólares que un
+# semanal, pero ata cuatro veces más tiempo), y a débito NUNCA.
+#
+# Se prende con el usuario presente: es la primera función que CIERRA y ABRE posiciones reales por
+# su cuenta.
+roll:
+  enabled: false                   # ← prender acá cuando esté validado
+  dte_trigger: 20                  # se evalúa a 20 días del vencimiento o menos
+  solo_itm: true                   # ...y solo si el put quedó dentro del dinero
+  max_dte: 40                      # no se rolea más allá de 40 días
+  max_rolls: 2                     # después de 2 rolls avisa y decide el usuario
