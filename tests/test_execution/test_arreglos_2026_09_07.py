@@ -80,10 +80,16 @@ def test_las_de_papel_no_cuentan(conn):
     assert repo.count_open_real_puts_for_symbol(conn, "AAL") == 0
 
 
-def test_el_settings_real_trae_el_tope_en_uno():
-    """Que la config que se despliega tenga la regla ACTIVA, no solo el código que la soporta."""
+def test_el_tope_por_simbolo_es_una_perilla_del_usuario():
+    """Este test exigía que la config trajera el tope en 1. Dejó de aplicar el 2026-09-09: el usuario
+    lo apagó —"si ve oportunidad puede repetir"— después de que le frenara entradas que sí quería.
+
+    Lo que se protege ya no es el VALOR (es una decisión suya, y la cambia cuando quiere) sino que la
+    perilla exista y el motor la respete. El caso AAL que originó la regla sigue acotado por la
+    escalera de diversificación, que achica el tamaño en cada repetición."""
     from options_advisor.config import load_settings
-    assert load_settings().live_trading.max_open_real_per_symbol == 1
+    tope = load_settings().live_trading.max_open_real_per_symbol
+    assert tope >= 0, "la perilla tiene que existir y ser un número válido"
 
 
 # ── 2. el 403 de Finnhub ────────────────────────────────────────────────────────────────────────

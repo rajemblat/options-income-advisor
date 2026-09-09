@@ -448,7 +448,15 @@ live_trading:
   # quedaron las dos abiertas — la misma apuesta al doble de tamaño, por acumulación y no por
   # decisión. Cuando una cierra, ese símbolo vuelve a estar disponible.
   # Subir a 2 si algún día querés poder promediar a propósito. 0 = apagado.
-  max_open_real_per_symbol: 1
+  # APAGADO el 2026-09-09 a pedido del usuario: "si hace unos días abrió WFC y ahora hay otra
+  # oportunidad no debería frenarse, así con todas; si ve oportunidad puede repetir".
+  #
+  # Venía en 1 desde el 07/09, cuando el usuario vio dos AAL 13P juntas en rojo —misma apuesta al
+  # doble por acumulación—. Ese caso sigue acotado por la escalera de diversificación, que achica el
+  # tamaño en cada repetición (1ª completa, 2ª la mitad, 3ª un contrato, 4ª ninguna).
+  #
+  # El usuario avisa si vuelve a molestarle; mientras tanto prefiere no perder oportunidades.
+  max_open_real_per_symbol: 0
   # La ÚNICA computadora autorizada a operar con plata real (usuario 2026-09-08). Cualquier otra que
   # arranque en modo real se niega y explica cómo corregirlo. El '.local' y las mayúsculas no
   # importan: se compara la primera etiqueta en minúsculas.
