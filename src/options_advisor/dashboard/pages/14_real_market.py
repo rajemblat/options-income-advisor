@@ -780,12 +780,45 @@ _cond_system_on = _cond_cfg.enabled and getattr(_cond_cfg, "live_enabled", False
 _cond_armed = repo.is_condor_live_armed(conn, today)
 _cond_paused = repo.is_condor_real_paused(conn)
 _cond_live_on = _cond_system_on and _cond_armed and not kill and not _cond_paused
+# Estado del PERMISO a la vista (usuario 2026-09-09: "me gustaría que salga algo verde cuando está
+# activo autorizado"). Apretó «Re-autorizar», el botón no pide segunda confirmación, y para saber si
+# había quedado tuvo que correr un script por SSH. Eso lo tiene que contestar la pantalla: cuándo fue
+# la última autorización y cómo quedaron los dos contadores que dependen de ella.
+_cond_ts_marca, _cond_id_marca = repo.condor_rearm_mark(conn, today)
+_cond_hora_marca = ""
+if _cond_ts_marca:
+    try:
+        _cond_hora_marca = _dt.datetime.fromisoformat(_cond_ts_marca).strftime("%H:%M")
+    except (TypeError, ValueError):
+        _cond_hora_marca = ""
+_cond_cupo_badge = repo.get_condor_live_max_per_day(
+    conn, getattr(_cond_cfg, "live_max_per_day", 1), today)
+_cond_usados_badge = repo.count_real_condor_opens_today(conn, today, after_id=_cond_id_marca)
+_cond_halt_badge = getattr(_cond_cfg, "stop_loss_streak_halt", 0)
+_cond_racha_badge = repo.real_condor_consecutive_stop_losses_today(
+    conn, today, since_ts=_cond_ts_marca)
+# ¿Le queda permiso para abrir otro, acá y ahora? Es lo del PERMISO nada más: la señal (día calmo,
+# VIX, crédito) la evalúa el motor con datos de mercado y no se mira desde el dashboard.
+_cond_con_cupo = not (_cond_cupo_badge > 0 and _cond_usados_badge >= _cond_cupo_badge)
+_cond_sin_racha = not (_cond_halt_badge > 0 and _cond_racha_badge >= _cond_halt_badge)
+_cond_puede_abrir = _cond_live_on and _cond_con_cupo and _cond_sin_racha
+
 if kill:
     _cond_badge = f"<span style='color:{BAD};font-weight:700'>● FRENADO (kill)</span>"
 elif _cond_paused:
     _cond_badge = f"<span style='color:{ACCENT};font-weight:700'>⏸ PAUSADO por vos</span>"
+elif _cond_puede_abrir:
+    _cond_badge = (f"<span style='color:{GOOD};font-weight:700'>● AUTORIZADO Y LIBRE PARA ABRIR</span>"
+                   + (f"<span style='color:{TEXT_MUTED}'> · autorizado a las {_cond_hora_marca}</span>"
+                      if _cond_hora_marca else ""))
+elif _cond_live_on and not _cond_sin_racha:
+    _cond_badge = (f"<span style='color:{ACCENT};font-weight:700'>● AUTORIZADO — frenado por "
+                   f"{_cond_racha_badge} stop-loss seguido(s)</span>"
+                   f"<span style='color:{TEXT_MUTED}'> · «Re-autorizar» lo destraba</span>")
 elif _cond_live_on:
-    _cond_badge = f"<span style='color:{GOOD};font-weight:700'>● OPERANDO EN REAL</span>"
+    _cond_badge = (f"<span style='color:{ACCENT};font-weight:700'>● AUTORIZADO — cupo del día usado "
+                   f"({_cond_usados_badge}/{_cond_cupo_badge})</span>"
+                   f"<span style='color:{TEXT_MUTED}'> · «Re-autorizar» lo destraba</span>")
 elif _cond_system_on and not _cond_armed:
     _cond_badge = f"<span style='color:{ACCENT};font-weight:700'>○ sistema listo — falta autorizar HOY</span>"
 else:
@@ -798,6 +831,28 @@ st.markdown(
     "**Autorización y conteo SEPARADOS de los naked.**",
     unsafe_allow_html=True,
 )
+
+# Los tres números que deciden si PUEDE abrir, en cuadros como los de arriba. Sin esto había que
+# entrar por SSH a la base para saber si un clic en «Re-autorizar» había quedado (usuario 2026-09-09).
+st.markdown(
+    "<div style='display:flex; gap:0.45rem; flex-wrap:wrap; margin:0.1rem 0 0.7rem;'>"
+    + _status_tile("Autorizado hoy",
+                   (f"SÍ · {_cond_hora_marca}" if _cond_hora_marca else "SÍ") if _cond_armed else "No",
+                   GOOD if _cond_armed else TEXT_MUTED)
+    + _status_tile("Cupo del día", f"{_cond_usados_badge}/{_cond_cupo_badge}",
+                   GOOD if _cond_con_cupo else ACCENT)
+    + _status_tile("Racha stop-loss",
+                   f"{_cond_racha_badge}" + (f"/{_cond_halt_badge}" if _cond_halt_badge > 0 else ""),
+                   GOOD if _cond_sin_racha else ACCENT)
+    + _status_tile("Puede abrir", "SÍ" if _cond_puede_abrir else "No",
+                   GOOD if _cond_puede_abrir else TEXT_MUTED)
+    + "</div>",
+    unsafe_allow_html=True,
+)
+if _cond_puede_abrir:
+    st.caption("🟢 El permiso está dado y el cupo libre. Que abra o no ahora depende del mercado "
+               "(día calmo, VIX y que la cadena pague el crédito mínimo) — eso lo decide el motor "
+               "en cada tick. Para ver qué compuerta frena: `python scripts/por_que_no_abre_condor.py`.")
 
 # --- Métricas de utilidad / P&L del condor real, TODO por separado de los naked (usuario 2026-08-13) ---
 _cond_stats = repo.get_real_condor_performance_stats(conn, today)
@@ -916,12 +971,11 @@ _cc6.metric("Win rate", f"{_cond_wr_per:.0f}%" if _cond_wr_per is not None else 
                  f"Histórico completo: {_cond_stats['closed_count']} cerrados, {_fmt_money(_cond_stats['total_realized_pnl'])}.")
 
 # --- Autorización PROPIA del condor (botón aparte de los naked) + cuántos por día autoriza ---
-_cond_cap_default = getattr(_cond_cfg, "live_max_per_day", 1)
-_cond_cap_hoy = repo.get_condor_live_max_per_day(conn, _cond_cap_default, today)
-# El cupo se cuenta DESDE la última autorización (usuario 2026-09-09: re-armar = permiso nuevo), que es
-# exactamente lo que mira el motor. `_cond_abiertos_dia` es el total del día, solo para mostrar.
-_cond_rearm_ts, _cond_rearm_id = repo.condor_rearm_mark(conn, today)
-_cond_abiertos_hoy = repo.count_real_condor_opens_today(conn, today, after_id=_cond_rearm_id)
+# Los mismos números del badge de arriba (se calculan una sola vez, ahí): el cupo se cuenta DESDE la
+# última autorización (usuario 2026-09-09: re-armar = permiso nuevo), que es lo que mira el motor.
+# `_cond_abiertos_dia` es el total del día, solo para mostrar.
+_cond_cap_hoy = _cond_cupo_badge
+_cond_abiertos_hoy = _cond_usados_badge
 _cond_abiertos_dia = repo.count_real_condor_opens_today(conn, today)
 _ca1, _capa, _ca2, _ca3 = st.columns([1.3, 1.2, 1, 2.2])
 with _ca1:
