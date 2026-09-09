@@ -235,6 +235,16 @@ with _ac1:
                      help=f"Armado para hoy ({today.strftime('%d/%m/%Y')}). Frena NUEVAS órdenes; lo abierto se sigue gestionando."):
             repo.disarm_live(conn)
             st.rerun()
+        # Volver a armar el MISMO día = permiso nuevo (usuario 2026-09-09: "si puede abrir si yo pongo
+        # otra vez armar, que sea asi la regla"): el cupo diario vuelve a cero desde este momento.
+        # No toca el tope semanal ni el capital comprometido.
+        if st.button("🔄  Re-armar (habilitar otra orden hoy)", use_container_width=True, key="live_rearm",
+                     disabled=kill,
+                     help="Vuelve a poner el cupo DIARIO en cero desde ahora, para que el robot pueda "
+                          "abrir otra vez hoy. El tope semanal y los límites de capital siguen igual."):
+            repo.arm_live_today(conn, today)
+            st.toast("Cupo diario de los naked reiniciado — el robot puede volver a abrir hoy.", icon="🔄")
+            st.rerun()
     else:
         _conf = st.checkbox("Confirmo habilitar el trading real de HOY")
         if st.button("🚀  START del día", type="primary", use_container_width=True, disabled=(not _conf) or kill,
@@ -268,7 +278,9 @@ st.divider()
 # ------------------------- Configuración de la Fase 1 -------------------------
 st.markdown("### ⚙️ Configuración activa (Fase 1)")
 _eff_max_day = repo.get_max_live_orders_per_day(conn, lt.max_orders_per_day, today)  # override en vivo (resetea a la medianoche)
-_live_used = repo.count_live_approved_opens_today(conn, today)
+_, _live_rearm_id = repo.live_rearm_mark(conn, today)   # el cupo se cuenta desde el último START
+_live_used = repo.count_live_approved_opens_today(conn, today, after_id=_live_rearm_id)
+_live_used_dia = repo.count_live_approved_opens_today(conn, today)   # total del día, solo para mostrar
 # Métricas EN VIVO del libro real (usuario 2026-08-12: agregar win rate / exposición / colateral; sacar "órdenes/semana").
 _cfg_open = repo.get_open_real_put_positions(conn)
 _cfg_col_usado = sum((r["collateral"] or 0.0) for r in _cfg_open)
@@ -906,13 +918,27 @@ _cc6.metric("Win rate", f"{_cond_wr_per:.0f}%" if _cond_wr_per is not None else 
 # --- Autorización PROPIA del condor (botón aparte de los naked) + cuántos por día autoriza ---
 _cond_cap_default = getattr(_cond_cfg, "live_max_per_day", 1)
 _cond_cap_hoy = repo.get_condor_live_max_per_day(conn, _cond_cap_default, today)
-_cond_abiertos_hoy = repo.count_real_condor_opens_today(conn, today)
+# El cupo se cuenta DESDE la última autorización (usuario 2026-09-09: re-armar = permiso nuevo), que es
+# exactamente lo que mira el motor. `_cond_abiertos_dia` es el total del día, solo para mostrar.
+_cond_rearm_ts, _cond_rearm_id = repo.condor_rearm_mark(conn, today)
+_cond_abiertos_hoy = repo.count_real_condor_opens_today(conn, today, after_id=_cond_rearm_id)
+_cond_abiertos_dia = repo.count_real_condor_opens_today(conn, today)
 _ca1, _capa, _ca2, _ca3 = st.columns([1.3, 1.2, 1, 2.2])
 with _ca1:
     if _cond_armed:
         if st.button("⏸️  Desautorizar condor hoy", use_container_width=True, key="condor_disarm",
                      help="Frena NUEVOS condors reales hoy. Lo abierto se sigue gestionando/cerrando igual."):
             repo.disarm_condor_live(conn)
+            st.rerun()
+        # Re-autorizar el MISMO día = permiso nuevo (usuario 2026-09-09: "si puede abrir si yo pongo
+        # otra vez armar, que sea asi la regla"): pone en cero el cupo del día Y el freno por racha de
+        # stop-loss, desde este momento. Los límites de capital y el kill switch no se tocan.
+        if st.button("🔄  Re-autorizar (habilitar otro condor)", use_container_width=True,
+                     key="condor_rearm", disabled=kill or not _cond_system_on,
+                     help="Reinicia desde AHORA el cupo del día y el freno por stop-loss del condor, "
+                          "para que pueda abrir otro hoy. Un stop-loss nuevo vuelve a frenarlo."):
+            repo.arm_condor_live_today(conn, today)
+            st.toast("Condor re-autorizado — cupo y freno por stop-loss en cero desde ahora.", icon="🔄")
             st.rerun()
     else:
         _cond_conf = st.checkbox("Confirmo operar el condor en REAL hoy", key="condor_arm_conf")
@@ -949,7 +975,10 @@ with _ca2:
         st.rerun()
 with _ca3:
     _cond_quedan = max(0, _cond_cap_hoy - _cond_abiertos_hoy)
-    st.caption(f"Hoy llevás **{_cond_abiertos_hoy}** condor(s) mandado(s) · autorizás **{_cond_cap_hoy}**/día · "
+    _cond_desde = (" (contando desde la última autorización; en todo el día van "
+                   f"**{_cond_abiertos_dia}**)" if _cond_abiertos_dia != _cond_abiertos_hoy else "")
+    st.caption(f"Hoy llevás **{_cond_abiertos_hoy}** condor(s) mandado(s){_cond_desde} · "
+               f"autorizás **{_cond_cap_hoy}**/día · "
                f"quedan **{_cond_quedan}**. Se resetea a la medianoche. "
                + ("⏸️ **PAUSADO** — no abre condors nuevos hasta que lo reanudes (lo abierto se sigue "
                   "gestionando). " if _cond_paused else "")

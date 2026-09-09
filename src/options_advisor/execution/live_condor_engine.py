@@ -259,12 +259,18 @@ def process_real_condor_cycle(conn, broker, settings, as_of: date) -> None:
         logger.error("Condor-real: NO se abre — hay %d pata(s) 0DTE de SPX en la cuenta que el robot "
                      "no tiene registradas. Primero hay que resolver eso.", _huerfanas)
         return
+    # Marca del último ARMAR (usuario 2026-09-09: "si puede abrir si yo pongo otra vez armar, que sea
+    # asi la regla"). Los dos frenos de abajo — la racha de stop-loss y el cupo del día — se cuentan
+    # DESDE ese momento: volver a autorizar a mano es un permiso NUEVO, no una continuación del día.
+    # Los topes de capital (colateral comprometido, colchón de cash) NO se resetean nunca.
+    _rearm_ts, _rearm_id = repo.condor_rearm_mark(conn, as_of)
     _halt_n = getattr(cfg, "stop_loss_streak_halt", 0)
-    if _halt_n > 0 and repo.real_condor_consecutive_stop_losses_today(conn, as_of) >= _halt_n:
+    if _halt_n > 0 and repo.real_condor_consecutive_stop_losses_today(
+            conn, as_of, since_ts=_rearm_ts) >= _halt_n:
         return
     # Cupo diario PROPIO del condor, ajustable en vivo desde el dashboard (override del config para hoy).
     _cap = repo.get_condor_live_max_per_day(conn, getattr(cfg, "live_max_per_day", 1), as_of)
-    if _cap > 0 and repo.count_real_condor_opens_today(conn, as_of) >= _cap:
+    if _cap > 0 and repo.count_real_condor_opens_today(conn, as_of, after_id=_rearm_id) >= _cap:
         return
     if bars is None or chain is None or spot is None:
         return

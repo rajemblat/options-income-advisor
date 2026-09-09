@@ -387,8 +387,12 @@ def maybe_log_live_order(conn, symbol, result, snapshot, settings, as_of: date, 
             bid=contract.bid, ask=contract.ask, underlying_price=snapshot.price,
             collateral_per_contract=margin,
         )
+        # Cupo DIARIO contado desde el último START (usuario 2026-09-09: "si puede abrir si yo pongo
+        # otra vez armar, que sea asi la regla"). El tope SEMANAL y el capital comprometido siguen
+        # contando el día/semana completos — esos son límites de plata, no el permiso del día.
+        _, _rearm_id = repo.live_rearm_mark(conn, as_of)
         day = DayState(
-            orders_today=repo.count_live_approved_opens_today(conn, as_of),
+            orders_today=repo.count_live_approved_opens_today(conn, as_of, after_id=_rearm_id),
             orders_this_week=repo.count_live_approved_opens_this_week(conn, as_of),
             deployed_today=repo.sum_live_collateral_today(conn, as_of),
         )

@@ -934,13 +934,17 @@ def _live_slot_filter() -> str:
     )
 
 
-def count_live_approved_opens_today(conn: sqlite3.Connection, day: date) -> int:
+def count_live_approved_opens_today(conn: sqlite3.Connection, day: date, *, after_id: int = 0) -> int:
     """Aperturas REALES que OCUPAN el cupo del día. Cuenta órdenes reales ENVIADAS (dry_run=0, sent=1) que
     NO terminaron muertas (rechazada/cancelada/expirada/error) — o sea, las que llenaron o cuyo resultado
-    quedó ambiguo. Un rechazo/cancelación NO cuenta, así el robot reintenta hasta abrir 1 (usuario 2026-08-10)."""
+    quedó ambiguo. Un rechazo/cancelación NO cuenta, así el robot reintenta hasta abrir 1 (usuario 2026-08-10).
+
+    `after_id` = marca del último START del día (ver _sellar_rearme): con ella cuenta solo lo enviado
+    DESPUÉS de que el usuario volviera a armar, así re-armar devuelve el cupo diario (usuario 2026-09-09).
+    0 = contar todo el día. El tope SEMANAL y el de capital siguen contando todo, sin resetear."""
     row = conn.execute(
-        f"SELECT COUNT(*) FROM live_order_log WHERE log_date = ? AND {_live_slot_filter()}",
-        (day.isoformat(), *_LIVE_DEAD_STATUSES),
+        f"SELECT COUNT(*) FROM live_order_log WHERE log_date = ? AND id > ? AND {_live_slot_filter()}",
+        (day.isoformat(), int(after_id or 0), *_LIVE_DEAD_STATUSES),
     ).fetchone()
     return row[0] if row else 0
 
@@ -966,10 +970,58 @@ def sum_live_collateral_today(conn: sqlite3.Connection, day: date) -> float:
     return float(row[0]) if row else 0.0
 
 
-def arm_live_today(conn: sqlite3.Connection, day: date) -> None:
+# ═══════════════ RE-ARMAR = PERMISO NUEVO (usuario 2026-09-09) ═══════════════
+# "si puede abrir si yo pongo otra vez armar, que sea asi la regla".
+#
+# Los dos frenos del DÍA — el cupo diario (`live_max_per_day`) y el freno por racha de stop-loss
+# (`stop_loss_streak_halt`) — existen para que el robot no siga solo después de un mal rato. Pero
+# cuando el USUARIO vuelve a apretar ARMAR está diciendo, a mano y con la información del momento,
+# "seguí". Así que cada armado deja una MARCA y esos dos frenos se cuentan SOLO desde esa marca:
+# re-armar los pone en cero sin tocar la configuración.
+#
+# Lo que el re-armado NO resetea (son límites de riesgo de plata, no frenos del día):
+#   · el tope SEMANAL de órdenes         · el capital total comprometido del día
+#   · el colchón de cash libre           · el kill switch / el master `enabled`
+#
+# La marca son dos números: el timestamp (para contar cierres posteriores) y el último id de la tabla
+# (para contar aperturas posteriores, sin depender de timestamps que pueden venir en NULL).
+def _sellar_rearme(conn: sqlite3.Connection, prefijo: str, tabla: str, now: datetime | None) -> None:
+    """Guarda la marca del armado. `tabla` es un nombre FIJO interno, no entra input del usuario."""
+    fila = conn.execute(f"SELECT COALESCE(MAX(id), 0) FROM {tabla}").fetchone()
+    set_robot_flag(conn, f"{prefijo}.rearmed_at", (now or datetime.now()).isoformat())
+    set_robot_flag(conn, f"{prefijo}.rearmed_after_id", str(fila[0] if fila else 0))
+
+
+def _marca_de_rearme(conn: sqlite3.Connection, prefijo: str, day: date) -> tuple[str | None, int]:
+    """(timestamp, id) del último ARMAR, si fue HOY. Si la marca es de otro día (o no existe) devuelve
+    (None, 0) = "contá todo el día", que es exactamente el comportamiento de siempre."""
+    ts = get_robot_flag(conn, f"{prefijo}.rearmed_at", "") or ""
+    if ts[:10] != day.isoformat():
+        return None, 0
+    try:
+        return ts, int(get_robot_flag(conn, f"{prefijo}.rearmed_after_id", "0") or 0)
+    except (TypeError, ValueError):
+        return ts, 0
+
+
+def live_rearm_mark(conn: sqlite3.Connection, day: date) -> tuple[str | None, int]:
+    """Marca del último START de los naked reales de hoy (ver _marca_de_rearme)."""
+    return _marca_de_rearme(conn, "live", day)
+
+
+def condor_rearm_mark(conn: sqlite3.Connection, day: date) -> tuple[str | None, int]:
+    """Marca de la última autorización del condor real de hoy (ver _marca_de_rearme)."""
+    return _marca_de_rearme(conn, "condor", day)
+
+
+def arm_live_today(conn: sqlite3.Connection, day: date, *, now: datetime | None = None) -> None:
     """El usuario apretó START para operar REAL hoy (usuario 2026-08-09: "cada mañana yo debo darle
-    start"). Guarda la fecha; el armado vale SOLO para ese día — al día siguiente hay que re-armar."""
+    start"). Guarda la fecha; el armado vale SOLO para ese día — al día siguiente hay que re-armar.
+
+    Apretarlo DE NUEVO el mismo día vuelve a habilitar el cupo diario (usuario 2026-09-09): la marca
+    que deja acá hace que las aperturas se cuenten desde este momento."""
     set_robot_flag(conn, "live.armed_date", day.isoformat())
+    _sellar_rearme(conn, "live", "live_order_log", now)
 
 
 def disarm_live(conn: sqlite3.Connection) -> None:
@@ -1020,9 +1072,14 @@ def set_max_live_orders_per_day(conn: sqlite3.Connection, n: int, day: date) -> 
 
 # --- Autorización SEPARADA del Iron Condor real (usuario 2026-08-13: "un botón para autorizar a operar
 #     el condor separado de los naked, y cuántas operaciones por día autorizo") ---
-def arm_condor_live_today(conn: sqlite3.Connection, day: date) -> None:
-    """START propio del Iron Condor real de HOY, INDEPENDIENTE del de los naked. Vale solo para `day`."""
+def arm_condor_live_today(conn: sqlite3.Connection, day: date, *, now: datetime | None = None) -> None:
+    """START propio del Iron Condor real de HOY, INDEPENDIENTE del de los naked. Vale solo para `day`.
+
+    Volver a apretarlo el mismo día es un permiso NUEVO (usuario 2026-09-09: "si puede abrir si yo pongo
+    otra vez armar, que sea asi la regla"): la marca que deja hace que el cupo del día y el freno por
+    racha de stop-loss se cuenten desde este momento. Los topes de capital no se tocan."""
     set_robot_flag(conn, "condor.live_armed_date", day.isoformat())
+    _sellar_rearme(conn, "condor", "real_condor_positions", now)
 
 
 def disarm_condor_live(conn: sqlite3.Connection) -> None:
@@ -1218,11 +1275,31 @@ def get_open_decision_for(conn: sqlite3.Connection, symbol: str, day: str, strik
     return None
 
 
-def _trailing_stop_losses_today(conn: sqlite3.Connection, table: str, day: date) -> int:
+def _trailing_stop_losses_today(
+    conn: sqlite3.Connection, table: str, day: date, *, since_ts: str | None = None
+) -> int:
     """Cuántos cierres SEGUIDOS por stop-loss hubo hoy en `table`, contando desde el más reciente hacia
     atrás (freno del día de los irons, usuario 2026-08-08). Una ganancia (cualquier reason != stop_loss)
     corta la racha. `table` es un nombre FIJO interno (iron_condor_positions / butterfly_positions), no
-    entra input del usuario."""
+    entra input del usuario.
+
+    Con `since_ts` (timestamp del último ARMAR) mira solo los cierres POSTERIORES a ese momento. Se
+    comparan los primeros 19 caracteres ('YYYY-MM-DDTHH:MM:SS') para no depender de si uno de los dos
+    trae offset de zona horaria: ambos relojes son el mismo (la máquina corre en hora de Nueva York)."""
+    if since_ts:
+        rows = conn.execute(
+            f"SELECT close_reason FROM {table} WHERE status = 'closed' AND close_date = ? "
+            "AND close_ts IS NOT NULL AND substr(close_ts, 1, 19) >= substr(?, 1, 19) "
+            "ORDER BY close_ts DESC",
+            (day.isoformat(), since_ts),
+        ).fetchall()
+        n = 0
+        for r in rows:
+            if r["close_reason"] == "stop_loss":
+                n += 1
+            else:
+                break
+        return n
     rows = conn.execute(
         f"SELECT close_reason FROM {table} WHERE status = 'closed' AND close_date = ? ORDER BY close_ts DESC",
         (day.isoformat(),),
@@ -1569,19 +1646,29 @@ def get_closed_real_condor_positions(conn: sqlite3.Connection, limit: int = 500)
     ).fetchall()
 
 
-def count_real_condor_opens_today(conn: sqlite3.Connection, day: date) -> int:
+def count_real_condor_opens_today(conn: sqlite3.Connection, day: date, *, after_id: int = 0) -> int:
     """Cuántos condors REALES se mandaron HOY (cuenta 'working'/'open'/'closed' con entry_date=hoy),
     para el tope de live_max_per_day. Una fila 'working' YA ocupa el cupo del día — así un fill que
-    tarda no habilita mandar otro (seguridad > oportunidad)."""
+    tarda no habilita mandar otro (seguridad > oportunidad).
+
+    `after_id` = marca del último ARMAR (ver _sellar_rearme): con ella cuenta solo lo abierto DESPUÉS
+    de que el usuario volviera a autorizar, así re-armar devuelve el cupo. 0 = contar todo el día."""
     row = conn.execute(
-        "SELECT COUNT(*) FROM real_condor_positions WHERE entry_date = ?", (day.isoformat(),)
+        "SELECT COUNT(*) FROM real_condor_positions WHERE entry_date = ? AND id > ?",
+        (day.isoformat(), int(after_id or 0)),
     ).fetchone()
     return row[0] if row else 0
 
 
-def real_condor_consecutive_stop_losses_today(conn: sqlite3.Connection, day: date) -> int:
-    """Racha de stop-loss al cierre de HOY en condors reales (freno del día, igual que el paper)."""
-    return _trailing_stop_losses_today(conn, "real_condor_positions", day)
+def real_condor_consecutive_stop_losses_today(
+    conn: sqlite3.Connection, day: date, *, since_ts: str | None = None
+) -> int:
+    """Racha de stop-loss al cierre de HOY en condors reales (freno del día, igual que el paper).
+
+    `since_ts` = timestamp del último ARMAR: los stop-loss anteriores a ese momento ya no frenan,
+    porque el usuario volvió a dar permiso a mano (usuario 2026-09-09). Un stop-loss NUEVO, posterior
+    al re-armado, vuelve a frenar igual que siempre."""
+    return _trailing_stop_losses_today(conn, "real_condor_positions", day, since_ts=since_ts)
 
 
 def mark_real_condor_fill(
