@@ -119,17 +119,26 @@ def test_the_guard_still_wins_over_the_cheap_strike_rule():
 
 
 def test_skips_when_not_armed():
+    """Sin START del día no se manda NADA — pero desde el 2026-09-09 sí queda constancia del motivo.
+    Antes este test exigía silencio absoluto; el silencio era el problema (ver `_registrar_frenada`)."""
     conn = db.connect(":memory:")
     live_engine.maybe_log_live_order(conn, "AAL", _Result(_contract(), 1.50), _Snap(12.0), _settings(), AS_OF)
-    assert repo.get_live_orders_today(conn, AS_OF) == []
+    filas = repo.get_live_orders_today(conn, AS_OF)
+    assert all(f["sent"] == 0 for f in filas), "lo importante: no salió ninguna orden"
+    assert any("START" in (f["reasons"] or "") for f in filas), "y el motivo queda a la vista"
 
 
 def test_skips_symbol_not_in_whitelist():
+    """EL caso del 2026-09-09: el cerebro aprobó UNH dos veces y el motor real la descartó por no
+    estar en la lista blanca, sin registrar nada. El usuario vio un día "sin oportunidades" cuando
+    había habido dos. No se opera igual que antes — pero ahora se explica."""
     conn = db.connect(":memory:")
     repo.arm_live_today(conn, AS_OF)
     # "ZZZZ" no es un ticker real → nunca está en la whitelist, pase lo que pase con la config.
     live_engine.maybe_log_live_order(conn, "ZZZZ", _Result(_contract(), 1.50), _Snap(12.0), _settings(), AS_OF)
-    assert repo.get_live_orders_today(conn, AS_OF) == []
+    filas = repo.get_live_orders_today(conn, AS_OF)
+    assert all(f["sent"] == 0 for f in filas), "no se opera un símbolo fuera de la lista blanca"
+    assert any("lista blanca" in (f["reasons"] or "") for f in filas)
 
 
 def test_daily_cap_rejects_second_open():
@@ -212,7 +221,10 @@ def test_skips_second_order_same_symbol_when_already_committed():
     # segundo intento del MISMO símbolo → se salta (no crea otra fila)
     live_engine.maybe_log_live_order(conn, "AAL", _Result(_contract(), 1.50), _Snap(12.0), s, AS_OF, broker=b)
     rows = [r for r in repo.get_live_orders_today(conn, AS_OF) if r["symbol"] == "AAL"]
-    assert len(rows) == 1
+    # Una sola orden ENVIADA. La segunda fila es la constancia de por qué no se mandó otra
+    # (2026-09-09): antes el segundo intento desaparecía sin dejar rastro.
+    assert len([r for r in rows if r["sent"]]) == 1
+    assert any("Ya hay una orden real" in (r["reasons"] or "") for r in rows if not r["sent"])
 
 
 def test_daily_override_resets_next_day():

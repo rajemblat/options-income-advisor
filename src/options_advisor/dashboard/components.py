@@ -1580,6 +1580,20 @@ def render_real_trades_table(
     )
     st.caption("Hacé clic en una fila para ver el detalle completo (P&L, breakeven, cobertura, noticias, comentario).")
 
+    # ═══ BLOQUE PARA COPIAR (usuario 2026-09-09: "copiar y pegar en operaciones no funciona") ═══
+    #
+    # No era un bug, era una incompatibilidad: la tabla tiene `on_select="rerun"` para que al hacer
+    # clic en una fila se abra el detalle, y con la selección activada el clic ya no selecciona
+    # TEXTO. Las dos cosas usan el mismo gesto y no pueden convivir.
+    #
+    # En vez de sacrificar una por la otra, se agrega acá abajo el mismo contenido como texto
+    # separado por tabulaciones: `st.code` trae su propio botón de copiar en la esquina, y pegado en
+    # Excel o Google Sheets cae en columnas solo.
+    with st.expander("📋 Copiar esta tabla"):
+        st.code(df.to_csv(index=False, sep="\t"), language=None)
+        st.caption("El botón de copiar está arriba a la derecha del bloque. Pegado en Excel o "
+                   "Google Sheets se acomoda en columnas solo.")
+
     selected = event.selection.rows if event and event.selection else []
     if not selected:
         return

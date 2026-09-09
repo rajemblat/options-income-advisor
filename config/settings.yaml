@@ -469,8 +469,11 @@ live_trading:
   account_number: "74257810"       # cuenta LLC TRADING (la de $180k). Sin esto usaba la 1ª (vacía) y Schwab rebotaba
   # Fase 1 (usuario 2026-08-10): whitelist real acotada. Solo estos símbolos pueden generar una orden real.
   # Whitelist real (usuario 2026-08-10): Fase 1 + NVDA + tanda ampliada.
+  # UNH agregada el 2026-09-09: ese día el cerebro la aprobó DOS veces (09:51 y 10:52) y las dos
+  # murieron sin dejar rastro porque no estaba en esta lista. El usuario vio un día "sin
+  # oportunidades" cuando en realidad hubo dos.
   allowed_symbols: [AA, AAL, NU, DLO, DAL, BAC, C, WFC, SPY, NVDA,
-                    UAL, NCLH, CCL, COIN, AAPL, EWY, DIS, AXP, TLT, COF, AMZN, SPCX, EWZ]
+                    UAL, NCLH, CCL, COIN, AAPL, EWY, DIS, AXP, TLT, COF, AMZN, SPCX, EWZ, UNH]
   # Negociación del spread (caminar el precio):
   price_walk_step: 0.02            # spread CHICO: $2/contrato por paso ("de 2 en 2")
   price_walk_wide_step: 0.05       # spread GRANDE: $5/contrato por paso ("de 5 en 5", menos envíos)

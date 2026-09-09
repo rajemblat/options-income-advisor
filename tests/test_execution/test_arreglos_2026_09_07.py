@@ -187,7 +187,12 @@ def test_el_motor_no_abre_un_segundo_AAL_si_ya_hay_uno_vivo(conn):
     live_engine.maybe_log_live_order(conn, "AAL", _Result(_contrato(), 1.50), _Snap(12.0),
                                      _settings_real(1), AS_OF, broker=_FakeBroker())
 
-    assert repo.get_live_orders_today(conn, AS_OF) == [], "Registró una orden que no debía existir"
+    filas = repo.get_live_orders_today(conn, AS_OF)
+    assert all(f["sent"] == 0 for f in filas), "Registró una orden que no debía existir"
+    # Desde el 2026-09-09 el freno además se explica: antes salía en silencio y el usuario no tenía
+    # forma de saber por qué el robot había ignorado una oportunidad. No se opera igual que antes;
+    # lo que cambia es que ahora queda dicho.
+    assert any("posición(es) real(es) abierta(s) de AAL" in (f["reasons"] or "") for f in filas)
 
 
 def test_con_el_tope_apagado_se_comporta_como_antes(conn):

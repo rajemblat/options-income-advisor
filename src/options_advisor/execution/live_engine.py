@@ -192,6 +192,48 @@ def contracts_for_strike(strike: float | None, lt) -> int:
     return base
 
 
+def _registrar_frenada(conn, as_of, symbol, motivo, lt, contract=None) -> None:
+    """Deja constancia VISIBLE de una entrada que CALIFICÓ pero nunca llegó a ser orden real.
+
+    Por qué existe (usuario 2026-09-09: "algo está frenando los naked, es un día para abrir y no
+    abrió ninguno"). Ese día el cerebro aprobó UNH dos veces —09:51 y 10:52— y las dos murieron acá
+    adentro sin dejar rastro: UNH no está en la lista blanca del dinero real, y el motor salía con un
+    `return` pelado. En el dashboard el día se veía sin oportunidades, cuando en realidad hubo dos.
+
+    Tres de las cuatro puertas de este bloque salían mudas. Y la asimetría era lo peor: cuando frena
+    el guardián queda una fila con su motivo y el usuario la lee; cuando frenaban estas, nada. El
+    usuario terminaba preguntando "¿por qué no abrió?" sobre un sistema que sabía la respuesta y no
+    la contaba.
+
+    Se registra UNA vez por símbolo, motivo y día: `maybe_log_live_order` solo corre cuando la
+    entrada ya calificó (unas pocas por día), pero el mismo símbolo puede volver a calificar más
+    tarde y no tiene sentido repetir la misma línea."""
+    try:
+        for fila in repo.get_live_orders_today(conn, as_of) or []:
+            try:
+                if fila["symbol"] == symbol and not fila["sent"] and (fila["reasons"] or "") == motivo:
+                    return
+            except (IndexError, KeyError):
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        repo.insert_live_order_log(
+            conn, log_date=as_of, log_ts=datetime.now(), symbol=symbol,
+            action=live_guard.ACTION_OPEN,
+            strike=getattr(contract, "strike", None),
+            expiration=(contract.expiration.isoformat() if contract is not None
+                        and getattr(contract, "expiration", None) is not None else None),
+            approved=False, final_contracts=0, start_limit_price=None, collateral=0.0,
+            dry_run=not (lt.enabled and not lt.dry_run), sent=False, reasons=motivo,
+            payload_json=None, ladder_json=None,
+            bid=getattr(contract, "bid", None), ask=getattr(contract, "ask", None),
+        )
+        logger.info("Live: %s calificó pero no se operó — %s", symbol, motivo)
+    except Exception:  # noqa: BLE001
+        logger.debug("Live: no se pudo registrar la frenada de %s", symbol, exc_info=True)
+
+
 def contracts_for_collateral(margen_por_contrato: float | None, strike: float | None, lt) -> int:
     """Cuántos contratos PEDIR según la PLATA que traba la posición, no según el número del strike.
 
@@ -275,12 +317,22 @@ def maybe_log_live_order(conn, symbol, result, snapshot, settings, as_of: date, 
     lock, la segunda espera y ve sent=1."""
     lt = settings.live_trading
     try:
+        _contrato = getattr(result, "contract", None)
         if symbol not in (lt.allowed_symbols or []):
+            _registrar_frenada(conn, as_of, symbol,
+                               f"{symbol} no está en la lista blanca de dinero real "
+                               f"(live_trading.allowed_symbols). El cerebro la aprobó, pero el motor "
+                               f"real no la puede operar.", lt, _contrato)
             return
         if not repo.is_live_armed(conn, as_of):
-            return   # sin START del día, ni en dry-run ensayamos
+            _registrar_frenada(conn, as_of, symbol,
+                               "Sin START del día: el trading real no está armado.", lt, _contrato)
+            return
         if repo.has_live_committed_order_for_symbol_today(conn, symbol, as_of):
-            return   # ya hay una posición/orden real viva de este símbolo hoy — buscamos otra distinta
+            _registrar_frenada(conn, as_of, symbol,
+                               f"Ya hay una orden real de {symbol} hoy — se busca otra acción.",
+                               lt, _contrato)
+            return
         # TOPE DE POSICIONES VIVAS POR SÍMBOLO (usuario 2026-09-07). El chequeo de arriba solo mira
         # HOY, así que no impedía acumular el mismo subyacente día tras día: el 17 y el 18 de agosto
         # entraron dos AAL 13P del mismo vencimiento y quedaron las dos abiertas, doblando la
@@ -293,8 +345,10 @@ def maybe_log_live_order(conn, symbol, result, snapshot, settings, as_of: date, 
         if _tope_sym > 0:
             _vivas = repo.count_open_real_puts_for_symbol(conn, symbol)
             if _vivas >= _tope_sym:
-                logger.info("Live: %s ya tiene %d posición(es) real(es) abierta(s) (tope %d por "
-                            "símbolo) — se busca otra acción", symbol, _vivas, _tope_sym)
+                _registrar_frenada(conn, as_of, symbol,
+                                   f"Ya tenés {_vivas} posición(es) real(es) abierta(s) de {symbol} "
+                                   f"(tope {_tope_sym} por símbolo). Cuando cierre alguna, vuelve a "
+                                   f"estar disponible.", lt, _contrato)
                 return
         contract = getattr(result, "contract", None)
         if contract is None:
