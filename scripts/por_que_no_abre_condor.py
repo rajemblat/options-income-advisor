@@ -41,9 +41,19 @@ FRENA = "🔴 FRENA AQUÍ"
 PASA = "🟢"
 
 
-def _p(ok: bool, titulo: str, detalle: str = "") -> bool:
-    """Imprime una compuerta. Devuelve `ok` para poder cortar en la primera que frena."""
-    print(f"{PASA if ok else FRENA}  {titulo}" + (f" — {detalle}" if detalle else ""))
+def _p(ok: bool, titulo: str, detalle: str = "", *, arreglo: str = "") -> bool:
+    """Imprime una compuerta. Devuelve `ok` para poder cortar en la primera que frena.
+
+    `detalle` son los NÚMEROS de la compuerta y se muestran siempre. `arreglo` es qué hacer para
+    destrabarla y se muestra SOLO cuando frena: en verde confundía (2026-09-09, el usuario leyó
+    "apretá Autorizar condor HOY" en una línea que ya estaba en verde y dudó de si había quedado
+    autorizado)."""
+    linea = f"{PASA if ok else FRENA}  {titulo}"
+    if detalle:
+        linea += f" — {detalle}"
+    if arreglo and not ok:
+        linea += f" · {arreglo}"
+    print(linea)
     return ok
 
 
@@ -73,7 +83,7 @@ def main() -> int:
 
     # --- Armado del día y su marca de re-armado (usuario 2026-09-09) ---
     if not _p(repo.is_condor_live_armed(conn, hoy), "Condor AUTORIZADO hoy",
-              "apretá «Autorizar condor HOY» en Real Market"):
+              arreglo="apretá «Autorizar condor HOY» en Real Market"):
         return 1
     ts, mid = repo.condor_rearm_mark(conn, hoy)
     print(f"    ↳ última autorización: {ts or '(sin marca)'} · cuenta desde el id {mid}")
@@ -92,15 +102,15 @@ def main() -> int:
     halt = getattr(cfg_base, "stop_loss_streak_halt", 0)
     racha = repo.real_condor_consecutive_stop_losses_today(conn, hoy, since_ts=ts)
     if not _p(not (halt > 0 and racha >= halt), "Freno por racha de stop-loss",
-              f"{racha} seguidos desde la última autorización · frena con {halt}. "
-              "Re-autorizá para ponerlo en cero."):
+              f"{racha} seguidos desde la última autorización · frena con {halt}",
+              arreglo="apretá «Re-autorizar» para ponerlo en cero"):
         return 1
     cupo = repo.get_condor_live_max_per_day(conn, getattr(cfg_base, "live_max_per_day", 1), hoy)
     usados = repo.count_real_condor_opens_today(conn, hoy, after_id=mid)
     if not _p(not (cupo > 0 and usados >= cupo), "Cupo del día",
               f"{usados}/{cupo} desde la última autorización "
-              f"(en todo el día van {repo.count_real_condor_opens_today(conn, hoy)}). "
-              "Re-autorizá para recuperarlo."):
+              f"(en todo el día van {repo.count_real_condor_opens_today(conn, hoy)})",
+              arreglo="apretá «Re-autorizar» para recuperarlo"):
         return 1
 
     # --- Checklist de despegue: sin visión no hay stop, así que no se abre ---
@@ -135,8 +145,12 @@ def main() -> int:
     if not ok_senal:
         motivos = []
         if not signal.calm:
+            base = cfg_base.calm_range_pct
+            nota = (f" — ojo: el tope APRENDIDO ({cfg.calm_range_pct * 100:.2f}%) es más estricto que "
+                    f"el de settings.yaml ({base * 100:.2f}%); lo apretó el robot operando en papel"
+                    if abs(cfg.calm_range_pct - base) > 1e-9 else "")
             motivos.append(f"el día NO viene calmo: rango intradía {signal.day_range_pct * 100:.2f}%, "
-                           f"el tope es {cfg.calm_range_pct * 100:.2f}%")
+                           f"el tope es {cfg.calm_range_pct * 100:.2f}%{nota}")
         if not signal.in_window:
             motivos.append(f"fuera de la ventana de entrada "
                            f"({cfg.entry_window_start}–{cfg.entry_window_end} hora de NY)")
@@ -148,9 +162,9 @@ def main() -> int:
     # --- El armado concreto: strikes y, sobre todo, el crédito mínimo ---
     build = iron_condor.build_iron_condor(chain, spot, cfg)
     if not _p(build is not None, "Encuentra strikes que paguen el mínimo",
-              f"crédito mínimo exigido: ${getattr(cfg, 'min_credit', 0):,.0f} "
-              f"(piso real: ${getattr(cfg, 'live_min_credit', 0):,.0f}). "
-              "Si frena acá, la cadena no paga lo suficiente ahora mismo."):
+              f"crédito mínimo exigido ${getattr(cfg, 'min_credit', 0):,.0f} "
+              f"· piso real ${getattr(cfg, 'live_min_credit', 0):,.0f}",
+              arreglo="la cadena no paga eso ahora mismo; es cuestión de esperar, no de tocar nada"):
         return 1
 
     print(f"    ↳ {build.short_put_strike:.0f}/{build.short_call_strike:.0f} "
