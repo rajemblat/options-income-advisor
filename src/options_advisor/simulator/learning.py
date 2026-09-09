@@ -607,8 +607,15 @@ def effective_condor(conn: sqlite3.Connection, cfg: IntradayCondorSettings) -> I
         state = repo.get_learning_state(conn)
     except Exception:
         return cfg
+    # ═══ PERILLAS CONGELADAS POR EL USUARIO (usuario 2026-09-09) ═══
+    # Lo que esté en `learning_frozen` se lee SIEMPRE del config: se ignora lo aprendido, incluso si
+    # quedó guardado en la base de una revisión anterior. Se filtra acá, en el único lugar por donde
+    # lo aprendido entra a la config efectiva, así vale igual para el papel y para el real.
+    congeladas = perillas_congeladas(cfg)
     update = {}
     for key, (field, *_rest) in _CD_BOUNDS.items():
+        if field in congeladas:
+            continue
         learned = state.get(key)
         if learned is not None:
             update[field] = learned
@@ -640,11 +647,24 @@ def _cd_feature(ctx: dict, name: str) -> float | None:
     return float(v) if isinstance(v, (int, float)) else None
 
 
+def perillas_congeladas(cfg: IntradayCondorSettings) -> frozenset[str]:
+    """Nombres de campo que el usuario congeló: el aprendizaje ni los aplica ni los propone.
+
+    Una perilla congelada NO genera propuesta pendiente en el dashboard. Proponer un cambio que el
+    usuario ya decidió que no quiere sería ruido, y peor: dejaría un botón que al apretarlo no haría
+    nada, porque `effective_condor` seguiría leyendo el config igual."""
+    return frozenset(getattr(cfg, "learning_frozen", None) or ())
+
+
 def _cd_move(conn, key: str, current: float, target: float, reason_tpl: str,
-             *, auto_only_if_tighter: bool = False, tighter_is_lower: bool = True) -> tuple[list, list]:
+             *, auto_only_if_tighter: bool = False, tighter_is_lower: bool = True,
+             congeladas: frozenset[str] = frozenset()) -> tuple[list, list]:
     """Mueve una perilla hacia `target` con paso acotado. Devuelve (aplicados, propuestos).
-    `auto_only_if_tighter`: si el cambio afloja el parámetro, nunca se aplica solo — va a propuesta."""
+    `auto_only_if_tighter`: si el cambio afloja el parámetro, nunca se aplica solo — va a propuesta.
+    `congeladas`: campos que el usuario fijó a mano — se salen sin tocar ni proponer nada."""
     field, max_step, auto_cap, lo, hi = _CD_BOUNDS[key]
+    if field in congeladas:
+        return [], []
     delta = max(-max_step, min(max_step, target - current))
     proposed_val = round(min(hi, max(lo, current + delta)), 6)
     change = round(proposed_val - current, 6)
@@ -685,6 +705,8 @@ def review_condor(
 
     n = len(rows)
     state = repo.get_learning_state(conn)
+    # Perillas que el usuario fijo a mano: no se tocan ni se proponen (usuario 2026-09-09).
+    _congeladas = perillas_congeladas(cfg)
     if n < min_examples:
         summary = (f"Iron Condor: todavía no toco nada — llevo {n} de las {min_examples} operaciones "
                    f"cerradas que pedí para tener una muestra confiable.")
@@ -719,7 +741,8 @@ def review_condor(
             target = avg_g * 0.85 if key == _CD_CREDIT_KEY else avg_g
             direccion = "subir" if target > current else "bajar"
             a, p = _cd_move(conn, key, float(current), float(target),
-                            texto.format(g=avg_g, b=avg_b, dir=direccion))
+                            texto.format(g=avg_g, b=avg_b, dir=direccion),
+                            congeladas=_congeladas)
             applied += a
             proposed += p
             if a or p:
@@ -742,7 +765,7 @@ def review_condor(
                                 f"cualquier lado) y la ganadora que más aguantó soportó {peor_buena:.2f}%: "
                                 "no entrar con el VIX moviéndose más que eso "
                                 "({current:.2f}% → {proposed:.2f}%).",
-                                auto_only_if_tighter=True)
+                                auto_only_if_tighter=True, congeladas=_congeladas)
                 applied += a
                 proposed += p
                 if a or p:
@@ -755,7 +778,8 @@ def review_condor(
     if stop_rate >= _CD_STOP_RATE_HIGH:
         a, p = _cd_move(conn, _CD_PROFIT_KEY, cur_profit, cur_profit - _CD_BOUNDS[_CD_PROFIT_KEY][1],
                         f"Saltó el stop en {stop_rate:.0%} de las operaciones: el objetivo está lejos y da "
-                        "tiempo a que el mercado se dé vuelta; cobrar antes ({current:.0%} → {proposed:.0%}).")
+                        "tiempo a que el mercado se dé vuelta; cobrar antes ({current:.0%} → {proposed:.0%}).",
+                        congeladas=_congeladas)
         applied += a
         proposed += p
         if a or p:
@@ -763,7 +787,8 @@ def review_condor(
     elif stop_rate <= _CD_STOP_RATE_LOW and len(good) >= min_examples // 2:
         a, p = _cd_move(conn, _CD_PROFIT_KEY, cur_profit, cur_profit + _CD_BOUNDS[_CD_PROFIT_KEY][1],
                         f"Casi no saltó el stop ({stop_rate:.0%}) y {len(good)} operaciones salieron bien: "
-                        "hay margen para pedir un poco más de ganancia ({current:.0%} → {proposed:.0%}).")
+                        "hay margen para pedir un poco más de ganancia ({current:.0%} → {proposed:.0%}).",
+                        congeladas=_congeladas)
         applied += a
         proposed += p
         if a or p:
@@ -777,7 +802,7 @@ def review_condor(
             a, p = _cd_move(conn, _CD_STOP_KEY, cur_stop, cur_stop - _CD_BOUNDS[_CD_STOP_KEY][1],
                             f"El stop se disparó en {stop_rate:.0%} de las operaciones (calidad peor "
                             f"{peor:+.2f}): cortar antes la pérdida (${{current:,.0f}} → ${{proposed:,.0f}}).",
-                            auto_only_if_tighter=True)
+                            auto_only_if_tighter=True, congeladas=_congeladas)
             applied += a
             proposed += p
             if a or p:

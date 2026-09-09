@@ -396,7 +396,24 @@ class IntradayCondorSettings(BaseModel):
     # ganancia en el medio corta la racha. 0 = sin freno.
     stop_loss_streak_halt: int = 2
     # "Día calmo": rango intradía (máx-mín) como fracción del primer precio, por debajo de esto.
+    #
+    # OJO con qué mide: el rango es ACUMULADO desde la apertura, así que solo puede CRECER durante la
+    # rueda. No contesta "¿está calmo AHORA?" sino "¿estuvo calmo desde que abrió?". Por eso el número
+    # tiene que ser más holgado de lo que sugiere la intuición. Medido sobre 34 días de barras de un
+    # minuto del SPX (may–ago 2026): el rango termina el día en 0.79% mediano y NUNCA bajó de 0.33%.
+    # Minutos habilitados dentro de la ventana 09:35–14:00, por tope: 0.20% → 0 (mediana), y en 21 de
+    # los 34 días ni un minuto; 0.40% → 50; 0.60% → 161; 0.70% → 266.
     calm_range_pct: float = 0.004        # <= 0.4% de rango = calmo
+    # Perillas que el APRENDIZAJE NO puede tocar (usuario 2026-09-09). Nombres de campo de esta misma
+    # clase, tal cual, p. ej. ["calm_range_pct"]. Lo que esté acá se lee SIEMPRE del config, aunque el
+    # robot haya aprendido otro valor operando en papel.
+    #
+    # Nació con `calm_range_pct`: el usuario lo tenía en 0.40%, el aprendizaje lo fue bajando hasta
+    # 0.20%, y con eso el condor quedó prácticamente ciego. El problema no es que el robot aprenda;
+    # es que sobre ESTA perilla aprendía en la dirección de no operar nunca y nada lo avisaba, así
+    # que un número elegido por el usuario se revertía solo a los pocos días. Congelarla deja la
+    # decisión donde corresponde.
+    learning_frozen: list[str] = []
     # Ventana horaria de entrada (ET) — temprano, con tiempo para que corra el 0DTE.
     # Ventana de entrada en HORA DE NUEVA YORK (cambiado 2026-08-27). Antes se comparaba en UTC.
     entry_window_start: str = "09:30"

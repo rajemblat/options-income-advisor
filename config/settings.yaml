@@ -345,7 +345,30 @@ intraday_condor:
   stop_loss_streak_halt: 1         # UN stop-loss y no abre más condors hoy (usuario 2026-08-26:
                                    # "si pierde uno por stop loss no vuelva a abrir ese día").
                                    # Venía en 2. Cuenta por separado el condor REAL y el de papel.
-  calm_range_pct: 0.004            # rango intradía <= 0.4% = día calmo
+  # DÍA CALMO — 0.60%, elegido por el usuario el 2026-09-09 con los datos a la vista.
+  #
+  # Venía en 0.004 (0.40%) acá, pero el APRENDIZAJE lo había bajado a 0.20% y ese era el número que
+  # se aplicaba de verdad. Con 0.20% el condor quedó ciego: medido sobre 34 días de barras de un
+  # minuto del SPX (may–ago 2026), en 21 de esos 34 días no hubo NI UN MINUTO habilitado en toda la
+  # ventana 09:35–14:00, y en los 34 el SPX terminó cruzando ese umbral.
+  #
+  # El detalle que lo explica: el rango es ACUMULADO desde la apertura (máx menos mín del día hasta
+  # ahora), así que solo puede crecer. No mide "¿está calmo ahora?" sino "¿estuvo calmo desde que
+  # abrió?", y por eso la compuerta se cierra sola con las horas aunque el mercado esté quieto.
+  #
+  # Minutos habilitados dentro de la ventana, por tope (mediana de los 34 días):
+  #     0.20% →   0 min (21 de 34 días sin ninguno)     0.60% → 161 min (34 de 34 días con ventana)
+  #     0.40% →  50 min (32 de 34 días)                 0.70% → 266 min (la ventana entera)
+  #
+  # El 09/09 el SPX hizo 0.48% de rango — por debajo del día mediano (0.79%) — y con 0.20% no entró;
+  # con 0.60% habría entrado. Razón del usuario para no ser más estricto: "se mueve en ese rango,
+  # puede ser oportunidad porque hay volatilidad" — más movimiento es más prima cobrada.
+  calm_range_pct: 0.006            # rango intradía <= 0.60% = día calmo
+  # Perillas que el APRENDIZAJE no puede tocar (usuario 2026-09-09: "que quede fijo en mi número").
+  # `calm_range_pct` está acá porque el robot ya la había bajado solo de 0.40% a 0.20% sin avisar;
+  # sin este freno lo volvería a hacer en unos días y este cambio se perdería en silencio.
+  learning_frozen:
+    - calm_range_pct
   # VENTANA DE ENTRADA — EN HORA DE NUEVA YORK (cambiado 2026-08-27).
   # `evaluate_condor_signal` convierte la hora de la última barra a America/New_York antes de
   # comparar (ver `iron_condor.hora_de_mercado`). Estos dos valores son, entonces, hora del mercado.

@@ -209,7 +209,10 @@ def test_approving_a_condor_proposal_writes_the_right_key():
 
 def test_effective_condor_applies_what_it_learned():
     conn = db.connect(":memory:")
-    cfg = _cfg()
+    # Sin nada congelado, para probar el mecanismo de aplicar lo aprendido en sí mismo. El settings
+    # real tiene `calm_range_pct` congelada desde el 2026-09-09; eso se prueba aparte (justo abajo y
+    # en test_perillas_congeladas.py) — mezclarlo acá ataría este test a esa decisión del usuario.
+    cfg = _cfg().model_copy(update={"learning_frozen": []})
     repo.set_learning_value(conn, learning._CD_DELTA_KEY, 0.11)
     repo.set_learning_value(conn, learning._CD_CALM_KEY, 0.003)
     repo.set_learning_value(conn, learning._CD_CREDIT_KEY, 150.0)
@@ -222,6 +225,18 @@ def test_effective_condor_applies_what_it_learned():
     # Lo que NO aprendió queda igual que en tu settings.
     assert eff.wing_width == cfg.wing_width
     assert eff.stop_loss_dollars == cfg.stop_loss_dollars
+
+
+def test_el_settings_real_congela_el_tope_de_calma():
+    """Usuario 2026-09-09: eligió 0.60% y "que quede fijo en mi número". Con la config REAL cargada,
+    el 0.20% que el robot se había puesto solo no debe poder aplicarse nunca más."""
+    conn = db.connect(":memory:")
+    cfg = _cfg()
+    repo.set_learning_value(conn, learning._CD_CALM_KEY, 0.002)
+    repo.set_learning_value(conn, learning._CD_DELTA_KEY, 0.11)
+    eff = learning.effective_condor(conn, cfg)
+    assert eff.calm_range_pct == cfg.calm_range_pct == 0.006   # congelada: manda el archivo
+    assert eff.short_delta_max == 0.11                         # el resto sigue aprendiendo
 
 
 def test_effective_condor_is_a_noop_without_anything_learned():
