@@ -62,6 +62,17 @@ def main() -> int:
           f"({exp['maximo_posiciones']} posiciones)")
     print("    (nocional = strike × 100 × contratos: lo que costaría comprar las acciones si te")
     print("     asignaran todo junto. No es el colateral que el broker traba, que es mucho menor.)")
+    # Qué posiciones formaban el pico. Es lo que convierte el número en algo verificable: el máximo
+    # es SIMULTÁNEO, y la única forma de mostrarlo es listar lo que estaba vivo en ese instante.
+    if exp["maximo_detalle"]:
+        print(f"\n  Las {len(exp['maximo_detalle'])} posiciones que estaban VIVAS en ese instante "
+              f"({exp['maximo_ts'][:16].replace('T', ' ')}):")
+        for d in exp["maximo_detalle"]:
+            print(f"    {d['symbol']:<6} {d['contratos']}x ${d['strike']:>7,.0f}  "
+                  f"= ${d['nocional']:>9,.0f}   (abierta el {d['abierta_el']})")
+        print(f"    {'':<6} {'':>12}    {'—' * 11}")
+        print(f"    {'TOTAL':<6} {'':>12}    ${exp['maximo']:>9,.0f}")
+
     print("\n— Ahora mismo —")
     print(f"  Nocional  : ${exp['ahora']:>10,.0f}   ({exp['ahora_posiciones']} posiciones)")
 

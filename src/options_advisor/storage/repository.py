@@ -978,7 +978,7 @@ def exposicion_naked(conn: sqlite3.Connection) -> dict:
     """
     filas = conn.execute(
         f"""
-        SELECT log_ts, strike, closed, close_ts,
+        SELECT symbol, log_ts, strike, closed, close_ts,
                COALESCE(filled_contracts, final_contracts, 1) AS contratos
         FROM live_order_log
         WHERE action = 'SELL_TO_OPEN' AND dry_run = 0 AND sent = 1
@@ -987,8 +987,8 @@ def exposicion_naked(conn: sqlite3.Connection) -> dict:
         """,
         _LIVE_DEAD_STATUSES,
     ).fetchall()
-    vacio = {"maximo": 0.0, "maximo_fecha": None, "maximo_posiciones": 0,
-             "ahora": 0.0, "ahora_posiciones": 0, "operaciones": 0}
+    vacio = {"maximo": 0.0, "maximo_fecha": None, "maximo_ts": None, "maximo_posiciones": 0,
+             "maximo_detalle": [], "ahora": 0.0, "ahora_posiciones": 0, "operaciones": 0}
     if not filas:
         return vacio
 
@@ -1012,10 +1012,32 @@ def exposicion_naked(conn: sqlite3.Connection) -> dict:
         n += dcount
         if vivo > pico:
             pico, pico_ts, pico_n = vivo, ts, n
+
+    # QUIÉNES formaban el pico. No hace falta para el número, pero sí para poder creerlo: el
+    # usuario preguntó si el máximo era simultáneo o acumulado (2026-09-14), y la única respuesta
+    # que convence es la lista de las posiciones que estaban vivas en ese instante exacto.
+    detalle = []
+    if pico_ts:
+        for f in filas:
+            if not f["log_ts"] or f["log_ts"][:19] > pico_ts:
+                continue                                   # abrió después del pico
+            if f["closed"] and f["close_ts"] and f["close_ts"][:19] <= pico_ts:
+                continue                                   # ya había cerrado
+            detalle.append({
+                "symbol": f["symbol"],
+                "strike": float(f["strike"] or 0),
+                "contratos": int(f["contratos"] or 1),
+                "nocional": round(float(f["strike"] or 0) * 100.0 * int(f["contratos"] or 1), 2),
+                "abierta_el": f["log_ts"][:10],
+            })
+        detalle.sort(key=lambda d: -d["nocional"])
+
     return {
         "maximo": round(pico, 2),
         "maximo_fecha": pico_ts[:10] if pico_ts else None,
+        "maximo_ts": pico_ts,
         "maximo_posiciones": pico_n,
+        "maximo_detalle": detalle,
         "ahora": round(max(vivo, 0.0), 2),
         "ahora_posiciones": max(n, 0),
         "operaciones": len(filas),

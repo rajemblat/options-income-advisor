@@ -134,3 +134,37 @@ def test_cerrar_y_abrir_en_el_mismo_instante_no_infla_el_pico(conn):
     _cerrar(conn, a, momento)
     _abrir(conn, symbol="AAPL", strike=285.0, contratos=1, ts=momento)
     assert repo.exposicion_naked(conn)["maximo"] == pytest.approx(28_500)
+
+
+# ─────────────────── quiénes formaban el pico ───────────────────
+
+def test_el_detalle_lista_solo_lo_que_estaba_vivo_en_el_pico(conn):
+    """Usuario 2026-09-14: "para que quede claro, esta es la exposición máxima, lo máximo que una
+    vez estuvo, no acumulado". El detalle es lo que hace verificable esa afirmación."""
+    a = _abrir(conn, symbol="NVDA", strike=220.0, contratos=1, ts=datetime(2026, 8, 11, 10, 0))
+    _cerrar(conn, a, datetime(2026, 8, 11, 11, 0))          # cerró ANTES del pico
+    _abrir(conn, symbol="AAPL", strike=285.0, contratos=1, ts=datetime(2026, 8, 11, 12, 0))
+    _abrir(conn, symbol="AMZN", strike=220.0, contratos=1, ts=datetime(2026, 8, 11, 13, 0))
+    exp = repo.exposicion_naked(conn)
+
+    simbolos = [d["symbol"] for d in exp["maximo_detalle"]]
+    assert simbolos == ["AAPL", "AMZN"], "NVDA ya había cerrado: no puede figurar en el pico"
+    assert sum(d["nocional"] for d in exp["maximo_detalle"]) == pytest.approx(exp["maximo"])
+    assert len(exp["maximo_detalle"]) == exp["maximo_posiciones"]
+
+
+def test_el_detalle_viene_ordenado_de_mayor_a_menor(conn):
+    _abrir(conn, symbol="AAL", strike=13.0, contratos=1, ts=datetime(2026, 8, 11, 10, 0))
+    _abrir(conn, symbol="AAPL", strike=285.0, contratos=1, ts=datetime(2026, 8, 11, 11, 0))
+    detalle = repo.exposicion_naked(conn)["maximo_detalle"]
+    assert [d["symbol"] for d in detalle] == ["AAPL", "AAL"]
+
+
+def test_el_detalle_suma_exactamente_el_maximo(conn):
+    """Si la suma del detalle no diera el máximo, uno de los dos estaría mal y no habría forma de
+    saber cuál."""
+    _abrir(conn, symbol="NVDA", strike=220.0, contratos=2, ts=datetime(2026, 8, 11, 10, 0))
+    _abrir(conn, symbol="AAPL", strike=285.0, contratos=1, ts=datetime(2026, 8, 11, 11, 0))
+    _abrir(conn, symbol="AAL", strike=13.0, contratos=5, ts=datetime(2026, 8, 11, 12, 0))
+    exp = repo.exposicion_naked(conn)
+    assert sum(d["nocional"] for d in exp["maximo_detalle"]) == pytest.approx(exp["maximo"])
