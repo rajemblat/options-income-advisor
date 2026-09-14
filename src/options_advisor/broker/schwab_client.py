@@ -7,6 +7,8 @@ from datetime import date, datetime, timedelta, timezone
 import httpx
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from options_advisor.broker.cortacircuito import Cortacircuito, EndpointCaido
+
 from options_advisor.broker import conectividad
 
 from options_advisor.broker.base import BrokerClient
@@ -54,6 +56,17 @@ def _is_retryable_http_error(exc: BaseException) -> bool:
         return False
     code = exc.response.status_code
     return code == 429 or 500 <= code < 600
+
+
+def _clave_de_endpoint(path: str, params: dict) -> str:
+    """Identifica QUÉ está fallando, para cortar solo eso.
+
+    Incluye el `symbol` cuando está en los params: lo que falla no es "/chains" en general, es la
+    cadena de UN símbolo. Sin el símbolo, un $SPX caído cortaría las cadenas de todos, que es
+    exactamente lo contrario de lo que se busca. El resto de los params (fechas, tipo de contrato)
+    se ignora: son variaciones de la misma consulta al mismo instrumento."""
+    simbolo = params.get("symbol") if isinstance(params, dict) else None
+    return f"{path}?symbol={simbolo}" if simbolo else path
 
 
 MARKET_DATA_BASE_URL = "https://api.schwabapi.com/marketdata/v1"
@@ -237,6 +250,9 @@ class SchwabBrokerClient(BrokerClient):
                                     transport=_TransporteVigilado())
         self._trader_client = httpx.Client(base_url=TRADER_API_BASE_URL, timeout=15.0,
                                            transport=_TransporteVigilado())
+        # Uno por cliente, no global: cada proceso (robot, dashboard, scripts) lleva su propia
+        # cuenta. Ver `cortacircuito.py` — un endpoint caído no puede comerse el minuto del escaneo.
+        self._cortacircuito = Cortacircuito()
 
     @classmethod
     def from_env(cls) -> SchwabBrokerClient:
@@ -256,11 +272,42 @@ class SchwabBrokerClient(BrokerClient):
         reraise=True,
     )
     def _get(self, path: str, params: dict) -> dict:
-        response = self._client.get(
-            path, params=params, headers={"Authorization": f"Bearer {self.auth.get_valid_access_token()}"}
-        )
+        """GET a market data, con reintentos para lo transitorio y CORTACIRCUITO para lo que no.
+
+        El cortacircuito se agregó el 2026-09-14 y vale la pena entender por qué. Ese día Schwab
+        devolvía 502 en la cadena de `$SPX`. Un 502 es del servidor, o sea de los que conviene
+        reintentar — y se reintentaba 4 veces con backoff. Con 15 s de timeout por intento, ESE
+        símbolo se comía más de un minuto, y el escaneo del robot corre cada minuto:
+
+            Execution of job "run_robot_scan" skipped: maximum number of running instances reached
+
+        minuto tras minuto. El escaneo nunca terminaba la lista, así que los símbolos sanos nunca
+        se evaluaban. El robot no abrió NADA en toda la rueda por un solo endpoint caído.
+
+        Reintentar sigue estando bien para un parpadeo. Lo que cambia es que, después de tres
+        fallos seguidos del MISMO endpoint, las llamadas siguientes fallan al instante durante
+        5 minutos en vez de volver a esperar. El símbolo enfermo se saltea rápido y el escaneo
+        sigue. El corte es por endpoint: que $SPX esté caído no frena pedir el precio de AAPL."""
+        clave = _clave_de_endpoint(path, params)
+        if self._cortacircuito.esta_abierto(clave):
+            raise EndpointCaido(
+                f"Schwab viene fallando en {clave}; se saltea para no frenar el resto del escaneo")
+        try:
+            response = self._client.get(
+                path, params=params,
+                headers={"Authorization": f"Bearer {self.auth.get_valid_access_token()}"},
+            )
+        except httpx.TransportError:
+            # Red caída, DNS, TLS: también cuenta para el corte. Un endpoint inalcanzable cuesta el
+            # timeout entero igual que uno que responde 5xx.
+            self._cortacircuito.registrar_fallo(clave)
+            raise
         if response.status_code == 429:
             logger.warning("Rate limit de Schwab alcanzado en %s, reintentando con backoff", path)
+        if response.status_code >= 500:
+            self._cortacircuito.registrar_fallo(clave)
+        else:
+            self._cortacircuito.registrar_exito(clave)
         response.raise_for_status()
         return response.json()
 
