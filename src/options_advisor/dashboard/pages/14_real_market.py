@@ -87,6 +87,9 @@ GOOD = "#00e676"   # verde más intenso/vivo (usuario 2026-08-12)
 CAPITAL_DISPONIBLE = 50_000
 BAD = "#ff3b3b"
 WARN = "#f59e0b"
+# Amarillo del cartel de exposición promedio (usuario 2026-09-14: "lo quería en
+# amarillo"). Va aparte de WARN, que es ámbar y en pantalla se lee naranja.
+AMARILLO = "#ffd60a"
 
 
 def _fmt_money(v):
@@ -266,12 +269,12 @@ if _exp["maximo"] > 0:
         _prom = _exp["promedio"]
         _rel = (_prom / _exp["maximo"] * 100.0) if _exp["maximo"] else 0.0
         st.markdown(
-            f"<div style='background:{ACCENT}14; border:1px solid {ACCENT}; "
-            f"border-left:5px solid {ACCENT}; border-radius:0.5rem; padding:0.6rem 0.9rem; "
+            f"<div style='background:{AMARILLO}14; border:1px solid {AMARILLO}; "
+            f"border-left:5px solid {AMARILLO}; border-radius:0.5rem; padding:0.6rem 0.9rem; "
             f"margin:0 0 0.8rem;'>"
-            f"<div style='color:{ACCENT}; font-size:0.62rem; font-weight:700; "
+            f"<div style='color:{AMARILLO}; font-size:0.62rem; font-weight:700; "
             f"text-transform:uppercase; letter-spacing:0.06em;'>Exposición promedio por día</div>"
-            f"<div style='color:{ACCENT}; font-size:1.5rem; font-weight:800; line-height:1.15; "
+            f"<div style='color:{AMARILLO}; font-size:1.5rem; font-weight:800; line-height:1.15; "
             f"margin-top:0.15rem;'>&#36;{_prom:,.0f}"
             f"<span style='font-size:0.85rem; font-weight:600; opacity:0.85;'> &nbsp;·&nbsp; "
             f"sobre {_exp['dias_con_exposicion']} días con posiciones abiertas</span></div>"
