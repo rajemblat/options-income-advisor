@@ -222,6 +222,42 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ═══════════ RÉCORD DE EXPOSICIÓN DE LOS NAKED (usuario 2026-09-14) ═══════════
+# "Me puedes poner un cartel rojo en los naked donde siempre se quede la última exposición máxima
+# y la fecha; si otro día la pasa se actualiza y si no llega queda esta."
+#
+# Es el NOCIONAL: strike × 100 × contratos de todo lo que estuvo vivo AL MISMO TIEMPO — o sea lo
+# que costaría comprar las acciones si te asignaran todo junto. No es el colateral que el broker
+# traba (mucho más chico): el colateral dice qué te cuesta hoy, esto dice cuánto podrías llegar a
+# deber, y es el número que corresponde mirar para dimensionar.
+#
+# Se calcula de la historia completa en cada carga, no se guarda un récord en una bandera: así el
+# número siempre es correcto, sube solo cuando se supera, nunca baja, y no puede quedar desfasado
+# si algún día se corrige una fila.
+_exp = repo.exposicion_naked(conn)
+if _exp["maximo"] > 0:
+    _fecha_max = _dt.date.fromisoformat(_exp["maximo_fecha"]).strftime("%d/%m/%Y") \
+        if _exp["maximo_fecha"] else "—"
+    _es_hoy = _exp["ahora"] >= _exp["maximo"]      # hoy estás igualando o superando el récord
+    _pct = (_exp["ahora"] / _exp["maximo"] * 100.0) if _exp["maximo"] else 0.0
+    st.markdown(
+        f"<div style='background:{BAD}14; border:1px solid {BAD}; border-left:5px solid {BAD}; "
+        f"border-radius:0.5rem; padding:0.6rem 0.9rem; margin:0.2rem 0 0.8rem;'>"
+        f"<div style='color:{BAD}; font-size:0.62rem; font-weight:700; text-transform:uppercase; "
+        f"letter-spacing:0.06em;'>Exposición máxima de los naked · récord histórico</div>"
+        f"<div style='color:{BAD}; font-size:1.5rem; font-weight:800; line-height:1.15; "
+        f"margin-top:0.15rem;'>&#36;{_exp['maximo']:,.0f}"
+        f"<span style='font-size:0.85rem; font-weight:600; opacity:0.85;'> &nbsp;·&nbsp; "
+        f"{_fecha_max} &nbsp;·&nbsp; {_exp['maximo_posiciones']} posiciones</span></div>"
+        f"<div style='color:{TEXT_MUTED}; font-size:0.72rem; margin-top:0.25rem;'>"
+        f"Ahora: <b style='color:{BAD if _es_hoy else TEXT_MUTED}'>&#36;{_exp['ahora']:,.0f}</b> "
+        f"({_exp['ahora_posiciones']} posiciones · {_pct:.0f}% del récord). "
+        + ("<b>Estás en el máximo histórico.</b> " if _es_hoy else "")
+        + "Es el nocional: lo que costaría comprar las acciones si te asignaran todo junto."
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
+
 st.divider()
 
 # ------------------------- Acciones: START / desarmar / kill (minimalista, con doble confirmación) -------------------------

@@ -960,6 +960,68 @@ def count_live_approved_opens_this_week(conn: sqlite3.Connection, day: date) -> 
     return row[0] if row else 0
 
 
+def exposicion_naked(conn: sqlite3.Connection) -> dict:
+    """Exposición de los naked puts REALES: el MÁXIMO histórico y el de ahora mismo.
+
+    Usuario 2026-09-14: "quiero saber en el momento que más exposición tenía cuánto fue, por ejemplo
+    NVDA 100 shares de un put x 220 dólares". O sea el NOCIONAL —strike × 100 × contratos—, que es
+    lo que costaría comprar las acciones si te asignaran, no el colateral que el broker traba.
+
+    El máximo se calcula barriendo la LÍNEA DE TIEMPO: cada apertura suma, cada cierre resta, y se
+    va guardando el pico. No es la suma de un día, es cuánto llegó a haber VIVO al mismo tiempo —
+    que es la pregunta que importa, porque el riesgo de una posición cerrada ya no existe.
+
+    Calcularlo de la historia completa en vez de guardar un récord en una bandera es a propósito: el
+    número siempre es correcto, se actualiza solo cuando se supera y nunca puede quedar desfasado si
+    algo se recalcula o se corrige una fila. Devuelve:
+        maximo, maximo_fecha, maximo_posiciones · ahora, ahora_posiciones · operaciones
+    """
+    filas = conn.execute(
+        f"""
+        SELECT log_ts, strike, closed, close_ts,
+               COALESCE(filled_contracts, final_contracts, 1) AS contratos
+        FROM live_order_log
+        WHERE action = 'SELL_TO_OPEN' AND dry_run = 0 AND sent = 1
+          AND (order_status IS NULL OR order_status NOT IN ({','.join('?' * len(_LIVE_DEAD_STATUSES))}))
+        ORDER BY log_ts
+        """,
+        _LIVE_DEAD_STATUSES,
+    ).fetchall()
+    vacio = {"maximo": 0.0, "maximo_fecha": None, "maximo_posiciones": 0,
+             "ahora": 0.0, "ahora_posiciones": 0, "operaciones": 0}
+    if not filas:
+        return vacio
+
+    eventos = []
+    for f in filas:
+        if not f["log_ts"]:
+            continue
+        noc = float(f["strike"] or 0) * 100.0 * int(f["contratos"] or 1)
+        eventos.append((f["log_ts"][:19], +noc, +1))
+        if f["closed"] and f["close_ts"]:
+            eventos.append((f["close_ts"][:19], -noc, -1))
+    # A igual instante, los CIERRES primero: si una posición cierra y otra abre en el mismo segundo,
+    # no hubo un momento en que las dos estuvieran vivas, y contarlo inflaría el pico.
+    eventos.sort(key=lambda e: (e[0], e[2]))
+
+    vivo = 0.0
+    n = 0
+    pico, pico_ts, pico_n = 0.0, None, 0
+    for ts, dn, dcount in eventos:
+        vivo += dn
+        n += dcount
+        if vivo > pico:
+            pico, pico_ts, pico_n = vivo, ts, n
+    return {
+        "maximo": round(pico, 2),
+        "maximo_fecha": pico_ts[:10] if pico_ts else None,
+        "maximo_posiciones": pico_n,
+        "ahora": round(max(vivo, 0.0), 2),
+        "ahora_posiciones": max(n, 0),
+        "operaciones": len(filas),
+    }
+
+
 def sum_live_collateral_today(conn: sqlite3.Connection, day: date) -> float:
     """Colateral/margen comprometido hoy por aperturas REALES que ocupan cupo (para el tope de capital).
     Una orden rechazada/cancelada no comprometió nada, así que no suma."""

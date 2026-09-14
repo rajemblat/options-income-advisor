@@ -37,6 +37,7 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 from options_advisor.config import load_settings  # noqa: E402
 from options_advisor.storage import db  # noqa: E402
+from options_advisor.storage import repository as repo  # noqa: E402
 
 # Estados en que la orden murió sin llegar a comprometer nada.
 MUERTAS = ("REJECTED", "CANCELED", "EXPIRED", "error")
@@ -46,68 +47,41 @@ def main() -> int:
     conn = db.connect(load_settings().database.resolved_path())
     conn.row_factory = sqlite3.Row
 
+    # La MISMA función que pinta el cartel rojo del dashboard (repository.exposicion_naked). Una
+    # sola cuenta: si el script y la pantalla calcularan cada uno lo suyo, tarde o temprano darían
+    # números distintos y no habría forma de saber cuál creer.
+    exp = repo.exposicion_naked(conn)
+    if not exp["operaciones"]:
+        print("Todavía no hay operaciones reales de naked put registradas.")
+        return 0
+
+    print("\n╔═ EXPOSICIÓN DE LOS NAKED PUTS EN REAL ═╗\n")
+    print(f"{exp['operaciones']} operaciones reales registradas\n")
+    print("— Lo máximo que llegó a haber VIVO al mismo tiempo —")
+    print(f"  Nocional  : ${exp['maximo']:>10,.0f}   el {exp['maximo_fecha']}  "
+          f"({exp['maximo_posiciones']} posiciones)")
+    print("    (nocional = strike × 100 × contratos: lo que costaría comprar las acciones si te")
+    print("     asignaran todo junto. No es el colateral que el broker traba, que es mucho menor.)")
+    print("\n— Ahora mismo —")
+    print(f"  Nocional  : ${exp['ahora']:>10,.0f}   ({exp['ahora_posiciones']} posiciones)")
+
     filas = conn.execute(
         f"""
-        SELECT id, symbol, log_ts, strike, collateral, closed, close_ts, close_reason,
+        SELECT symbol, log_ts, strike, collateral, closed,
                COALESCE(filled_contracts, final_contracts, 1) AS contratos
         FROM live_order_log
         WHERE action = 'SELL_TO_OPEN' AND dry_run = 0 AND sent = 1
           AND (order_status IS NULL OR order_status NOT IN ({','.join('?' * len(MUERTAS))}))
-        ORDER BY log_ts
         """,
         MUERTAS,
     ).fetchall()
-
-    if not filas:
-        print("Todavía no hay operaciones reales de naked put registradas.")
-        return 0
-
-    # Línea de tiempo: cada apertura suma, cada cierre resta. Una posición sin cierre sigue viva.
-    eventos = []
-    for f in filas:
-        col = float(f["collateral"] or 0.0)
-        noc = float(f["strike"] or 0) * 100.0 * int(f["contratos"] or 1)
-        eventos.append((f["log_ts"][:19], +col, +noc, +1))
-        if f["closed"] and f["close_ts"]:
-            eventos.append((f["close_ts"][:19], -col, -noc, -1))
-    eventos.sort(key=lambda e: (e[0], e[3]))   # a igual instante, los cierres primero
-
-    col = noc = 0.0
-    n = 0
-    pico_col = (0.0, "", 0)
-    pico_noc = (0.0, "", 0)
-    pico_n = (0, "")
-    for ts, dc, dn, dcount in eventos:
-        col += dc
-        noc += dn
-        n += dcount
-        if col > pico_col[0]:
-            pico_col = (col, ts, n)
-        if noc > pico_noc[0]:
-            pico_noc = (noc, ts, n)
-        if n > pico_n[0]:
-            pico_n = (n, ts)
-
-    print(f"\n╔═ EXPOSICIÓN DE LOS NAKED PUTS EN REAL ═╗\n")
-    print(f"{len(filas)} operaciones · del {filas[0]['log_ts'][:10]} al {filas[-1]['log_ts'][:10]}\n")
-
-    print("— Lo máximo que llegó a haber VIVO al mismo tiempo —")
-    print(f"  Colateral trabado : ${pico_col[0]:>10,.0f}   el {pico_col[1][:16]}  "
-          f"({pico_col[2]} posiciones)")
-    print(f"  Nocional          : ${pico_noc[0]:>10,.0f}   el {pico_noc[1][:16]}")
-    print(f"  Posiciones a la vez: {pico_n[0]:>9}   el {pico_n[1][:16]}")
-
-    print("\n— Ahora mismo —")
-    print(f"  Colateral trabado : ${col:>10,.0f}")
-    print(f"  Nocional          : ${noc:>10,.0f}")
-    print(f"  Posiciones vivas  : {n:>10}")
-
-    print("\n— Los cinco tickets más grandes (colateral de uno solo) —")
-    for f in sorted(filas, key=lambda r: -(r["collateral"] or 0))[:5]:
-        noc_f = float(f["strike"] or 0) * 100.0 * int(f["contratos"] or 1)
+    print("\n— Los cinco tickets más grandes, por nocional de uno solo —")
+    def _noc(r):
+        return float(r["strike"] or 0) * 100.0 * int(r["contratos"] or 1)
+    for f in sorted(filas, key=lambda r: -_noc(r))[:5]:
         estado = "cerrada" if f["closed"] else "VIVA"
         print(f"  {f['log_ts'][:10]}  {f['symbol']:<6} {f['contratos']}x ${f['strike']:>7,.0f}  "
-              f"colateral ${f['collateral'] or 0:>7,.0f}  nocional ${noc_f:>9,.0f}  {estado}")
+              f"nocional ${_noc(f):>9,.0f}  colateral ${f['collateral'] or 0:>7,.0f}  {estado}")
     print()
     return 0
 
