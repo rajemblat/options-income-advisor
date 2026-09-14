@@ -988,7 +988,8 @@ def exposicion_naked(conn: sqlite3.Connection) -> dict:
         _LIVE_DEAD_STATUSES,
     ).fetchall()
     vacio = {"maximo": 0.0, "maximo_fecha": None, "maximo_ts": None, "maximo_posiciones": 0,
-             "maximo_detalle": [], "ahora": 0.0, "ahora_posiciones": 0, "operaciones": 0}
+             "maximo_detalle": [], "promedio": 0.0, "dias_con_exposicion": 0,
+             "ahora": 0.0, "ahora_posiciones": 0, "operaciones": 0}
     if not filas:
         return vacio
 
@@ -1032,12 +1033,57 @@ def exposicion_naked(conn: sqlite3.Connection) -> dict:
             })
         detalle.sort(key=lambda d: -d["nocional"])
 
+    # PROMEDIO por día (usuario 2026-09-14: "el promedio de exposición, de todos los días que han
+    # estado abierto"). Para CADA día se toma el máximo de ese día, y se promedian esos máximos.
+    #
+    # Dos decisiones que cambian bastante el número, así que conviene dejarlas dichas:
+    #
+    #   · se usa el máximo del día, no el promedio dentro del día. Es para que el promedio hable el
+    #     mismo idioma que el récord de arriba: "un día típico, ¿a cuánto llegaste?".
+    #   · los días SIN nada abierto no entran. Un fin de semana o una semana sin operar meterían
+    #     ceros que bajarían el promedio sin decir nada sobre cómo operás cuando operás.
+    #
+    # Se recorre día por día arrastrando el nivel con que arranca cada uno, porque una posición
+    # abierta el lunes sigue exponiendo el martes aunque ese martes no pase nada.
+    por_dia: dict[str, float] = {}
+    nivel = 0.0
+    dia_actual = None
+    for ts, dn, _ in eventos:
+        dia = ts[:10]
+        if dia != dia_actual:
+            if dia_actual is not None and nivel > 0:
+                # Los días entre medio (sin eventos) heredan el nivel: siguen expuestos.
+                d = date.fromisoformat(dia_actual) + timedelta(days=1)
+                fin = date.fromisoformat(dia)
+                while d < fin:
+                    por_dia[d.isoformat()] = max(por_dia.get(d.isoformat(), 0.0), nivel)
+                    d += timedelta(days=1)
+            dia_actual = dia
+            if nivel > 0:
+                por_dia[dia] = max(por_dia.get(dia, 0.0), nivel)   # lo que arrastra del día previo
+        nivel += dn
+        if nivel > 0:
+            por_dia[dia] = max(por_dia.get(dia, 0.0), nivel)
+    # Desde el último evento hasta hoy, si quedó algo vivo, sigue contando.
+    if nivel > 0 and dia_actual:
+        d = date.fromisoformat(dia_actual) + timedelta(days=1)
+        hoy = date.today()
+        while d <= hoy:
+            por_dia[d.isoformat()] = max(por_dia.get(d.isoformat(), 0.0), nivel)
+            d += timedelta(days=1)
+
+    dias_con_exposicion = {d: v for d, v in por_dia.items() if v > 0}
+    promedio = (sum(dias_con_exposicion.values()) / len(dias_con_exposicion)
+                if dias_con_exposicion else 0.0)
+
     return {
         "maximo": round(pico, 2),
         "maximo_fecha": pico_ts[:10] if pico_ts else None,
         "maximo_ts": pico_ts,
         "maximo_posiciones": pico_n,
         "maximo_detalle": detalle,
+        "promedio": round(promedio, 2),
+        "dias_con_exposicion": len(dias_con_exposicion),
         "ahora": round(max(vivo, 0.0), 2),
         "ahora_posiciones": max(n, 0),
         "operaciones": len(filas),

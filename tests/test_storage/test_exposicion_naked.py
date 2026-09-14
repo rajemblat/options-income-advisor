@@ -168,3 +168,50 @@ def test_el_detalle_suma_exactamente_el_maximo(conn):
     _abrir(conn, symbol="AAL", strike=13.0, contratos=5, ts=datetime(2026, 8, 11, 12, 0))
     exp = repo.exposicion_naked(conn)
     assert sum(d["nocional"] for d in exp["maximo_detalle"]) == pytest.approx(exp["maximo"])
+
+
+# ─────────────────── el promedio por día ───────────────────
+
+def test_el_promedio_es_el_maximo_de_cada_dia_promediado(conn):
+    """Usuario 2026-09-14: "el promedio de exposición, de todos los días que han estado abierto"."""
+    a = _abrir(conn, symbol="NVDA", strike=100.0, contratos=1, ts=datetime(2026, 8, 10, 10, 0))
+    _cerrar(conn, a, datetime(2026, 8, 10, 15, 0))          # día 1: $10.000
+    b = _abrir(conn, symbol="AAPL", strike=200.0, contratos=1, ts=datetime(2026, 8, 11, 10, 0))
+    _cerrar(conn, b, datetime(2026, 8, 11, 15, 0))          # día 2: $20.000
+    exp = repo.exposicion_naked(conn)
+    assert exp["dias_con_exposicion"] == 2
+    assert exp["promedio"] == pytest.approx(15_000)         # (10.000 + 20.000) / 2
+
+
+def test_una_posicion_que_cruza_varios_dias_cuenta_todos(conn):
+    """Una posición abierta el lunes sigue exponiendo el martes aunque ese martes no pase nada."""
+    a = _abrir(conn, symbol="NVDA", strike=100.0, contratos=1, ts=datetime(2026, 8, 10, 10, 0))
+    _cerrar(conn, a, datetime(2026, 8, 13, 15, 0))          # 10, 11, 12 y 13 de agosto
+    exp = repo.exposicion_naked(conn)
+    assert exp["dias_con_exposicion"] == 4
+    assert exp["promedio"] == pytest.approx(10_000)         # el mismo nivel los cuatro días
+
+
+def test_los_dias_sin_nada_abierto_no_bajan_el_promedio(conn):
+    """Meter ceros por los días sin operar diría algo sobre con qué frecuencia operás, no sobre
+    cuánto arriesgás cuando operás — que es lo que se preguntó."""
+    a = _abrir(conn, symbol="NVDA", strike=100.0, contratos=1, ts=datetime(2026, 8, 10, 10, 0))
+    _cerrar(conn, a, datetime(2026, 8, 10, 15, 0))
+    b = _abrir(conn, symbol="NVDA", strike=100.0, contratos=1, ts=datetime(2026, 9, 10, 10, 0))
+    _cerrar(conn, b, datetime(2026, 9, 10, 15, 0))
+    exp = repo.exposicion_naked(conn)
+    assert exp["dias_con_exposicion"] == 2, "el mes de por medio sin nada abierto no cuenta"
+    assert exp["promedio"] == pytest.approx(10_000)
+
+
+def test_el_promedio_nunca_supera_al_maximo(conn):
+    """Invariante: el promedio de los máximos diarios no puede pasar al máximo de todos."""
+    _abrir(conn, symbol="NVDA", strike=100.0, contratos=1, ts=datetime(2026, 8, 10, 10, 0))
+    _abrir(conn, symbol="AAPL", strike=200.0, contratos=1, ts=datetime(2026, 8, 11, 10, 0))
+    exp = repo.exposicion_naked(conn)
+    assert exp["promedio"] <= exp["maximo"]
+
+
+def test_sin_operaciones_el_promedio_es_cero(conn):
+    exp = repo.exposicion_naked(conn)
+    assert exp["promedio"] == 0 and exp["dias_con_exposicion"] == 0

@@ -73,6 +73,12 @@ def main() -> int:
         print(f"    {'':<6} {'':>12}    {'—' * 11}")
         print(f"    {'TOTAL':<6} {'':>12}    ${exp['maximo']:>9,.0f}")
 
+    print("\n— El día típico —")
+    print(f"  Promedio  : ${exp['promedio']:>10,.0f}   sobre {exp['dias_con_exposicion']} días con "
+          f"posiciones abiertas"
+          + (f" ({exp['promedio'] / exp['maximo'] * 100:.0f}% del récord)" if exp["maximo"] else ""))
+    print("    (promedio del máximo de cada día; los días sin nada abierto no cuentan)")
+
     print("\n— Ahora mismo —")
     print(f"  Nocional  : ${exp['ahora']:>10,.0f}   ({exp['ahora_posiciones']} posiciones)")
 

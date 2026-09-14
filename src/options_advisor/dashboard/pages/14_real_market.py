@@ -258,6 +258,29 @@ if _exp["maximo"] > 0:
         unsafe_allow_html=True,
     )
 
+    # Cartel AMARILLO con el promedio (usuario 2026-09-14). El récord dice cuánto llegaste a
+    # arriesgar UNA vez; el promedio dice cuánto arriesgás habitualmente, que para dimensionar la
+    # cuenta suele ser el número más honesto. Un récord alto sobre un promedio bajo es un día
+    # suelto; un promedio cerca del récord significa que operás siempre al tope.
+    if _exp["dias_con_exposicion"]:
+        _prom = _exp["promedio"]
+        _rel = (_prom / _exp["maximo"] * 100.0) if _exp["maximo"] else 0.0
+        st.markdown(
+            f"<div style='background:{ACCENT}14; border:1px solid {ACCENT}; "
+            f"border-left:5px solid {ACCENT}; border-radius:0.5rem; padding:0.6rem 0.9rem; "
+            f"margin:0 0 0.8rem;'>"
+            f"<div style='color:{ACCENT}; font-size:0.62rem; font-weight:700; "
+            f"text-transform:uppercase; letter-spacing:0.06em;'>Exposición promedio por día</div>"
+            f"<div style='color:{ACCENT}; font-size:1.5rem; font-weight:800; line-height:1.15; "
+            f"margin-top:0.15rem;'>&#36;{_prom:,.0f}"
+            f"<span style='font-size:0.85rem; font-weight:600; opacity:0.85;'> &nbsp;·&nbsp; "
+            f"sobre {_exp['dias_con_exposicion']} días con posiciones abiertas</span></div>"
+            f"<div style='color:{TEXT_MUTED}; font-size:0.72rem; margin-top:0.25rem;'>"
+            f"Es el {_rel:.0f}% del récord. Promedio del máximo de cada día; los días sin nada "
+            f"abierto no cuentan.</div></div>",
+            unsafe_allow_html=True,
+        )
+
 st.divider()
 
 # ------------------------- Acciones: START / desarmar / kill (minimalista, con doble confirmación) -------------------------
