@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import platform
 import sqlite3
 from datetime import date, datetime, timedelta
 
@@ -138,40 +139,102 @@ def render_schwab_reconnect(detail: str | None = None, *, stop: bool = True) -> 
         st.stop()
 
 
-# Umbral del aviso anticipado, en horas (usuario 2026-08-18: "me avisas 24 horas antes").
+# Umbrales del aviso, en horas. El de 24 h lo pidió el usuario el 2026-08-18 ("me avisás 24 horas
+# antes") y se queda como el momento en que el cartel se pone URGENTE. Encima se agregó uno más
+# temprano, de 72 h (2026-09-14): el token dura ~7 días, así que uno que vence un viernes a la tarde
+# solo da 24 h de margen si el jueves estás mirando el dashboard. Tres días siempre agarran al menos
+# un día hábil de anticipación.
 TOKEN_WARN_HOURS = 24
+TOKEN_AVISO_TEMPRANO_HORAS = 72
+
+
+def _pasos_para_reconectar() -> str:
+    """Los pasos de reconexión, escritos para la máquina donde el robot corre DE VERDAD.
+
+    Hasta el 2026-09-14 decían `launchctl kickstart` y `cd ~/options-income-advisor`: los pasos de la
+    Mac, de cuando el robot vivía ahí. Después de la mudanza al servidor quedaron mintiendo — el
+    usuario que los siguiera al pie de la letra reiniciaría un robot que no existe en esa máquina y
+    creería que ya está reconectado. Un instructivo desactualizado en el momento de la urgencia es
+    peor que no tener instructivo."""
+    if platform.system() == "Darwin":
+        return (
+            "1. En la Terminal:\n"
+            "```\ncd ~/options-income-advisor\nsource .venv/bin/activate\n"
+            "python scripts/schwab_login.py\n```\n"
+            "2. Abrí la URL que imprime, iniciá sesión en Schwab y pegá de vuelta la URL del "
+            "navegador (va a mostrar un error de 'no se puede acceder a este sitio' — es esperado).\n"
+            "3. **Reiniciá el robot** para que tome el token nuevo:\n"
+            "```\nlaunchctl kickstart -k gui/$(id -u)/"
+            "com.robertoajemblat.options-income-advisor.scheduler\n```\n"
+            "El paso 3 no es opcional: el robot cachea el token en memoria al arrancar."
+        )
+    return (
+        "1. Desde tu Mac, en la Terminal (el `-t` es necesario para poder pegar la URL):\n"
+        "```\nssh -t lokshn@67.205.175.124 'cd ~/options-income-advisor && "
+        "PYTHONPATH=src .venv/bin/python scripts/schwab_login.py'\n```\n"
+        "2. Abrí la URL que imprime, iniciá sesión en Schwab y aprobá el acceso. El navegador va a "
+        "decir **'no se puede acceder a este sitio'** — está bien, es lo esperado: copiá la URL "
+        "completa de la barra de direcciones y pegala en la terminal.\n"
+        "3. **Reiniciá el robot** para que tome el token nuevo:\n"
+        "```\nssh lokshn@67.205.175.124 'systemctl --user restart lokshn-robot lokshn-dashboard'\n```\n"
+        "El paso 3 no es opcional: el robot cachea el token en memoria al arrancar."
+    )
 
 
 def render_schwab_token_warning() -> None:
-    """Cartel de 'te queda poco token' ANTES de que se corte (usuario 2026-08-18).
+    """Cartel del estado de la conexión con Schwab, arriba de TODAS las páginas.
 
-    Complemento de `render_schwab_reconnect`, que solo aparece cuando YA es tarde: el 18/08 el token
-    vencio de madrugada, el robot quedo ciego toda la manana y nadie se entero hasta las 11:46. Este
-    se muestra arriba de todas las paginas y no corta el render — todavia funciona todo, es un
-    recordatorio, no un error."""
+    Historia de por qué es así de insistente:
+
+    · 2026-08-18: el token venció de madrugada, el robot quedó ciego toda la mañana y nadie se
+      enteró hasta las 11:46. De ahí salió el aviso anticipado de 24 h.
+    · 2026-09-11: el token venció un viernes a las 16:35. El vigilante lo detectó y trató de avisar
+      por mail cada hora; el mail nunca salió. El usuario abrió el correo el lunes con miles de
+      mails de "el robot se colgó y lo reinicié solo" —el síntoma— y CERO del token —la causa—. El
+      robot estuvo tres días sin poder ver el mercado.
+
+    Lo que se arregló el 14/09, que es lo que había fallado:
+
+      · VENCIDO ya no se calla. Antes hacía `return` y le dejaba el cartel a `render_schwab_reconnect`,
+        que solo aparece en las páginas que tocan Schwab y solo cuando la llamada explota. O sea que
+        en la página que el usuario mira todos los días —Real Market— un token vencido no decía
+        nada. Ahora el estado más grave es el que más se ve, que es como tiene que ser.
+      · Se avisa desde 72 h antes, no 24. Con ~7 días de token, un vencimiento de viernes a la tarde
+        da un solo día hábil de margen; tres días siempre agarran uno.
+      · El cartel NO depende del mail. Ese es el punto: el mail puede fallar (y falló), pero el
+        dashboard lo mira todos los días."""
     seconds_left = read_refresh_token_seconds_left()
-    if seconds_left is None or seconds_left > TOKEN_WARN_HOURS * 3600:
+    if seconds_left is None:
         return
+
     if seconds_left <= 0:
-        # El cartel de vencido ya lo maneja render_schwab_reconnect en las paginas que tocan Schwab.
+        vencido_hace = abs(seconds_left)
+        dias = int(vencido_hace // 86400)
+        horas = int((vencido_hace % 86400) // 3600)
+        cuanto = f"hace {dias} día(s) y {horas} h" if dias else f"hace {horas} h"
+        st.error(
+            f"🔌 **LA CONEXIÓN CON SCHWAB ESTÁ VENCIDA** ({cuanto}). El robot NO está operando: no "
+            "abre, no cierra y no puede ejecutar el stop de lo que ya tengas abierto. Reconectá "
+            "antes de que abra el mercado.",
+            icon="🔌",
+        )
+        st.markdown(_pasos_para_reconectar())
         return
+
+    if seconds_left > TOKEN_AVISO_TEMPRANO_HORAS * 3600:
+        return
+
     horas = int(seconds_left // 3600)
     restante = f"{horas} horas" if horas >= 1 else f"{int(seconds_left // 60)} minutos"
-    st.warning(
-        f"⏳ **La conexion con Schwab vence en ~{restante}.** Cuando venza, el robot deja de ver el "
-        "mercado y no opera hasta que te reconectes a mano. Mejor hacerlo ahora que con el mercado abierto.",
-        icon="⏳",
+    urgente = seconds_left <= TOKEN_WARN_HOURS * 3600
+    texto = (
+        f"⏳ **La conexión con Schwab vence en ~{restante}.** Cuando venza, el robot deja de ver el "
+        "mercado y no opera hasta que te reconectes a mano. Mejor hacerlo ahora que con el mercado "
+        "abierto."
     )
-    with st.expander("Como reconectar (30 segundos)"):
-        st.markdown(
-            "1. En la Terminal:\n"
-            "```\ncd ~/options-income-advisor\nsource .venv/bin/activate\npython scripts/schwab_login.py\n```\n"
-            "2. Abri la URL que imprime, inicia sesion en Schwab y pega de vuelta la URL del navegador "
-            "(va a mostrar un error de 'no se puede acceder a este sitio' — es esperado).\n"
-            "3. **Reinicia el robot** para que tome el token nuevo:\n"
-            "```\nlaunchctl kickstart -k gui/$(id -u)/com.robertoajemblat.options-income-advisor.scheduler\n```\n"
-            "El paso 3 no es opcional: el robot cachea el token en memoria al arrancar."
-        )
+    (st.warning if urgente else st.info)(texto, icon="⏳")
+    with st.expander("Cómo reconectar (30 segundos)", expanded=urgente):
+        st.markdown(_pasos_para_reconectar())
 
 
 @st.cache_data(ttl=60, show_spinner=False)

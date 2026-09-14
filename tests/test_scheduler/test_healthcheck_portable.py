@@ -48,8 +48,13 @@ def test_el_reinicio_de_linux_no_usa_sudo():
 def test_avisa_por_email_y_no_solo_por_pantalla():
     """En la Mac alcanzaba la notificación nativa porque el usuario estaba delante. En el servidor
     no hay pantalla y Telegram nunca se configuró: sin email, un robot colgado se reparaba en
-    silencio y nadie se enteraba."""
-    assert "send_email_robot_real" in _solo_codigo(_cuerpo("_notify"))
+    silencio y nadie se enteraba.
+
+    Desde el 2026-09-14 el mail sale a través de `_avisar_con_freno`, que es el mismo envío con un
+    freno para las repeticiones (el 11/09 un bucle mandó miles de mails iguales). Lo que se afirma
+    sigue siendo lo mismo: este camino termina en un email."""
+    assert "_avisar_con_freno" in _solo_codigo(_cuerpo("_notify"))
+    assert "send_email_robot_real" in _solo_codigo(_cuerpo("_avisar_con_freno"))
 
 
 def test_la_notificacion_de_macos_no_corre_en_linux():
@@ -82,7 +87,25 @@ def test_un_reinicio_fallido_avisa_por_email():
     """'Tu robot está muerto y no lo puedo revivir' es el mensaje más importante que este sistema
     puede mandar. Si falla el reinicio y nadie se entera, no sirve de nada haberlo detectado."""
     cuerpo = _solo_codigo(_cuerpo("_restart_scheduler"))
-    assert "send_email_robot_real" in cuerpo
+    assert "_avisar_con_freno" in cuerpo
+    assert "send_email_robot_real" in _solo_codigo(_cuerpo("_avisar_con_freno"))
+
+
+def test_el_freno_no_puede_tapar_el_aviso_de_robot_muerto():
+    """Los dos avisos usan CLAVES distintas a propósito: que el robot se esté colgando en bucle no
+    puede silenciar el 'no lo puedo levantar', que es el que necesita que el usuario haga algo."""
+    colgado = _solo_codigo(_cuerpo("_notify"))
+    no_arranca = _solo_codigo(_cuerpo("_restart_scheduler"))
+    assert "CLAVE_COLGADO" in colgado
+    assert "CLAVE_NO_ARRANCA" in no_arranca
+
+
+def test_el_primer_aviso_nunca_se_frena():
+    """El freno agrupa repeticiones; jamás puede hacer que el PRIMER aviso de un problema no salga."""
+    from datetime import datetime
+
+    from options_advisor.alerts import freno_de_avisos
+    assert freno_de_avisos.decidir({}, "lo.que.sea", datetime(2026, 9, 11, 16, 40)).avisar is True
 
 
 def test_el_aviso_dice_como_arreglarlo_en_las_dos_plataformas():
