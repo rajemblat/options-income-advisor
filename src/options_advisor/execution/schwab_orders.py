@@ -199,6 +199,67 @@ def build_iron_condor_close(
     }
 
 
+# ═══════════════════ ROLL DE UN PUT CORTO (usuario 2026-09-09) ═══════════════════
+
+def build_roll_put(
+    viejo_occ_symbol: str, nuevo_occ_symbol: str, quantity: int, net_credit_limit: float,
+    *, duration: str = "DAY", session: str = "NORMAL",
+) -> dict:
+    """Orden COMBINADA de 2 patas para ROLEAR un put corto a un vencimiento más lejano.
+
+        · BUY_TO_CLOSE  el put que ya tenés   (te lo sacás de encima)
+        · SELL_TO_OPEN  el mismo strike, más lejos  (volvés a cobrar prima)
+
+    Va como UNA orden a crédito neto, no como dos sueltas, y eso no es un detalle de comodidad. Si
+    fueran dos órdenes separadas, entre que llena la primera y llena la segunda hay una ventana en
+    la que estás descubierto —o doblemente vendido, según cuál llene antes— y el precio se puede
+    mover justo ahí. Combinada, Schwab ejecuta las dos patas o ninguna.
+
+    `net_credit_limit` es lo MÍNIMO que aceptás cobrar por el roll, por acción. Tiene que ser > 0: la
+    regla del usuario es "a débito NUNCA" (2026-09-09), y acá es donde se hace cumplir de verdad —
+    aunque algo más arriba se equivoque, una orden a débito no se puede ni construir.
+
+    El strike tiene que ser el MISMO en las dos patas ("el strike siempre se mantiene"). No se
+    verifica acá porque el símbolo OCC viene de la cadena y este módulo no lo interpreta; quien lo
+    arma es el motor, que sí compara los strikes. Lo que sí se verifica es que sean dos símbolos
+    distintos: rolear al mismo contrato no es rolear."""
+    if quantity < 1:
+        raise ValueError("quantity debe ser ≥ 1")
+    if not viejo_occ_symbol or not nuevo_occ_symbol:
+        raise ValueError("hacen falta los dos símbolos OCC (el que se cierra y el que se abre)")
+    if viejo_occ_symbol == nuevo_occ_symbol:
+        raise ValueError("el símbolo nuevo es igual al viejo — eso no es un roll")
+    credito = round(float(net_credit_limit), 2)
+    if credito <= 0:
+        raise ValueError(
+            "el crédito neto debe ser > 0 — un roll a débito está prohibido (usuario 2026-09-09: "
+            "'débito nunca')")
+    return {
+        "orderType": "NET_CREDIT",
+        "session": session,
+        "price": f"{credito:.2f}",
+        "duration": duration,
+        "orderStrategyType": "SINGLE",
+        "complexOrderStrategyType": "DIAGONAL",   # mismo strike, distinto vencimiento
+        "orderLegCollection": [
+            _condor_leg(BUY_TO_CLOSE, viejo_occ_symbol, quantity),
+            _condor_leg(SELL_TO_OPEN, nuevo_occ_symbol, quantity),
+        ],
+    }
+
+
+def describe_roll(order: dict, *, symbol: str = "", strike: float | None = None) -> str:
+    """Texto legible del roll, para el dashboard y el log. El usuario aprueba mirando ESTO, así que
+    tiene que decir exactamente qué se cierra, qué se abre y cuánto se cobra."""
+    cerrar, abrir = order["orderLegCollection"][0], order["orderLegCollection"][1]
+    cuanto = float(order["price"]) * 100.0 * int(cerrar["quantity"])
+    cabecera = f"{symbol} " if symbol else ""
+    strike_txt = f"${strike:,.2f} " if strike is not None else ""
+    return (f"ROLL {cabecera}{strike_txt}× {cerrar['quantity']}: recomprar "
+            f"{cerrar['instrument']['symbol']} y vender {abrir['instrument']['symbol']} — "
+            f"crédito neto mínimo ${order['price']} por acción (${cuanto:,.2f} en total).")
+
+
 def describe_order(order: dict) -> str:
     """Texto legible de lo que la orden HARÍA — para el log de dry-run y el dashboard, así el usuario
     revisa que sea exactamente lo que espera antes de arriesgar nada."""
