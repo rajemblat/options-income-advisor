@@ -27,7 +27,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
 
-from options_advisor.alerts import notifier  # noqa: E402
+from options_advisor.alerts import freno_de_avisos, notifier  # noqa: E402
 from options_advisor.broker import get_broker_client  # noqa: E402
 from options_advisor.config import load_settings  # noqa: E402
 from options_advisor.scheduler.healthcheck import run_healthcheck  # noqa: E402
@@ -45,6 +45,44 @@ SCHEDULER_SCRIPT_MARKER = "run_scheduler.py"
 # test_healthcheck_log_path.py ata las dos rutas para que no se separen nunca más.
 LOG_PATH = PROJECT_ROOT / "data" / "logs" / "robot.log"
 HEALTHCHECK_LOG_PATH = PROJECT_ROOT / "data" / "logs" / "healthcheck.log"
+# Estado del FRENO DE AVISOS (2026-09-14). El viernes 11 el robot entró en bucle —se caía, este
+# healthcheck lo levantaba, se volvía a caer— y cada vuelta mandaba un mail. El usuario abrió el
+# correo el lunes con miles: "tampoco quiero que me lleguen más estos emails, me llegan miles".
+# El aviso estaba bien, el volumen no: mil mails iguales entierran al que sí importa.
+FRENO_PATH = PROJECT_ROOT / "data" / "logs" / "avisos_healthcheck.json"
+# Claves de problema. Separadas a propósito: que el robot se esté colgando no puede silenciar el
+# aviso de "no lo puedo levantar", que es mucho más grave y necesita que el usuario haga algo.
+CLAVE_COLGADO = "scheduler.colgado"
+CLAVE_NO_ARRANCA = "scheduler.no_arranca"
+
+
+def _avisar_con_freno(clave: str, asunto: str, cuerpo: str) -> bool:
+    """Manda el mail solo si el freno lo deja pasar. Devuelve si se mandó.
+
+    El primero de cada problema sale al instante; mientras el problema siga se cuenta en silencio;
+    cada 6 h sale un recordatorio que dice cuántas veces volvió a pasar. Si algo del freno falla,
+    el mail sale igual: este mecanismo está para que los avisos sirvan, nunca para tragárselos."""
+    try:
+        estado = freno_de_avisos.cargar(FRENO_PATH)
+        decision = freno_de_avisos.decidir(estado, clave, datetime.now())
+        freno_de_avisos.guardar(FRENO_PATH, estado)
+    except Exception:
+        logging.getLogger(__name__).exception("Freno de avisos: falló; se manda el mail igual")
+        decision = None
+
+    if decision is not None and not decision.avisar:
+        logging.getLogger(__name__).warning(
+            "Aviso '%s' callado por el freno (van %d repeticiones en este episodio). "
+            "El próximo mail sale a las 6 h del anterior.", clave, decision.total)
+        return False
+
+    extra = decision.texto_de_repeticiones if decision is not None else ""
+    try:
+        notifier.send_email_robot_real(asunto, cuerpo + (f"\n{extra}\n" if extra else ""))
+        return True
+    except Exception:
+        logging.getLogger(__name__).exception("Fallo al mandar el email del healthcheck")
+        return False
 
 
 def _scheduler_pid() -> int | None:
@@ -102,17 +140,15 @@ def _restart_scheduler() -> None:
 
     detalle = (resultado.stderr or resultado.stdout or "").strip() or f"código {resultado.returncode}"
     logging.getLogger(__name__).error("NO se pudo reiniciar el robot: %s", detalle)
-    try:
-        notifier.send_email_robot_real(
-            "🚨 Lokshn: el robot está CAÍDO y no lo puedo levantar",
-            "El healthcheck detectó que el robot no está corriendo e intentó reiniciarlo, pero el\n"
-            "sistema rechazó el comando. El robot NO está operando y esto necesita tu intervención.\n\n"
-            f"Comando que falló:\n    {' '.join(comando)}\n\n"
-            f"Respuesta del sistema:\n    {detalle}\n\n"
-            f"{como_arreglarlo}\n",
-        )
-    except Exception:
-        logging.getLogger(__name__).exception("Tampoco se pudo avisar por email del fallo de reinicio")
+    _avisar_con_freno(
+        CLAVE_NO_ARRANCA,
+        "🚨 Lokshn: el robot está CAÍDO y no lo puedo levantar",
+        "El healthcheck detectó que el robot no está corriendo e intentó reiniciarlo, pero el\n"
+        "sistema rechazó el comando. El robot NO está operando y esto necesita tu intervención.\n\n"
+        f"Comando que falló:\n    {' '.join(comando)}\n\n"
+        f"Respuesta del sistema:\n    {detalle}\n\n"
+        f"{como_arreglarlo}\n",
+    )
 
 
 def _notify(message: str) -> None:
@@ -143,17 +179,15 @@ def _notify(message: str) -> None:
         except Exception:
             logging.getLogger(__name__).exception("Fallo al mandar la notificación nativa de macOS")
 
-    try:
-        notifier.send_email_robot_real(
-            "🔧 Lokshn: el robot se colgó y lo reinicié solo",
-            f"{message}\n\n"
-            "Lo hizo el healthcheck automáticamente, así que no tenés que hacer nada. Te llega\n"
-            "este aviso para que sepas que pasó: si se repite varias veces en el mismo día,\n"
-            "algo de fondo anda mal y conviene mirarlo.\n\n"
-            "El detalle queda en data/logs/healthcheck.log.\n",
-        )
-    except Exception:
-        logging.getLogger(__name__).exception("Fallo al mandar el email del healthcheck")
+    _avisar_con_freno(
+        CLAVE_COLGADO,
+        "🔧 Lokshn: el robot se colgó y lo reinicié solo",
+        f"{message}\n\n"
+        "Lo hizo el healthcheck automáticamente, así que no tenés que hacer nada. Te llega\n"
+        "este aviso para que sepas que pasó: si se repite varias veces en el mismo día,\n"
+        "algo de fondo anda mal y conviene mirarlo.\n\n"
+        "El detalle queda en data/logs/healthcheck.log.\n",
+    )
 
     notifier.send_text(f"⚠️ {message}")  # no-op silencioso si Telegram no está configurado
 
@@ -165,6 +199,18 @@ def main() -> None:
     settings = load_settings()
     broker = get_broker_client(settings)
     conn = db.connect(settings.database.resolved_path())
+
+    # Si esta corrida NO tuvo que avisar nada, el robot está sano: se limpia el freno para que el
+    # PRÓXIMO episodio vuelva a avisar al instante (2026-09-14). Sin esto, un problema que aparece,
+    # se va y vuelve dos horas después quedaría callado por el freno del episodio anterior — justo
+    # al revés de lo que uno quiere de un sistema de alertas.
+    hubo_aviso = False
+
+    def _notify_marcando(message: str) -> None:
+        nonlocal hubo_aviso
+        hubo_aviso = True
+        _notify(message)
+
     run_healthcheck(
         settings=settings,
         broker=broker,
@@ -175,8 +221,22 @@ def main() -> None:
         finnhub_api_key=os.environ.get("FINNHUB_API_KEY"),
         get_scheduler_pid=_scheduler_pid,
         restart_scheduler=_restart_scheduler,
-        notify=_notify,
+        notify=_notify_marcando,
     )
+
+    if not hubo_aviso:
+        try:
+            estado = freno_de_avisos.cargar(FRENO_PATH)
+            if estado:
+                veces = sum(freno_de_avisos.marcar_resuelto(estado, c)
+                            for c in (CLAVE_COLGADO, CLAVE_NO_ARRANCA))
+                freno_de_avisos.guardar(FRENO_PATH, estado)
+                if veces:
+                    logging.getLogger(__name__).info(
+                        "El robot está sano de nuevo. El episodio anterior tuvo %d incidente(s); "
+                        "el freno de avisos queda limpio.", veces)
+        except Exception:
+            logging.getLogger(__name__).exception("Freno de avisos: no se pudo limpiar el estado")
 
 
 if __name__ == "__main__":
