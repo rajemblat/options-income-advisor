@@ -228,7 +228,11 @@ def main() -> None:
         try:
             estado = freno_de_avisos.cargar(FRENO_PATH)
             if estado:
-                veces = sum(freno_de_avisos.marcar_resuelto(estado, c)
+                # `marcar_resuelto` solo limpia si el problema estuvo quieto una ventana entera.
+                # Limpiar apenas UNA corrida lo encontraba sano era el bug del 14/09: el robot se
+                # reiniciaba bien, la corrida siguiente lo veía vivo, se borraba el freno, y la
+                # próxima caída volvía a mandar mail. El usuario lo recibió cada dos horas.
+                veces = sum(freno_de_avisos.marcar_resuelto(estado, c, datetime.now())
                             for c in (CLAVE_COLGADO, CLAVE_NO_ARRANCA))
                 freno_de_avisos.guardar(FRENO_PATH, estado)
                 if veces:

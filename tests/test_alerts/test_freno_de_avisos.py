@@ -82,14 +82,42 @@ def test_resolver_hace_que_el_proximo_episodio_avise_al_instante():
     freno.decidir(estado, CLAVE, T0)
     for i in range(1, 10):
         freno.decidir(estado, CLAVE, T0 + timedelta(minutes=i))
-    assert freno.marcar_resuelto(estado, CLAVE) == 10      # 1 + 9
+    # Estuvo sano una ventana entera (el último evento fue en T0+9min): recién ahí se resuelve.
+    assert freno.marcar_resuelto(estado, CLAVE, T0 + timedelta(hours=7)) == 10      # 1 + 9
     assert CLAVE not in estado
-    # Dos horas después vuelve a pasar: tiene que avisar YA, no esperar la ventana vieja.
-    assert freno.decidir(estado, CLAVE, T0 + timedelta(hours=2)).avisar is True
+    # Y cuando vuelve a pasar, avisa YA: no quedó tapado por el freno del episodio anterior.
+    assert freno.decidir(estado, CLAVE, T0 + timedelta(hours=8)).avisar is True
+
+
+def test_un_respiro_corto_NO_cuenta_como_resuelto():
+    """EL BUG DEL 14/09. El robot se caía, el healthcheck lo reiniciaba bien, la corrida siguiente
+    lo encontraba sano y se limpiaba el freno — así que la próxima caída volvía a mandar mail. El
+    usuario lo recibió cada dos horas. Estar sano un rato no es haberse resuelto."""
+    estado = {}
+    freno.decidir(estado, CLAVE, T0)
+    assert freno.marcar_resuelto(estado, CLAVE, T0 + timedelta(minutes=10)) == 0
+    assert CLAVE in estado, "el freno no puede borrarse por un respiro de 10 minutos"
+    # Se vuelve a caer dentro de la ventana: NO debe mandar otro mail.
+    assert freno.decidir(estado, CLAVE, T0 + timedelta(hours=2)).avisar is False
+
+
+def test_el_bucle_de_caidas_con_reinicios_exitosos_manda_un_solo_mail():
+    """El caso real completo: cae, se reinicia bien, queda sano un rato, vuelve a caer. Doce horas
+    de eso a chequeo cada 5 min. Antes era un mail por caída; ahora es el primero y el de las 6 h."""
+    estado = {}
+    mails = 0
+    for i in range(144):
+        t = T0 + timedelta(minutes=5 * i)
+        if i % 24 == 0:                                   # se cae cada 2 horas
+            if freno.decidir(estado, CLAVE, t).avisar:
+                mails += 1
+        else:                                             # el resto del tiempo está sano
+            freno.marcar_resuelto(estado, CLAVE, t)
+    assert mails == 2, f"mandó {mails} mails en 12 horas de caídas cada 2 h"
 
 
 def test_resolver_algo_que_nunca_paso_no_rompe():
-    assert freno.marcar_resuelto({}, CLAVE) == 0
+    assert freno.marcar_resuelto({}, CLAVE, T0) == 0
 
 
 def test_un_estado_corrupto_avisa_igual():

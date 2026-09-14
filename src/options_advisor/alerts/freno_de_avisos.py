@@ -18,8 +18,9 @@ La regla, entonces:
   · pasada la ventana (6 h por defecto) sale UN aviso de recordatorio que dice cuántas veces
     volvió a pasar mientras estuvo callado — esa cuenta es la información valiosa, porque
     distingue "se colgó una vez" de "se colgó 400 veces";
-  · cuando el problema se resuelve, se limpia el estado, así el próximo episodio vuelve a avisar
-    al instante en vez de quedar tapado por el freno del episodio anterior.
+  · cuando el problema se resuelve DE VERDAD —o sea, estuvo sano una ventana entera, no un rato—
+    se limpia el estado, así el próximo episodio vuelve a avisar al instante en vez de quedar
+    tapado por el freno del anterior.
 
 Este módulo es pura decisión sobre un diccionario: no manda mails, no lee el reloj del sistema ni
 abre archivos por su cuenta. Así se puede testear el comportamiento —que es lo delicado— sin
@@ -67,6 +68,7 @@ def decidir(estado: dict, clave: str, ahora: datetime,
     sí — que el robot se esté colgando no puede silenciar un "no lo puedo levantar"."""
     entrada = estado.setdefault(clave, {"ultimo_aviso": None, "calladas": 0, "total": 0})
     entrada["total"] = int(entrada.get("total", 0)) + 1
+    entrada["ultimo_evento"] = ahora.isoformat()   # para saber cuándo dejó de pasar de verdad
 
     ultimo = entrada.get("ultimo_aviso")
     if not ultimo:
@@ -93,14 +95,37 @@ def decidir(estado: dict, clave: str, ahora: datetime,
     return Decision(avisar=False, calladas=entrada["calladas"], total=entrada["total"])
 
 
-def marcar_resuelto(estado: dict, clave: str) -> int:
-    """El problema dejó de pasar: borra su estado y devuelve cuántas veces había ocurrido.
+def marcar_resuelto(estado: dict, clave: str, ahora: datetime,
+                    *, sano_durante_horas: float = VENTANA_POR_DEFECTO_HORAS) -> int:
+    """El problema dejó de pasar: si estuvo sano lo suficiente, borra su estado y devuelve cuántas
+    veces había ocurrido. Si todavía no pasó esa ventana, no limpia nada y devuelve 0.
 
-    Limpiar es lo que hace que el PRÓXIMO episodio vuelva a avisar al instante. Sin esto, un
-    problema que aparece, se va y vuelve dos horas después quedaría callado por el freno del
-    episodio anterior — justo al revés de lo que uno quiere."""
-    entrada = estado.pop(clave, None)
-    return int(entrada.get("total", 0)) if entrada else 0
+    `sano_durante_horas` es la corrección del 2026-09-14, y es el corazón del asunto. La primera
+    versión limpiaba en cuanto UNA corrida encontraba todo bien, y con eso el freno no servía para
+    nada en el caso que más importaba:
+
+        el robot se cae → se avisa → el healthcheck lo reinicia bien → la corrida siguiente lo ve
+        sano → se limpiaba el freno → el robot se vuelve a caer → se avisa OTRA VEZ
+
+    El usuario recibió ese mail cada dos horas toda la jornada. El bucle de caídas es justamente el
+    escenario donde el freno tiene que actuar, y era el único donde no actuaba.
+
+    Limpiar sigue siendo necesario —sin eso, un problema que aparece, se va y vuelve dos horas
+    después quedaría callado por el freno del episodio anterior—. Lo que cambia es qué cuenta como
+    "se fue": no alcanza con un respiro, tiene que aguantar sano una ventana entera."""
+    entrada = estado.get(clave)
+    if not entrada:
+        return 0
+    ultimo = entrada.get("ultimo_evento") or entrada.get("ultimo_aviso")
+    if ultimo:
+        try:
+            sano = (ahora - datetime.fromisoformat(ultimo)).total_seconds() / 3600.0
+        except (TypeError, ValueError):
+            sano = float("inf")   # estado ilegible: mejor limpiar que arrastrar basura
+        if sano < sano_durante_horas:
+            return 0              # respiró, pero todavía no se puede decir que se resolvió
+    estado.pop(clave, None)
+    return int(entrada.get("total", 0))
 
 
 # --- Persistencia (lo único que toca el disco) ---
