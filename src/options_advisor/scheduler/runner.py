@@ -17,6 +17,7 @@ from options_advisor.scheduler.jobs import (
     job_detect_real_trades,
     job_learning_review,
     job_live_position_maintenance,
+    job_roll_tick,
     job_poll_and_analyze,
     job_premarket_digest,
     job_process_chat_orders,
@@ -139,6 +140,10 @@ def build_scheduler(
         # Conexión propia: corre en el executor 'live', un hilo distinto del escaneo pesado.
         job_live_position_maintenance(broker, live_conn, settings)
 
+    def run_roll_tick() -> None:
+        # Conexión propia, executor liviano: unas pocas posiciones, nunca detrás del escaneo pesado.
+        job_roll_tick(broker, live_conn, settings)
+
     def run_peticiones_manuales() -> None:
         """Atiende los pedidos de corrida que deja el dashboard (auditoria 2026-08-22).
 
@@ -257,6 +262,27 @@ def build_scheduler(
             timezone=settings.scheduler.timezone,
         ),
         id="live_position_maintenance",
+        executor="live",
+    )
+    # ROLL de puts cortos (usuario 2026-09-09/14/15). Cada 3 minutos durante el mercado, en el
+    # mismo hilo liviano que el mantenimiento: son unas pocas posiciones abiertas, no el universo.
+    #
+    # Cada 3 y no cada minuto porque lo que hace es caro (pide la cadena de opciones hasta 90 días)
+    # y no es urgente al segundo: se dispara faltando 20 días o menos para el vencimiento, no en una
+    # ventana de minutos. Y el tick empieza mandando lo que el usuario ya aprobó, así una aprobación
+    # nunca espera más de tres minutos para salir.
+    #
+    # El job se registra siempre; si `roll.enabled` está en false no hace nada y ni siquiera le pega
+    # a Schwab.
+    scheduler.add_job(
+        run_roll_tick,
+        CronTrigger(
+            day_of_week="mon-fri",
+            hour=f"{start_h}-{end_h}",
+            minute="*/3",
+            timezone=settings.scheduler.timezone,
+        ),
+        id="roll_tick",
         executor="live",
     )
     # Estrategia 2 — Iron Butterfly 0DTE intradía (usuario 2026-08): tick de 1 minuto durante el

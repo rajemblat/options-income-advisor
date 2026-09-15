@@ -468,7 +468,8 @@ class RollSettings(BaseModel):
     enabled: bool = False            # se prende explícitamente, con el usuario presente
     dte_trigger: int = 20            # se evalúa cuando faltan estos días o menos
     solo_itm: bool = True            # ...y solo si el put está dentro del dinero
-    max_dte: int = 40                # no se rolea más allá de este plazo
+    max_dte: int = 90                # no se rolea más allá de este plazo (usuario 2026-09-15:
+                                     # "el mejor crédito de acá a 90 días"; antes 40)
     # Tope de rolls por posición. Rolear sin límite convierte una pérdida chica en una posición
     # eterna que se rolea sola mes tras mes: al llegar al tope el robot avisa y decide el usuario.
     max_rolls: int = 2

@@ -92,7 +92,11 @@ _NEW_COLUMNS_BY_TABLE = {
         # JSON {param_key: "good"|"normal"|"bad"} — el aprendizaje lo cruza con los pesos del cerebro.
         "param_feedback_json": "TEXT",
     },
+    "roll_proposals": {
+        "candidatos_json": "TEXT",
+    },
     "live_order_log": {
+        "roll_of": "INTEGER",
         "bid": "REAL",
         "ask": "REAL",
         "user_feedback": "TEXT",

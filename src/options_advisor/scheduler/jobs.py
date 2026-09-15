@@ -423,6 +423,47 @@ def job_live_position_maintenance(
             logger.exception("Live-mantenimiento: fallo en %s; se continúa con el resto", _nombre)
 
 
+def job_roll_tick(
+    broker: BrokerClient,
+    conn: sqlite3.Connection,
+    settings: Settings,
+    force: bool = False,
+) -> None:
+    """Un tick del roll: primero MANDA lo que el usuario ya aprobó, después busca qué proponer.
+
+    Ese orden importa. Si primero detectara, una propuesta recién aprobada esperaría hasta el tick
+    siguiente para salir, y el roll es justamente lo que se hace cuando el vencimiento aprieta.
+
+    Corre en el executor liviano, con su propia conexión: el escaneo del universo tarda minutos y
+    este trabajo —unas pocas posiciones abiertas— tiene que entrar holgado. Es la misma lección del
+    19/08, cuando el cierre por objetivo quedaba esperando detrás del escaneo y AAPL se cerró 15:56.
+
+    Nunca manda nada que el usuario no haya aprobado: `detectar_rolls` solo escribe propuestas
+    'pendiente', y `ejecutar_rolls_aprobados` solo mira las que están en 'aprobada'."""
+    today = date.today()
+    if not force and not is_market_day(today):
+        return
+    if not force and market_session() != "abierto":
+        return
+    from options_advisor.execution import roll_engine
+
+    try:
+        resultado = roll_engine.ejecutar_rolls_aprobados(conn, broker, settings)
+        if resultado["enviadas"]:
+            logger.warning("Roll: se mandaron %d roll(s) aprobado(s): %s",
+                           len(resultado["enviadas"]), resultado["enviadas"])
+    except Exception:
+        logger.exception("Roll: falló la ejecución de los rolls aprobados; se sigue con la detección")
+
+    try:
+        resumen = roll_engine.detectar_rolls(conn, broker, settings.roll, hoy=today)
+        if resumen["propuestas"]:
+            logger.warning("Roll: %d propuesta(s) nueva(s) esperando tu aprobación: %s",
+                           len(resumen["propuestas"]), resumen["propuestas"])
+    except Exception:
+        logger.exception("Roll: falló la detección de rolls")
+
+
 def job_poll_and_analyze(
     broker: BrokerClient,
     conn: sqlite3.Connection,

@@ -470,8 +470,18 @@ CREATE TABLE IF NOT EXISTS live_order_log (
                                      -- cobertura, bid/ask…): para puntuar con el dato real de ESTA orden
     price_floor REAL,                -- piso DURO de precio al vender (usuario 2026-08-11: 'no bajes de 3.00'):
                                      -- ni la colocación ni el re-precio bajan de acá, aunque el mid caiga
-    open_email_sent INTEGER DEFAULT 0 -- 1 = ya se mandó el email de APERTURA de esta orden (idempotente,
-                                      -- usuario 2026-08-11: garantiza 1 email por fill sin importar el timing)
+    open_email_sent INTEGER DEFAULT 0, -- 1 = ya se mandó el email de APERTURA de esta orden (idempotente,
+                                       -- usuario 2026-08-11: garantiza 1 email por fill sin importar el timing)
+    -- Si esta fila NACIÓ DE UN ROLL: el id de la posición que se cerró para abrirla.
+    --
+    -- Sirve para dos cosas. La primera es la regla que eligió el usuario el 2026-09-14: el roll es
+    -- DEFENSIVO, no riesgo nuevo, así que no gasta el cupo de órdenes del día ni el de la semana —
+    -- por eso `_live_slot_filter` excluye estas filas. Sin esto, rolear una posición le sacaría al
+    -- robot la orden nueva del día, que es exactamente al revés de lo que el roll intenta hacer.
+    --
+    -- La segunda es poder seguir la cadena hacia atrás: de qué posición viene cada una, cuántas
+    -- veces se roleó y con qué crédito cada vez.
+    roll_of INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_live_order_log_date ON live_order_log(log_date);
 
@@ -554,6 +564,17 @@ CREATE TABLE IF NOT EXISTS roll_proposals (
     credito_por_dia REAL NOT NULL,         -- la vara con la que se eligió este vencimiento
     spot REAL,                             -- dónde estaba la acción al proponer
     motivo TEXT,                           -- en palabras, para el dashboard
+    -- EL MENÚ COMPLETO (usuario 2026-09-15: "que me muestre un cartel y me diga que elija uno con
+    -- todo el menú de opciones de una semana a 90 días"). JSON con TODOS los vencimientos que pagan
+    -- crédito: semanal, quincenal, mensual y lo que haya hasta los 90 días, cada uno con su crédito,
+    -- los días que agrega y el crédito POR DÍA.
+    --
+    -- Los que darían débito NO entran: "si es débito ni me pregunta".
+    --
+    -- Se guarda entero, y no se recalcula al mostrar, por la misma razón que los símbolos OCC: lo que
+    -- el usuario ve en la pantalla tiene que ser exactamente lo que se manda. Un menú recalculado al
+    -- redibujar la página mostraría precios distintos de los que se van a ejecutar.
+    candidatos_json TEXT,
     -- pendiente → aprobada → enviada | rechazada | vencida | error
     --
     -- 'vencida' es importante: una propuesta de ayer no se puede ejecutar hoy. Los precios que la

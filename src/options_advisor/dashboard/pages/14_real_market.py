@@ -345,6 +345,114 @@ if _exp["maximo"] > 0:
             unsafe_allow_html=True,
         )
 
+# ═══════════════ ROLL DE PUTS CORTOS — PROPONE EL ROBOT, APRUEBA EL USUARIO ═══════════════
+# Usuario 2026-09-14: "que proponga y yo apruebo". Usuario 2026-09-15: "lo mejor sería que me
+# muestre un cartel y me diga que elija uno, con todo el menú de opciones de una semana a 90 días".
+#
+# Este panel NO manda órdenes. Aprobar solo pasa la propuesta a 'aprobada'; el scheduler la manda en
+# su próximo tick (cada 3 minutos). Es el mismo patrón que el cierre manual del condor, y por la
+# misma razón: Streamlit re-ejecuta la página entera con cada clic, y una orden real no puede
+# depender de cuántas veces se redibujó una pantalla.
+#
+# Los números que se ven acá son los que se guardaron al proponer, no unos recalculados al dibujar:
+# lo que el usuario aprueba tiene que ser exactamente lo que se manda.
+_rolls = repo.get_roll_proposals(conn, status="pendiente")
+_rolls_aprobados = repo.get_roll_proposals(conn, status="aprobada")
+
+if _rolls_aprobados:
+    st.info(f"⏳ {len(_rolls_aprobados)} roll(s) aprobado(s) esperando salir. El robot los manda en "
+            "su próximo tick (hasta 3 minutos), con el mercado abierto.", icon="⏳")
+
+for _rp in _rolls:
+    _menu = repo.candidatos_del_roll(conn, _rp["id"])
+    _spot = _rp["spot"]
+    st.markdown(
+        f"<div style='background:{AMARILLO}14; border:1px solid {AMARILLO}; "
+        f"border-left:5px solid {AMARILLO}; border-radius:0.5rem; padding:0.7rem 0.95rem; "
+        f"margin:0.4rem 0 0.2rem;'>"
+        f"<div style='color:{AMARILLO}; font-size:0.62rem; font-weight:700; text-transform:uppercase; "
+        f"letter-spacing:0.06em;'>Hay que rolear &mdash; elegí el vencimiento</div>"
+        f"<div style='color:{AMARILLO}; font-size:1.25rem; font-weight:800; margin-top:0.15rem;'>"
+        f"{_rp['symbol']} put &#36;{_rp['strike']:,.2f} &times; {_rp['contracts']}"
+        f"<span style='font-size:0.85rem; font-weight:600; opacity:0.85;'> &nbsp;&middot;&nbsp; vence "
+        f"{_rp['expiration_vieja']} (faltan {_rp['dte_viejo']} días)</span></div>"
+        f"<div style='color:{TEXT_MUTED}; font-size:0.75rem; margin-top:0.3rem;'>"
+        + (f"La acción está en <b>&#36;{_spot:,.2f}</b>, por debajo del strike. " if _spot else "")
+        + f"Recomprar el que tenés cuesta <b>&#36;{_rp['costo_recompra']:.2f}</b> por acción (al ask). "
+        f"{_rp['motivo']}</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    if not _menu:
+        # Propuesta vieja, de antes de que existiera el menú: se muestra la única opción que guardó.
+        _menu = [{"expiration": _rp["expiration_nueva"], "dte": _rp["dte_nuevo"],
+                  "dias_agregados": _rp["dias_agregados"], "credito_neto": _rp["credito_neto"],
+                  "credito_total": round(_rp["credito_neto"] * 100.0, 2),
+                  "credito_por_dia": _rp["credito_por_dia"], "prima_nueva": _rp["prima_nueva"],
+                  "occ": _rp["occ_nuevo"], "recomendado": True}]
+
+    def _etiqueta(c, contratos=_rp["contracts"]):
+        try:
+            _f = _dt.date.fromisoformat(str(c["expiration"])).strftime("%d/%m/%Y")
+        except (ValueError, TypeError):
+            _f = str(c["expiration"])
+        return (f"{_f}  ·  +{c['dias_agregados']} días  ·  crédito "
+                f"${c['credito_total'] * contratos:,.2f}  ·  "
+                f"${c['credito_por_dia'] * 100:,.2f} por día"
+                + ("   ⭐ el que más rinde por día" if c.get("recomendado") else ""))
+
+    _opciones = [str(c["expiration"]) for c in _menu]
+    _elegido = st.radio(
+        f"Vencimientos que pagan crédito (hasta {settings.roll.max_dte} días) — los que darían "
+        "débito no se muestran",
+        _opciones, index=0, key=f"roll_opt_{_rp['id']}",
+        format_func=lambda e, m=_menu: _etiqueta(next(c for c in m if str(c["expiration"]) == e)),
+    )
+    _sel = next(c for c in _menu if str(c["expiration"]) == _elegido)
+    st.caption(
+        f"El strike se mantiene en ${_rp['strike']:,.2f}. Se recompra a ${_rp['costo_recompra']:.2f} "
+        f"y se vende a ${_sel['prima_nueva']:.2f}: crédito neto **${_sel['credito_neto']:.2f}** por "
+        f"acción, **${_sel['credito_total'] * _rp['contracts']:,.2f}** en total por los "
+        f"{_rp['contracts']} contrato(s). Va como UNA sola orden combinada, a ese precio exacto."
+    )
+
+    _r1, _r2, _r3 = st.columns([1.3, 1, 2.2])
+    if _r1.button("✅ Ejecutar este roll", key=f"roll_ok_{_rp['id']}", type="primary",
+                  use_container_width=True, disabled=kill,
+                  help="Guarda tu decisión. La orden la manda el robot en su próximo tick — el "
+                       "dashboard nunca toca el broker."):
+        repo.elegir_candidato_del_roll(conn, _rp["id"], _elegido)
+        repo.aprobar_roll(conn, _rp["id"])
+        st.toast(f"Roll de {_rp['symbol']} aprobado — sale en el próximo tick.", icon="✅")
+        st.rerun()
+    if _r2.button("✖ Rechazar", key=f"roll_no_{_rp['id']}", use_container_width=True,
+                  help="Descarta esta propuesta. Si sigue correspondiendo, el robot la vuelve a "
+                       "proponer con los precios del momento."):
+        repo.rechazar_roll(conn, _rp["id"])
+        st.rerun()
+    if kill:
+        _r3.caption("🛑 Kill switch activo: desactivalo para poder ejecutar.")
+
+# Historial corto, para ver qué pasó con los últimos. Sin esto, una propuesta que falló desaparece
+# de la pantalla sin dejar rastro y no hay forma de saber por qué no se roleó.
+_rolls_hechos = (repo.get_roll_proposals(conn, status="enviada")[:5]
+                 + repo.get_roll_proposals(conn, status="error")[:5]
+                 + repo.get_roll_proposals(conn, status="rechazada")[:3]
+                 + repo.get_roll_proposals(conn, status="vencida")[:3])
+if _rolls_hechos:
+    with st.expander(f"🔁 Últimos rolls ({len(_rolls_hechos)})"):
+        _icono = {"enviada": "✅", "error": "🔴", "rechazada": "✖", "vencida": "⏳"}
+        for _h in sorted(_rolls_hechos, key=lambda r: r["id"], reverse=True):
+            st.markdown(
+                f"{_icono.get(_h['status'], '·')} **{_h['symbol']} ${_h['strike']:,.2f}** "
+                f"{_h['expiration_vieja']} → {_h['expiration_nueva']} · crédito "
+                f"${(_h['credito_real'] if _h['credito_real'] is not None else _h['credito_neto']) * 100 * _h['contracts']:,.2f} "
+                f"· {str(_h['resolved_at'] or _h['created_at'])[:16].replace('T', ' ')}"
+                + (f"  \n<span style='color:#94a3b8; font-size:0.8rem;'>{_h['result_note']}</span>"
+                   if _h["result_note"] else ""),
+                unsafe_allow_html=True,
+            )
+
 st.divider()
 
 # ------------------------- Acciones: START / desarmar / kill (minimalista, con doble confirmación) -------------------------
@@ -866,7 +974,7 @@ if _closed:
     with st.expander(f"📋 Ver las {len(_closed)} cerrada(s) de hoy"):
         _reason_es = {"profit_target": "objetivo de ganancia", "stop_loss": "stop-loss", "dte_close": "cerca del vencimiento",
                       "news_close": "noticia importante", "expired": "vencida", "closed_in_broker": "cerrada en Schwab",
-                      "manual_ai": "cierre manual (pedido por chat)"}
+                      "manual_ai": "cierre manual (pedido por chat)", "roll": "rolada a otro vencimiento"}
         for r in _closed:
             _pnl = r["realized_pnl"]
             _pnl_txt = f"**P&L \\${_pnl:+,.2f}**" if _pnl is not None else "P&L (reconciliar en Schwab)"

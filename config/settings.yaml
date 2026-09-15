@@ -526,8 +526,16 @@ live_trading:
 # Se prende con el usuario presente: es la primera función que CIERRA y ABRE posiciones reales por
 # su cuenta.
 roll:
-  enabled: false                   # ← prender acá cuando esté validado
+  # PRENDIDO el 2026-09-15, a pedido del usuario ("la tiene que hacer el robot porque si no no queda
+  # registrado, es buen momento para empezar"), con AAL $13 a tres días de vencer y dentro del dinero.
+  #
+  # Qué prende exactamente: el robot PROPONE. Nada sale a Schwab hasta que el usuario elige un
+  # vencimiento del menú y aprieta el botón en Real Market. Prendido y sin aprobar, esto no manda
+  # una sola orden.
+  enabled: true
   dte_trigger: 20                  # se evalúa a 20 días del vencimiento o menos
   solo_itm: true                   # ...y solo si el put quedó dentro del dinero
-  max_dte: 40                      # no se rolea más allá de 40 días
+  # Hasta 90 días (usuario 2026-09-15: "el mejor crédito de acá a 90 días"). Antes eran 40: el menú
+  # se quedaba corto y dejaba afuera vencimientos que sí pagaban.
+  max_dte: 90
   max_rolls: 2                     # después de 2 rolls avisa y decide el usuario

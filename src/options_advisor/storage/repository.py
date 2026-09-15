@@ -800,20 +800,20 @@ def insert_live_order_log(
     start_limit_price: float | None, collateral: float, dry_run: bool, sent: bool,
     reasons: str | None, payload_json: str | None, ladder_json: str | None,
     bid: float | None = None, ask: float | None = None, open_context_json: str | None = None,
-    price_floor: float | None = None,
+    price_floor: float | None = None, roll_of: int | None = None,
 ) -> int:
     cur = conn.execute(
         """
         INSERT INTO live_order_log
             (log_date, log_ts, symbol, action, strike, expiration, approved, final_contracts,
              start_limit_price, collateral, dry_run, sent, reasons, payload_json, ladder_json, bid, ask,
-             open_context_json, price_floor, open_email_sent)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+             open_context_json, price_floor, open_email_sent, roll_of)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
         """,
         (log_date.isoformat(), log_ts.isoformat(), symbol, action, strike, expiration,
          1 if approved else 0, final_contracts, start_limit_price, collateral,
          1 if dry_run else 0, 1 if sent else 0, reasons, payload_json, ladder_json, bid, ask,
-         open_context_json, price_floor),
+         open_context_json, price_floor, roll_of),
     )
     conn.commit()
     return cur.lastrowid
@@ -930,6 +930,9 @@ def _live_slot_filter() -> str:
     placeholders = ", ".join("?" for _ in _LIVE_DEAD_STATUSES)
     return (
         "action = 'SELL_TO_OPEN' AND dry_run = 0 AND sent = 1 "
+        # Un roll NO ocupa cupo (usuario 2026-09-14): es defensivo, no riesgo nuevo. Si contara,
+        # rolear una posición le sacaría al robot su orden del día — al revés de lo que busca.
+        "AND COALESCE(roll_of, 0) = 0 "
         f"AND (order_status IS NULL OR order_status NOT IN ({placeholders}))"
     )
 
@@ -2383,7 +2386,7 @@ def insert_roll_proposal(
     expiration_vieja: date, expiration_nueva: date, dte_viejo: int, dte_nuevo: int,
     dias_agregados: int, occ_viejo: str, occ_nuevo: str, costo_recompra: float, prima_nueva: float,
     credito_neto: float, credito_por_dia: float, spot: float | None, motivo: str,
-    now: datetime | None = None,
+    candidatos: list[dict] | None = None, now: datetime | None = None,
 ) -> int:
     """Guarda una propuesta de roll para que el usuario la apruebe.
 
@@ -2397,14 +2400,16 @@ def insert_roll_proposal(
         INSERT INTO roll_proposals
             (created_at, open_order_id, symbol, strike, contracts, expiration_vieja,
              expiration_nueva, dte_viejo, dte_nuevo, dias_agregados, occ_viejo, occ_nuevo,
-             costo_recompra, prima_nueva, credito_neto, credito_por_dia, spot, motivo, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendiente')
+             costo_recompra, prima_nueva, credito_neto, credito_por_dia, spot, motivo,
+             candidatos_json, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendiente')
         """,
         ((now or datetime.now()).isoformat(), open_order_id, symbol, float(strike), int(contracts),
          expiration_vieja.isoformat(), expiration_nueva.isoformat(), int(dte_viejo), int(dte_nuevo),
          int(dias_agregados), occ_viejo, occ_nuevo, float(costo_recompra), float(prima_nueva),
          float(credito_neto), float(credito_por_dia),
-         float(spot) if spot is not None else None, motivo),
+         float(spot) if spot is not None else None, motivo,
+         json.dumps(candidatos) if candidatos else None),
     )
     conn.commit()
     return cur.lastrowid
@@ -2431,6 +2436,53 @@ def hay_roll_pendiente_para(conn: sqlite3.Connection, open_order_id: int) -> boo
         (open_order_id,),
     ).fetchone()
     return row is not None
+
+
+def candidatos_del_roll(conn: sqlite3.Connection, proposal_id: int) -> list[dict]:
+    """El menú guardado con la propuesta. Lista vacía si la fila es vieja o no tiene menú."""
+    fila = get_roll_proposal(conn, proposal_id)
+    if fila is None:
+        return []
+    try:
+        crudo = fila["candidatos_json"]
+    except (KeyError, IndexError):
+        return []
+    if not crudo:
+        return []
+    try:
+        datos = json.loads(crudo)
+    except (TypeError, ValueError):
+        return []
+    return datos if isinstance(datos, list) else []
+
+
+def elegir_candidato_del_roll(conn: sqlite3.Connection, proposal_id: int,
+                              expiration_nueva: str) -> bool:
+    """Cambia el vencimiento elegido de una propuesta por otro DEL MENÚ (usuario 2026-09-15: "que
+    elija uno con todo el menú de opciones").
+
+    Solo acepta vencimientos que ya estaban guardados en el menú, con sus precios de ese momento. No
+    se recalcula nada: lo que el usuario vio es lo que se manda, y un vencimiento que no está en el
+    menú no pasó por las reglas (crédito > 0, dentro del tope de días) y no se puede elegir.
+
+    Devuelve False si la propuesta ya no está pendiente o el vencimiento no está en el menú."""
+    fila = get_roll_proposal(conn, proposal_id)
+    if fila is None or fila["status"] != "pendiente":
+        return False
+    elegido = next((c for c in candidatos_del_roll(conn, proposal_id)
+                    if str(c.get("expiration")) == str(expiration_nueva)), None)
+    if elegido is None:
+        return False
+    conn.execute(
+        "UPDATE roll_proposals SET expiration_nueva = ?, dte_nuevo = ?, dias_agregados = ?, "
+        "occ_nuevo = ?, prima_nueva = ?, credito_neto = ?, credito_por_dia = ? "
+        "WHERE id = ? AND status = 'pendiente'",
+        (str(elegido["expiration"]), int(elegido["dte"]), int(elegido["dias_agregados"]),
+         str(elegido["occ"]), float(elegido["prima_nueva"]), float(elegido["credito_neto"]),
+         float(elegido["credito_por_dia"]), proposal_id),
+    )
+    conn.commit()
+    return True
 
 
 def aprobar_roll(conn: sqlite3.Connection, proposal_id: int, now: datetime | None = None) -> None:
