@@ -515,3 +515,56 @@ CREATE TABLE IF NOT EXISTS ai_suggested_orders (
     result_note TEXT                  -- detalle del resultado (fill, rechazo del guardián, error…)
 );
 CREATE INDEX IF NOT EXISTS idx_ai_suggested_status ON ai_suggested_orders(status);
+
+-- ========================= ROLL DE PUTS CORTOS (usuario 2026-09-09) =========================
+-- Nació de dos AAL de strike $13 que vencían en 9 días con la acción en $12.92: camino a la
+-- asignación, y el robot sin nada que hacer al respecto.
+--
+-- El robot PROPONE, el usuario APRUEBA (usuario 2026-09-14, eligiendo cómo estrenar la función:
+-- "que proponga y yo apruebo"). Es la primera que cierra Y abre posiciones reales por su cuenta,
+-- así que las primeras las mira él antes de que salgan.
+--
+-- El flujo, y por qué esta tabla existe: el dashboard NUNCA manda órdenes — solo cambia `status` a
+-- 'aprobada'. El scheduler, en su próximo tick, ve eso y manda. Mismo patrón que el cierre manual
+-- del condor (`manual_close_requested`), y por la misma razón: Streamlit se re-ejecuta entero con
+-- cada clic, y una orden real no puede depender de cuántas veces se redibujó una página.
+CREATE TABLE IF NOT EXISTS roll_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at TEXT NOT NULL,
+    -- La posición que se va a rolear: la fila de live_order_log que la abrió.
+    open_order_id INTEGER NOT NULL,
+    symbol TEXT NOT NULL,
+    strike REAL NOT NULL,                  -- el MISMO en las dos patas: "el strike siempre se mantiene"
+    contracts INTEGER NOT NULL,
+    -- De dónde y hacia dónde.
+    expiration_vieja TEXT NOT NULL,        -- YYYY-MM-DD
+    expiration_nueva TEXT NOT NULL,
+    dte_viejo INTEGER NOT NULL,
+    dte_nuevo INTEGER NOT NULL,
+    dias_agregados INTEGER NOT NULL,
+    -- Los símbolos OCC EXACTOS de la cadena. No se reconstruyen al ejecutar: entre que se propone y
+    -- se aprueba pueden pasar horas, y un símbolo armado a mano sobre el instrumento equivocado es
+    -- el error más caro que puede cometer este sistema.
+    occ_viejo TEXT NOT NULL,
+    occ_nuevo TEXT NOT NULL,
+    -- La cuenta, con precios EJECUTABLES al momento de proponer (recompra al ask, venta al bid).
+    costo_recompra REAL NOT NULL,          -- por acción
+    prima_nueva REAL NOT NULL,             -- por acción
+    credito_neto REAL NOT NULL,            -- por acción; SIEMPRE > 0 (a débito no se propone)
+    credito_por_dia REAL NOT NULL,         -- la vara con la que se eligió este vencimiento
+    spot REAL,                             -- dónde estaba la acción al proponer
+    motivo TEXT,                           -- en palabras, para el dashboard
+    -- pendiente → aprobada → enviada | rechazada | vencida | error
+    --
+    -- 'vencida' es importante: una propuesta de ayer no se puede ejecutar hoy. Los precios que la
+    -- justificaban ya no existen, y el 02/09 una orden de condor que llenó 38 minutos tarde entró
+    -- en un mercado que ya no era el que la había justificado.
+    status TEXT NOT NULL DEFAULT 'pendiente',
+    approved_at TEXT,
+    resolved_at TEXT,
+    schwab_order_id TEXT,
+    credito_real REAL,                     -- lo que se cobró de verdad al llenar
+    result_note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_roll_proposals_status ON roll_proposals(status);
+CREATE INDEX IF NOT EXISTS idx_roll_proposals_open ON roll_proposals(open_order_id);

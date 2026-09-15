@@ -2372,3 +2372,125 @@ def get_real_condor_close_working(row) -> tuple[str | None, float | None]:
         return row["close_working_order_id"], row["close_working_price"]
     except (KeyError, IndexError, TypeError):
         return None, None
+
+
+# ═══════════════════ ROLL DE PUTS CORTOS (usuario 2026-09-09) ═══════════════════
+# El robot PROPONE y el usuario APRUEBA (2026-09-14). El dashboard nunca manda órdenes: solo pasa
+# la propuesta a 'aprobada'. El scheduler la ejecuta en el próximo tick.
+
+def insert_roll_proposal(
+    conn: sqlite3.Connection, *, open_order_id: int, symbol: str, strike: float, contracts: int,
+    expiration_vieja: date, expiration_nueva: date, dte_viejo: int, dte_nuevo: int,
+    dias_agregados: int, occ_viejo: str, occ_nuevo: str, costo_recompra: float, prima_nueva: float,
+    credito_neto: float, credito_por_dia: float, spot: float | None, motivo: str,
+    now: datetime | None = None,
+) -> int:
+    """Guarda una propuesta de roll para que el usuario la apruebe.
+
+    `credito_neto` tiene que venir > 0. No se valida acá por gusto: es la regla "débito nunca" del
+    usuario, y una propuesta a débito no debería llegar ni a existir en la base — si estuviera
+    guardada, un clic distraído la podría ejecutar."""
+    if credito_neto <= 0:
+        raise ValueError("no se propone un roll a débito (usuario 2026-09-09: 'débito nunca')")
+    cur = conn.execute(
+        """
+        INSERT INTO roll_proposals
+            (created_at, open_order_id, symbol, strike, contracts, expiration_vieja,
+             expiration_nueva, dte_viejo, dte_nuevo, dias_agregados, occ_viejo, occ_nuevo,
+             costo_recompra, prima_nueva, credito_neto, credito_por_dia, spot, motivo, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pendiente')
+        """,
+        ((now or datetime.now()).isoformat(), open_order_id, symbol, float(strike), int(contracts),
+         expiration_vieja.isoformat(), expiration_nueva.isoformat(), int(dte_viejo), int(dte_nuevo),
+         int(dias_agregados), occ_viejo, occ_nuevo, float(costo_recompra), float(prima_nueva),
+         float(credito_neto), float(credito_por_dia),
+         float(spot) if spot is not None else None, motivo),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_roll_proposals(conn: sqlite3.Connection, *, status: str = "pendiente") -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM roll_proposals WHERE status = ? ORDER BY id DESC", (status,)
+    ).fetchall()
+
+
+def get_roll_proposal(conn: sqlite3.Connection, proposal_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM roll_proposals WHERE id = ?", (proposal_id,)).fetchone()
+
+
+def hay_roll_pendiente_para(conn: sqlite3.Connection, open_order_id: int) -> bool:
+    """¿Esta posición ya tiene una propuesta esperando aprobación?
+
+    Sin esto, cada tick del scheduler generaría una propuesta nueva de la misma posición y el
+    usuario vería veinte tarjetas iguales — el mismo problema de volumen que los mil mails del
+    11/09, con otra cara."""
+    row = conn.execute(
+        "SELECT 1 FROM roll_proposals WHERE open_order_id = ? AND status IN ('pendiente', 'aprobada')",
+        (open_order_id,),
+    ).fetchone()
+    return row is not None
+
+
+def aprobar_roll(conn: sqlite3.Connection, proposal_id: int, now: datetime | None = None) -> None:
+    """El usuario apretó «Ejecutar este roll». SOLO cambia el estado — la orden la manda el
+    scheduler en su próximo tick. El dashboard nunca toca el broker: Streamlit se re-ejecuta
+    entero con cada clic, y una orden real no puede depender de cuántas veces se redibujó
+    la página."""
+    conn.execute(
+        "UPDATE roll_proposals SET status = 'aprobada', approved_at = ? "
+        "WHERE id = ? AND status = 'pendiente'",
+        ((now or datetime.now()).isoformat(), proposal_id),
+    )
+    conn.commit()
+
+
+def rechazar_roll(conn: sqlite3.Connection, proposal_id: int, now: datetime | None = None) -> None:
+    conn.execute(
+        "UPDATE roll_proposals SET status = 'rechazada', resolved_at = ? WHERE id = ? "
+        "AND status IN ('pendiente', 'aprobada')",
+        ((now or datetime.now()).isoformat(), proposal_id),
+    )
+    conn.commit()
+
+
+def cerrar_roll(
+    conn: sqlite3.Connection, proposal_id: int, *, status: str, nota: str,
+    schwab_order_id: str | None = None, credito_real: float | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Resultado final: 'enviada', 'vencida' o 'error', con el detalle en `nota`."""
+    conn.execute(
+        "UPDATE roll_proposals SET status = ?, resolved_at = ?, result_note = ?, "
+        "schwab_order_id = ?, credito_real = ? WHERE id = ?",
+        (status, (now or datetime.now()).isoformat(), nota, schwab_order_id, credito_real,
+         proposal_id),
+    )
+    conn.commit()
+
+
+def caducar_rolls_viejos(conn: sqlite3.Connection, hoy: date, now: datetime | None = None) -> int:
+    """Vence las propuestas que no son de hoy. Devuelve cuántas.
+
+    Una propuesta de ayer NO se puede ejecutar: los precios que la justificaban ya no existen. Es la
+    misma lección del condor que el 02/09 llenó 38 minutos tarde, en un mercado que ya no era el que
+    había justificado la entrada — solo que acá la ventana es de días, no de minutos."""
+    cur = conn.execute(
+        "UPDATE roll_proposals SET status = 'vencida', resolved_at = ?, "
+        "result_note = 'los precios que la justificaban ya no valen; se propone de nuevo si "
+        "sigue correspondiendo' "
+        "WHERE status IN ('pendiente', 'aprobada') AND substr(created_at, 1, 10) < ?",
+        ((now or datetime.now()).isoformat(), hoy.isoformat()),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
+def contar_rolls_de(conn: sqlite3.Connection, open_order_id: int) -> int:
+    """Cuántas veces se roleó ya esta posición — para el tope `max_rolls`."""
+    row = conn.execute(
+        "SELECT COUNT(*) FROM roll_proposals WHERE open_order_id = ? AND status = 'enviada'",
+        (open_order_id,),
+    ).fetchone()
+    return row[0] if row else 0
