@@ -300,7 +300,6 @@ def detectar_rolls(conn, broker, cfg, *, hoy: date | None = None,
 # venta por separado: entre una y otra habría un instante sin cobertura, y si la segunda fallara la
 # posición quedaría deshecha sin que nadie lo decidiera.
 
-ESPERA_POR_DEFECTO_SEGUNDOS = 45
 _ESTADOS_MUERTOS = {"CANCELED", "REJECTED", "EXPIRED"}
 
 
@@ -346,6 +345,36 @@ def precio_neto_del_fill(order_info: dict) -> float | None:
         neto += promedio if patas[leg_id].startswith("SELL") else -promedio
     neto = round(neto, 4)
     return neto if neto > 0 else None
+
+
+def escalera_de_credito(credito: float, pct: float, max_peldanos: int = 6) -> list[float]:
+    """Los precios que se van a ir probando, del aprobado al piso (usuario 2026-09-15).
+
+    El piso es `crédito × (1 − pct)`, redondeado a centavos y SIEMPRE mayor que cero: un roll a
+    débito está prohibido, así que la escalera no puede cruzar el cero ni tocarlo.
+
+    Se acotan los peldaños porque el tiempo no es gratis: el tick del roll corre cada 3 minutos y
+    esta orden vive dentro de un tick. Con 6 peldaños de 20 segundos son 2 minutos como máximo. Si
+    el rango da para más de 6 centavos, los pasos se agrandan en vez de multiplicarse.
+
+    Siempre devuelve al menos el precio aprobado: aunque no haya margen para negociar, la orden se
+    manda igual."""
+    credito = round(float(credito), 2)
+    if credito <= 0:
+        raise ValueError("el crédito aprobado tiene que ser > 0")
+    piso = max(0.01, round(credito * (1.0 - max(0.0, float(pct))), 2))
+    if piso >= credito:
+        return [credito]
+    centavos = int(round((credito - piso) * 100))
+    pasos = min(max(1, int(max_peldanos) - 1), centavos)
+    precios = [credito]
+    for i in range(1, pasos + 1):
+        precio = round(credito - (credito - piso) * i / pasos, 2)
+        if precio < precios[-1] and precio >= piso:
+            precios.append(precio)
+    if precios[-1] != piso:
+        precios.append(piso)
+    return precios
 
 
 def _freno_para_ejecutar(conn, broker, settings) -> str | None:
@@ -417,7 +446,6 @@ def _anotar_el_roll(conn, fila, credito_real: float, schwab_order_id: str, now: 
 
 
 def ejecutar_rolls_aprobados(conn, broker, settings, *, now: datetime | None = None,
-                             espera_segundos: int = ESPERA_POR_DEFECTO_SEGUNDOS,
                              sleep=time.sleep, clock=time.monotonic) -> dict:
     """Manda las propuestas que el usuario aprobó, una por una, y anota el resultado.
 
@@ -452,9 +480,8 @@ def ejecutar_rolls_aprobados(conn, broker, settings, *, now: datetime | None = N
 
     for fila in aprobadas:
         try:
-            _ejecutar_una(conn, broker, account_hash, fila, now=now,
-                          espera_segundos=espera_segundos, sleep=sleep, clock=clock,
-                          resumen=resumen)
+            _ejecutar_una(conn, broker, account_hash, fila, now=now, cfg=settings.roll,
+                          sleep=sleep, clock=clock, resumen=resumen)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Roll: falló la ejecución de la propuesta #%s", fila["id"])
             resumen["fallidas"].append((fila["id"], str(exc)))
@@ -463,41 +490,79 @@ def ejecutar_rolls_aprobados(conn, broker, settings, *, now: datetime | None = N
     return resumen
 
 
-def _ejecutar_una(conn, broker, account_hash, fila, *, now, espera_segundos, sleep, clock,
-                  resumen) -> None:
+def _ejecutar_una(conn, broker, account_hash, fila, *, now, cfg, sleep, clock, resumen) -> None:
+    """Manda el roll y NEGOCIA: arranca en el crédito aprobado y baja de a poco hasta el piso.
+
+    Por qué se negocia, si antes decía que caminar el precio era ejecutar algo distinto de lo
+    aprobado: porque el usuario lo pidió explícitamente (2026-09-15, "si el roll no lo toma puede
+    negociar y bajar un poco, un umbral") y porque el límite lo pone él — 15% del crédito. Dentro de
+    ese margen sigue siendo la operación que aprobó; fuera, no, y por eso ahí se rinde y pregunta de
+    nuevo en vez de seguir bajando.
+
+    Y si agota el margen: CANCELA. Dejar la orden viva al piso significaría que, dos horas después y
+    con la acción en otro lado, se ejecute un precio que el usuario miró una sola vez."""
     from options_advisor.execution import schwab_orders as so
 
-    credito = float(fila["credito_neto"])
-    orden = so.build_roll_put(fila["occ_viejo"], fila["occ_nuevo"], int(fila["contracts"]),
-                              net_credit_limit=credito)
-    oid = broker.place_order(account_hash, orden)
-    logger.warning("Roll #%s ENVIADO: %s $%.2f %s → %s, crédito $%.2f (orden %s)",
-                   fila["id"], fila["symbol"], float(fila["strike"]), fila["expiration_vieja"],
-                   fila["expiration_nueva"], credito, oid)
+    aprobado = float(fila["credito_neto"])
+    escalera = escalera_de_credito(aprobado, getattr(cfg, "negociar_pct", 0.15),
+                                   getattr(cfg, "negociar_max_peldanos", 6))
+    por_peldano = max(1, int(getattr(cfg, "negociar_segundos_por_peldano", 20) or 20))
+    contratos = int(fila["contracts"])
 
-    estado, info = "", {}
-    inicio = clock()
-    while clock() - inicio < espera_segundos:
-        sleep(2.0)
+    def _payload(precio: float) -> dict:
+        return so.build_roll_put(fila["occ_viejo"], fila["occ_nuevo"], contratos,
+                                 net_credit_limit=precio)
+
+    precio = escalera[0]
+    oid = broker.place_order(account_hash, _payload(precio))
+    logger.warning("Roll #%s ENVIADO: %s $%.2f %s → %s, crédito $%.2f (piso $%.2f, orden %s)",
+                   fila["id"], fila["symbol"], float(fila["strike"]), fila["expiration_vieja"],
+                   fila["expiration_nueva"], precio, escalera[-1], oid)
+
+    estado, info, reemplazos = "", {}, 0
+
+    def _sondear() -> str:
+        nonlocal info
         try:
             info = broker.get_order(account_hash, oid) or {}
         except Exception:  # noqa: BLE001
             logger.debug("Roll: sondeo de estado falló (se reintenta)", exc_info=True)
-            continue
-        estado = str(info.get("status") or "").upper()
+            return ""
+        return str(info.get("status") or "").upper()
+
+    for peldano, siguiente in enumerate(escalera[1:] + [None]):
+        inicio = clock()
+        while clock() - inicio < por_peldano:
+            sleep(2.0)
+            estado = _sondear() or estado
+            if estado == "FILLED" or estado in _ESTADOS_MUERTOS:
+                break
         if estado == "FILLED" or estado in _ESTADOS_MUERTOS:
             break
+        if siguiente is None:
+            break
+        try:
+            oid = broker.replace_order(account_hash, oid, _payload(siguiente))
+        except Exception:  # noqa: BLE001
+            logger.exception("Roll #%s: no se pudo bajar el precio a $%.2f; se deja en $%.2f",
+                             fila["id"], siguiente, precio)
+            break
+        precio, reemplazos = siguiente, reemplazos + 1
+        logger.info("Roll #%s: no llenó a $%.2f, se baja a $%.2f (peldaño %d de %d)",
+                    fila["id"], escalera[peldano], siguiente, peldano + 1, len(escalera) - 1)
 
     if estado == "FILLED":
         real = precio_neto_del_fill(info)
         origen = "schwab"
         if real is None:
-            real, origen = credito, "limite"
+            real, origen = precio, "limite"
             logger.warning("Roll #%s LLENÓ pero Schwab todavía no publicó las ejecuciones — se "
-                           "registra el límite $%.2f como crédito", fila["id"], credito)
+                           "registra el límite $%.2f como crédito", fila["id"], precio)
         nuevo_id = _anotar_el_roll(conn, fila, real, oid, now)
+        regateo = "" if reemplazos == 0 else (
+            f" tras bajar de ${aprobado:.2f} a ${precio:.2f} en {reemplazos} paso(s)")
         repo.cerrar_roll(conn, int(fila["id"]), status="enviada",
-                         nota=(f"llenó a ${real:.2f} de crédito neto (origen: {origen}); "
+                         nota=(f"llenó a ${real:.2f} de crédito neto (origen: {origen}){regateo}; "
                                f"posición nueva #{nuevo_id}"),
                          schwab_order_id=str(oid), credito_real=real, now=now)
         resumen["enviadas"].append(fila["id"])
@@ -511,9 +576,6 @@ def _ejecutar_una(conn, broker, account_hash, fila, *, now, espera_segundos, sle
         resumen["fallidas"].append((fila["id"], estado))
         return
 
-    # Ni llenó ni murió: sigue viva al precio aprobado. Se CANCELA — dejarla puesta significaría que
-    # mañana, con otro mercado, se ejecute algo que se aprobó hoy. En la próxima pasada se vuelve a
-    # proponer con los precios de ese momento, que es lo que corresponde.
     try:
         broker.cancel_order(account_hash, oid)
         cola = "se canceló"
@@ -521,7 +583,9 @@ def _ejecutar_una(conn, broker, account_hash, fila, *, now, espera_segundos, sle
         cola = f"NO se pudo cancelar ({exc}) — revisala en Schwab"
         logger.exception("Roll #%s: no se pudo cancelar la orden %s", fila["id"], oid)
     repo.cerrar_roll(conn, int(fila["id"]), status="error",
-                     nota=(f"no llenó a ${credito:.2f} de crédito en {espera_segundos}s; {cola}. "
-                           "Si sigue correspondiendo, se vuelve a proponer con los precios nuevos."),
+                     nota=(f"nadie lo tomó: bajé de ${aprobado:.2f} a ${escalera[-1]:.2f} (el piso "
+                           f"del {getattr(cfg, 'negociar_pct', 0.15):.0%}) y no llenó; {cola}. "
+                           "En la próxima pasada te lo propongo de nuevo con precios frescos, por "
+                           "si querés otro vencimiento."),
                      schwab_order_id=str(oid), now=now)
-    resumen["fallidas"].append((fila["id"], "no llenó"))
+    resumen["fallidas"].append((fila["id"], "no llenó ni al piso"))

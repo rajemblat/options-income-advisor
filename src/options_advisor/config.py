@@ -484,6 +484,19 @@ class RollSettings(BaseModel):
     # Tope de rolls por posición. Rolear sin límite convierte una pérdida chica en una posición
     # eterna que se rolea sola mes tras mes: al llegar al tope el robot avisa y decide el usuario.
     max_rolls: int = 2
+    # NEGOCIAR EL PRECIO (usuario 2026-09-15: "si el roll no lo toma puede negociar y bajar un poco,
+    # un umbral; si no, consultar para cambiar de fecha de vencimiento").
+    #
+    # Cuánto del crédito APROBADO puede resignar buscando el fill. El piso es
+    # `crédito × (1 − negociar_pct)`, y nunca baja de un centavo: un roll a débito está prohibido,
+    # así que el piso no puede cruzar el cero ni acercarse.
+    #
+    # 15% alcanza para cruzar un spread bid/ask normal sin regalar la operación. Más que eso y el
+    # usuario termina cobrando bastante menos de lo que vio en pantalla cuando apretó el botón — y
+    # la premisa de todo esto es que lo aprobado y lo ejecutado se parezcan.
+    negociar_pct: float = 0.15
+    negociar_segundos_por_peldano: int = 20
+    negociar_max_peldanos: int = 6
 
 
 class LiveTradingSettings(BaseModel):

@@ -11,6 +11,7 @@ Esto es lo que mueve plata de verdad, así que lo que se afirma acá es corto y 
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
@@ -64,8 +65,16 @@ class BrokerFalso:
         estado = self.estados[0] if len(self.estados) == 1 else self.estados.pop(0)
         return {"status": estado, **self.info_extra}
 
+    def replace_order(self, account_hash, order_id, payload):
+        self.ordenes.append(payload)
+        return f"{order_id}-r{len(self.ordenes)}"
+
     def cancel_order(self, account_hash, order_id):
         self.canceladas.append(order_id)
+
+    @property
+    def precios(self) -> list[float]:
+        return [float(o["price"]) for o in self.ordenes]
 
 
 def _abrir(conn, *, strike=13.0, contratos=2, fill=1.20, colateral=2600.0) -> int:
@@ -98,9 +107,11 @@ def _proponer_y_aprobar(conn, open_id, *, credito=0.35, contratos=2) -> int:
 
 
 def _ejecutar(conn, broker, settings):
+    # Reloj que avanza 10 segundos por llamada: con 20 segundos por peldaño da un sondeo por
+    # peldaño, que es todo lo que hace falta para ver qué decide. `sleep` no duerme.
+    reloj = itertools.count(0, 10)
     return roll_engine.ejecutar_rolls_aprobados(
-        conn, broker, settings, now=AHORA, espera_segundos=4, sleep=lambda s: None,
-        clock=iter([0, 1, 2, 3, 4, 5, 6]).__next__,
+        conn, broker, settings, now=AHORA, sleep=lambda s: None, clock=lambda: next(reloj),
     )
 
 
@@ -193,7 +204,9 @@ def test_si_no_llena_se_cancela(conn, settings, monkeypatch):
     pid = _proponer_y_aprobar(conn, viejo)
     broker = BrokerFalso(estados=["WORKING"])
     _ejecutar(conn, broker, settings)
-    assert broker.canceladas == ["OID-1"]
+    # Se cancela la ÚLTIMA orden, que después de negociar ya no es la primera: cada reemplazo le
+    # da un id nuevo. Lo que importa es que no quede ninguna viva.
+    assert len(broker.canceladas) == 1
     assert repo.get_roll_proposal(conn, pid)["status"] == "error"
     assert conn.execute("SELECT closed FROM live_order_log WHERE id = ?", (viejo,)).fetchone()[0] in (0, None)
 
@@ -315,3 +328,74 @@ def test_no_se_puede_elegir_un_vencimiento_que_no_esta_en_el_menu(conn):
 def test_una_aprobada_ya_no_se_puede_cambiar(conn):
     pid = _proponer_y_aprobar(conn, _abrir(conn))
     assert repo.elegir_candidato_del_roll(conn, pid, NUEVA.isoformat()) is False
+
+
+# ───────────────────────── negociar el precio (usuario 2026-09-15) ─────────────────────────
+#
+# "Si el roll no lo toma puede negociar y bajar un poco, un umbral; si no, consultar para cambiar
+# de fecha de vencimiento." El umbral que eligió: 15% del crédito aprobado.
+
+
+def test_la_escalera_arranca_en_lo_aprobado_y_termina_en_el_piso():
+    esc = roll_engine.escalera_de_credito(1.00, 0.15)
+    assert esc[0] == 1.00, "el primer intento es SIEMPRE el precio que el usuario aprobó"
+    assert esc[-1] == 0.85, "el piso es 15% menos"
+    assert esc == sorted(esc, reverse=True), "solo baja, nunca sube"
+    assert len(esc) <= 6, "acotada: la orden tiene que caber dentro de un tick de 3 minutos"
+
+
+def test_la_escalera_nunca_cruza_el_cero():
+    """«Débito nunca». Aunque el porcentaje se lleve puesto todo el crédito, el piso queda
+    arriba de cero — un roll a débito está prohibido y no puede colarse por acá."""
+    for credito in (0.05, 0.02, 0.01):
+        esc = roll_engine.escalera_de_credito(credito, 0.95)
+        assert all(p > 0 for p in esc), f"{credito} → {esc}"
+
+
+def test_sin_margen_no_hay_regateo():
+    assert roll_engine.escalera_de_credito(0.50, 0.0) == [0.50]
+
+
+def test_negocia_y_llena_mas_abajo(conn, settings, monkeypatch):
+    monkeypatch.setattr("options_advisor.scheduler.market_calendar.market_session", lambda *a, **k: "abierto")
+    pid = _proponer_y_aprobar(conn, _abrir(conn), credito=1.00)
+    # No llena en los dos primeros peldaños; al tercero sí.
+    broker = BrokerFalso(estados=["WORKING", "WORKING", "FILLED"])
+    _ejecutar(conn, broker, settings)
+
+    assert broker.precios[0] == 1.00, "arranca en lo aprobado"
+    assert len(broker.precios) == 3, "bajó dos veces antes de llenar"
+    assert broker.precios == sorted(broker.precios, reverse=True)
+    assert all(p >= 0.85 for p in broker.precios), "nunca por debajo del piso"
+    fila = repo.get_roll_proposal(conn, pid)
+    assert fila["status"] == "enviada"
+    assert fila["credito_real"] == pytest.approx(broker.precios[-1])
+    assert "bajé" in fila["result_note"] or "bajar" in fila["result_note"]
+
+
+def test_si_no_lo_toman_ni_al_piso_cancela_y_vuelve_a_consultar(conn, settings, monkeypatch):
+    """La pregunta vuelve al usuario con precios frescos — no queda una orden viva de un precio
+    que miró una vez, dos horas atrás."""
+    monkeypatch.setattr("options_advisor.scheduler.market_calendar.market_session", lambda *a, **k: "abierto")
+    viejo = _abrir(conn)
+    pid = _proponer_y_aprobar(conn, viejo, credito=1.00)
+    broker = BrokerFalso(estados=["WORKING"])
+    _ejecutar(conn, broker, settings)
+
+    assert broker.precios[-1] == 0.85, "llegó hasta el piso"
+    assert broker.canceladas, "y canceló"
+    fila = repo.get_roll_proposal(conn, pid)
+    assert fila["status"] == "error"
+    assert "piso" in fila["result_note"] and "propongo de nuevo" in fila["result_note"]
+    # La posición vieja sigue abierta y sin roll pendiente: el detector puede volver a proponer.
+    assert conn.execute("SELECT closed FROM live_order_log WHERE id = ?", (viejo,)).fetchone()[0] in (0, None)
+    assert repo.hay_roll_pendiente_para(conn, viejo) is False
+
+
+def test_el_regateo_no_gasta_el_tope_de_rolls(conn, settings, monkeypatch):
+    """Un intento fallido no puede quemar uno de los dos rolls que tiene la posición."""
+    monkeypatch.setattr("options_advisor.scheduler.market_calendar.market_session", lambda *a, **k: "abierto")
+    viejo = _abrir(conn)
+    _proponer_y_aprobar(conn, viejo, credito=1.00)
+    _ejecutar(conn, BrokerFalso(estados=["WORKING"]), settings)
+    assert repo.contar_rolls_de(conn, viejo) == 0

@@ -551,3 +551,10 @@ roll:
   # se quedaba corto y dejaba afuera vencimientos que sí pagaban.
   max_dte: 90
   max_rolls: 2                     # después de 2 rolls avisa y decide el usuario
+  # Negociar el precio si no llena (usuario 2026-09-15). Baja de a un centavo desde el crédito que
+  # aprobaste hasta un piso del 15% menos, y si igual no llena cancela y te vuelve a mostrar el menú
+  # con precios frescos, para que elijas otro vencimiento. Nunca deja una orden viva de un precio
+  # que ya no estabas mirando.
+  negociar_pct: 0.15
+  negociar_segundos_por_peldano: 20
+  negociar_max_peldanos: 6
