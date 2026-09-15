@@ -1645,6 +1645,20 @@ for _o in conn.execute(
     _cerro = _o["close_ts"] if _o["closed"] else None
     if not _toca_el_periodo(_cuando, _cerro):
         continue
+    # Una posición cerrada POR UN ROLL no cerró con pérdida: cerró a medias (usuario 2026-09-15:
+    # "no quiero que lo muestre como pérdida, no hace falta, es parcial").
+    #
+    # Rolear siempre recompra el put viejo más caro de lo que se vendió, así que esa línea SIEMPRE
+    # da negativa. Pero en el mismo acto se vendió el vencimiento nuevo y se cobró prima, y esa
+    # prima no aparece como ganancia hasta que cierre la posición nueva. O sea que la tabla mostraba
+    # la mitad fea de la operación y escondía la linda.
+    #
+    # El 15/09 el titular del día decía −$57 cuando en caja habían entrado $182 netos de los tres
+    # rolls más $60 del condor. El número estaba bien sumado y contaba mal la historia.
+    #
+    # Así que la fila rolada va sin P&L —queda fuera del total— y dice adónde siguió. El crédito
+    # cobrado se muestra aparte, abajo de la tabla.
+    _es_roll = (_o["close_reason"] or "") == "roll"
     _filas_todo.append({
         "Hora": _hora_de(_cuando),
         "Fecha": str(_cuando)[:10],
@@ -1652,9 +1666,10 @@ for _o in conn.execute(
         "Detalle": f"{_o['symbol']} {_o['strike']:g} × {_o['final_contracts'] or 1}",
         "Entrada": (_o["fill_price"] or 0) * 100 * (_o["final_contracts"] or 1),
         "Cerrada": _cuando_txt(_cerro),
-        "Estado": "cerrada" if _o["closed"] else (_o["order_status"] or "abierta"),
-        "P&L": _o["realized_pnl"],
-        "Motivo": _o["close_reason"] or "—",
+        "Estado": "rolada" if _es_roll else ("cerrada" if _o["closed"]
+                                            else (_o["order_status"] or "abierta")),
+        "P&L": None if _es_roll else _o["realized_pnl"],
+        "Motivo": "sigue en otro vencimiento" if _es_roll else (_o["close_reason"] or "—"),
         "_orden": str(_cerro or _cuando),
     })
 
@@ -1701,6 +1716,28 @@ if _filas_todo:
     _abiertas = [r for r in _filas_todo if r["Estado"] in ("open", "working", "sending", "abierta")]
     _nota_ab = f" · {len(_abiertas)} todavía abierta(s)" if _abiertas else ""
     utilidad_con_periodo(_tr2, f"Resultado · {_todo_periodo.lower()}", _tot_todo, _filas_todo, "Fecha")
+
+    # Los rolls del período: lo que SÍ entró en caja. Va aparte del resultado porque no es una
+    # ganancia cerrada —la posición sigue viva— pero tampoco es una pérdida, que es como se veía.
+    _rolls_per = [r for r in repo.get_roll_proposals(conn, status="enviada")
+                  if _dentro(str(r["resolved_at"] or r["created_at"]))]
+    if _rolls_per:
+        _cred_rolls = sum(
+            float(r["credito_real"] if r["credito_real"] is not None else r["credito_neto"])
+            * 100.0 * int(r["contracts"]) for r in _rolls_per)
+        _roladas = sum(1 for r in _filas_todo if r["Estado"] == "rolada")
+        st.markdown(
+            f"<div style='background:{GOOD}12; border-left:4px solid {GOOD}; border-radius:0.4rem; "
+            f"padding:0.5rem 0.85rem; margin:0.1rem 0 0.6rem;'>"
+            f"<span style='color:{GOOD}; font-weight:700;'>🔁 Rolls del período: "
+            f"&#36;{_cred_rolls:,.2f} de crédito cobrado</span> "
+            f"<span style='color:{TEXT_MUTED}; font-size:0.82rem;'>&mdash; en "
+            f"{len(_rolls_per)} roll(s). Las {_roladas} posición(es) que dicen «rolada» no cerraron "
+            f"con pérdida: se cambiaron de vencimiento y siguen abiertas. Por eso no suman al "
+            f"resultado.</span></div>",
+            unsafe_allow_html=True,
+        )
+
     st.caption(f"{len(_filas_todo)} operación(es) real(es): "
                f"{sum(1 for r in _filas_todo if r['Tipo'] == 'Naked put')} naked · "
                f"{sum(1 for r in _filas_todo if r['Tipo'] == 'Iron Condor')} condor"
