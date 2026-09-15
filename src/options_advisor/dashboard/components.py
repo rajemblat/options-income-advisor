@@ -6,6 +6,7 @@ import os
 import platform
 import sqlite3
 from datetime import date, datetime, timedelta
+from html import escape as _escapar_html
 
 import pandas as pd
 import streamlit as st
@@ -621,6 +622,96 @@ def inject_theme() -> None:
     _render_sidebar_toggle()
 
 
+# --- COPIAR AL PORTAPAPELES (arreglado 2026-09-15: "no funciona el copy paste") ---
+#
+# `st.code` trae su propio botón de copiar, y ese botón usa `navigator.clipboard.writeText`.
+# El navegador SOLO expone `navigator.clipboard` en "contexto seguro": https:// o localhost.
+# En la Mac el dashboard se abría en http://localhost:8501 — contexto seguro — y el botón
+# andaba. Desde la mudanza al servidor se abre en http://<IP de Tailscale>:8501, que NO es
+# contexto seguro: `navigator.clipboard` directamente no existe, el clic no hace nada y el
+# navegador no muestra ningún error. Botón muerto, sin síntoma. Eso es lo que estaba pasando.
+#
+# Tres caminos, en este orden:
+#   1. la API moderna, si el navegador la expone (o sea, el día que esto sea https);
+#   2. `document.execCommand("copy")`, viejo y deprecado pero que NO pide contexto seguro;
+#   3. y si los dos fallan, el texto queda SELECCIONADO y solo falta apretar Cmd+C.
+# El tercero no puede fallar: seleccionar y copiar es del navegador, no de la página. Por eso
+# el texto va en un <textarea> de verdad y no en un bloque de código: se puede tocar, se puede
+# seleccionar a mano, y no depende de ningún permiso.
+_PLANTILLA_COPIAR = """
+<style>
+  .oia-copiar { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; }
+  .oia-copiar textarea {
+      width: 100%; box-sizing: border-box; height: __ALTO__px;
+      background: #0e1a2b; color: #f8fafc;
+      border: 1px solid rgba(148,163,184,0.25); border-radius: 0.6rem;
+      padding: 10px 12px; font-size: 0.86rem; line-height: 1.45;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      resize: vertical;
+  }
+  .oia-copiar .fila { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+  .oia-copiar button {
+      background: #1d4ed8; color: #fff; border: 0; border-radius: 0.5rem;
+      padding: 7px 16px; font-size: 0.86rem; font-weight: 600; cursor: pointer;
+  }
+  .oia-copiar button:hover { background: #2563eb; }
+  .oia-copiar .aviso { font-size: 0.82rem; color: #cbd5e1; }
+</style>
+<div class="oia-copiar">
+  <textarea id="oia_txt" spellcheck="false">__TEXTO__</textarea>
+  <div class="fila">
+    <button id="oia_btn" type="button">&#128203; Copiar</button>
+    <span class="aviso" id="oia_aviso">Si el bot&oacute;n no anda: toc&aacute; el texto y apret&aacute; Cmd+C.</span>
+  </div>
+</div>
+<script>
+(function () {
+  var ta = document.getElementById('oia_txt');
+  var btn = document.getElementById('oia_btn');
+  var aviso = document.getElementById('oia_aviso');
+  function decir(t, ok) { aviso.textContent = t; aviso.style.color = ok ? '#00e676' : '#ffd60a'; }
+  function seleccionar() {
+    ta.focus();
+    ta.select();
+    try { ta.setSelectionRange(0, ta.value.length); } catch (e) {}
+  }
+  function alaVieja() {
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    if (ok) { decir('Copiado \u2713', true); }
+    else { decir('Texto seleccionado \u2014 apret\u00e1 Cmd+C (Ctrl+C en Windows).', false); }
+  }
+  btn.addEventListener('click', function () {
+    seleccionar();
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(ta.value).then(
+        function () { decir('Copiado \u2713', true); },
+        function () { alaVieja(); }
+      );
+      return;
+    }
+    alaVieja();
+  });
+})();
+</script>
+"""
+
+
+def html_para_copiar(texto: str, *, alto: int = 150) -> str:
+    """El HTML del bloque, sin Streamlit de por medio — para poder probarlo."""
+    contenido = texto if (texto or "").strip() else "Sin texto disponible."
+    return (
+        _PLANTILLA_COPIAR
+        .replace("__ALTO__", str(int(alto)))
+        .replace("__TEXTO__", _escapar_html(contenido))
+    )
+
+
+def bloque_para_copiar(texto: str, *, alto: int = 150) -> None:
+    """Texto listo para mandar por WhatsApp/Telegram, con un botón de copiar que anda por http://."""
+    components.html(html_para_copiar(texto, alto=alto), height=alto + 62)
+
+
 def _render_sidebar_toggle() -> None:
     """Ícono ☰ fijo arriba a la izquierda para abrir/cerrar el sidebar de forma confiable
     (bug reportado 2026-07-26: el CSS de arriba oculta [data-testid="stToolbar"] completo
@@ -1233,7 +1324,10 @@ def render_alert_card(
     st.markdown("".join(html), unsafe_allow_html=True)
 
     with st.expander("📋 Copiar alerta (para WhatsApp/Telegram)", key=f"copy_alert_expander_{alert['id']}"):
-        st.code(shorten_for_sharing(alert["narrative_text"]) if alert["narrative_text"] else "Sin texto disponible.", language=None)
+        bloque_para_copiar(
+            shorten_for_sharing(alert["narrative_text"]) if alert["narrative_text"]
+            else "Sin texto disponible."
+        )
 
 
 # Filtro de rango de fechas, compartido por Pestaña Operaciones (pedido 2026-07-29) y Pestaña
@@ -1521,7 +1615,10 @@ def render_real_trade_card(
     st.markdown("".join(html), unsafe_allow_html=True)
 
     with st.expander("📋 Copiar operación (para WhatsApp/Telegram)", key=f"copy_real_trade_expander_{trade['id']}"):
-        st.code(shorten_for_sharing(trade["narrative_text"]) if trade["narrative_text"] else "Sin texto disponible.", language=None)
+        bloque_para_copiar(
+            shorten_for_sharing(trade["narrative_text"]) if trade["narrative_text"]
+            else "Sin texto disponible."
+        )
 
 
 # --- Vista de tabla plana de Operaciones (pedido 2026-07-30, corregido el mismo día tras

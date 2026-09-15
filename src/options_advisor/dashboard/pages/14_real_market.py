@@ -270,6 +270,35 @@ elif _rev:
 # número siempre es correcto, sube solo cuando se supera, nunca baja, y no puede quedar desfasado
 # si algún día se corrige una fila.
 _exp = repo.exposicion_naked(conn)
+
+# ═══════════ LA VARA DEL RENDIMIENTO: LA EXPOSICIÓN PROMEDIO (usuario 2026-09-15) ═══════════
+# "Debería ser sobre la exposición, promedio; no la máxima sino la promedio."
+#
+# Hasta hoy el % de los naked se medía sobre los $50.000 de capital disponible. Son dos preguntas
+# distintas y la segunda es la que importa para juzgar la estrategia:
+#     · sobre el capital  → "¿cuánto rindió la plata que TENGO?" (incluye la que quedó quieta)
+#     · sobre la exposición promedio → "¿cuánto rindió la plata que PUSE EN JUEGO?"
+# Se usa el PROMEDIO y no el récord a propósito: el récord es un día suelto, y dividir por el peor
+# día haría parecer peor a una estrategia que casi nunca opera ahí.
+#
+# Si todavía no hay ningún día con exposición (base 0), se cae al capital para no dividir por cero —
+# y el cartel lo dice, para que nunca se lea un % sin saber contra qué.
+BASE_RENDIMIENTO = _exp["promedio"] if _exp.get("dias_con_exposicion") else 0.0
+BASE_RENDIMIENTO_ES_EXPOSICION = BASE_RENDIMIENTO > 0
+if not BASE_RENDIMIENTO_ES_EXPOSICION:
+    BASE_RENDIMIENTO = float(CAPITAL_DISPONIBLE)
+BASE_RENDIMIENTO_TXT = (f"la exposición promedio de ${BASE_RENDIMIENTO:,.0f}"
+                        if BASE_RENDIMIENTO_ES_EXPOSICION else f"${CAPITAL_DISPONIBLE:,.0f} de capital")
+
+
+def _sobre_capital(monto: float) -> str:
+    """La nota al pie con la vara vieja, para no perder la referencia de agosto."""
+    if not BASE_RENDIMIENTO_ES_EXPOSICION or CAPITAL_DISPONIBLE <= 0:
+        return ""
+    return (f"<div style='color:{TEXT_MUTED}; font-size:0.72rem; margin-top:0.25rem;'>"
+            f"Sobre los ${CAPITAL_DISPONIBLE:,.0f} de capital disponible sería "
+            f"{monto / CAPITAL_DISPONIBLE * 100.0:+.2f}%.</div>")
+
 if _exp["maximo"] > 0:
     _fecha_max = _dt.date.fromisoformat(_exp["maximo_fecha"]).strftime("%d/%m/%Y") \
         if _exp["maximo_fecha"] else "—"
@@ -490,7 +519,7 @@ if not _robot_open:
     # desaparecio tambien el historico. La plata YA COBRADA no depende de tener algo abierto: el
     # condor nunca tuvo este problema porque su panel vive fuera de la guarda.
     _realized_all = sum((r["realized_pnl"] or 0.0) for r in _cfg_realiz)
-    _real_pct = (_realized_all / CAPITAL_DISPONIBLE * 100.0) if CAPITAL_DISPONIBLE > 0 else None
+    _real_pct = (_realized_all / BASE_RENDIMIENTO * 100.0) if BASE_RENDIMIENTO > 0 else None
     _tcol = GOOD if _realized_all >= 0 else BAD
     _sin_pnl_n = len([r for r in _cfg_all_closed if r["realized_pnl"] is None])
     _sin_pnl_txt = (f" &middot; <b style='color:{WARN}'>{_sin_pnl_n} cerrada(s) sin precio de cierre cargado</b>"
@@ -501,9 +530,10 @@ if not _robot_open:
         f"<span style='color:{_tcol}; font-size:1.7rem; font-weight:800;'>${_realized_all:+,.2f}</span>"
         f"<span style='color:{_tcol}; font-size:1.05rem; font-weight:700; margin-left:0.5rem;'>"
         f"{('(' + format(_real_pct, '+.2f') + '%)') if _real_pct is not None else ''}</span>"
-        f"<span style='color:{TEXT_MUTED}; font-size:0.86rem; margin-left:0.6rem;'>sobre ${CAPITAL_DISPONIBLE:,.0f} de capital &middot; "
+        f"<span style='color:{TEXT_MUTED}; font-size:0.86rem; margin-left:0.6rem;'>sobre {BASE_RENDIMIENTO_TXT} &middot; "
         f"{len(_cfg_realiz)} cerrada(s){_sin_pnl_txt}</span>"
-        f"</div>",
+        + _sobre_capital(_realized_all)
+        + f"</div>",
         unsafe_allow_html=True,
     )
     _vp1, _vp2 = st.columns([1, 3])
@@ -685,7 +715,7 @@ else:
     # grande sea solo de operaciones cerradas"). Antes mezclaba realizado + flotante, así que el
     # titular se movía con el mercado y no se sabía cuánta plata estaba cobrada de verdad. El total
     # con el flotante sigue estando, en la fila TOTAL del cuadro de abajo.
-    _real_pct = (_nak_pnl_per / CAPITAL_DISPONIBLE * 100.0) if CAPITAL_DISPONIBLE > 0 else None
+    _real_pct = (_nak_pnl_per / BASE_RENDIMIENTO * 100.0) if BASE_RENDIMIENTO > 0 else None
     _tcol = GOOD if _nak_pnl_per >= 0 else BAD
     _rot = {"Hoy": "de hoy", "Semana": "de esta semana", "Mes": "de este mes",
             "Año": "de este año", "Todo": "desde el inicio del real (día 0)"}[_nak_periodo]
@@ -696,9 +726,10 @@ else:
         f"<span style='color:{_tcol}; font-size:1.7rem; font-weight:800;'>${_nak_pnl_per:+,.2f}</span>"
         f"<span style='color:{_tcol}; font-size:1.05rem; font-weight:700; margin-left:0.5rem;'>"
         f"{('(' + format(_real_pct, '+.2f') + '%)') if _real_pct is not None else ''}</span>"
-        f"<span style='color:{TEXT_MUTED}; font-size:0.86rem; margin-left:0.6rem;'>sobre ${CAPITAL_DISPONIBLE:,.0f} de capital · "
+        f"<span style='color:{TEXT_MUTED}; font-size:0.86rem; margin-left:0.6rem;'>sobre {BASE_RENDIMIENTO_TXT} · "
         f"{len(_nak_cerradas)} cerrada(s){_extra}</span>"
-        f"</div>",
+        + _sobre_capital(_nak_pnl_per)
+        + f"</div>",
         unsafe_allow_html=True,
     )
 
