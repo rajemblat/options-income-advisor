@@ -70,18 +70,44 @@ def test_propone_el_de_mejor_credito_por_dia():
     assert r.prima_nueva == pytest.approx(1.00)
 
 
-def test_el_semanal_gana_cuando_paga_mejor_por_dia():
-    """"Roll semanal si paga, si no mensual". Con el semanal pagando $1.05 el crédito por día lo
-    pone adelante, y se elige ese: menos tiempo atado a la misma apuesta."""
+def test_el_mas_corto_gana_cuando_paga_mejor_por_dia():
+    """"Roll semanal si paga, si no mensual": entre dos que están FUERA de la ventana de disparo,
+    gana el de mejor crédito por día — menos tiempo atado a la misma apuesta."""
     cadena = _cadena([
         _contrato(VIEJA, ask=0.65, bid=0.60, occ="V"),
-        _contrato(date(2026, 9, 25), bid=1.05, ask=1.10, occ="S"),    # +$0.40 en 7d = $0.057/día
-        _contrato(date(2026, 10, 16), bid=1.50, ask=1.60, occ="M"),   # +$0.85 en 28d = $0.030/día
+        _contrato(date(2026, 10, 9), bid=1.05, ask=1.10, occ="C"),    # 30 días: fuera de la ventana
+        _contrato(date(2026, 11, 20), bid=1.50, ask=1.60, occ="L"),   # 72 días
     ])
     r = roll_engine.evaluar_posicion(POSICION, cadena, hoy=HOY, rolls_hechos=0, cfg=_cfg())
     assert isinstance(r, Propuesta)
-    assert r.candidato.expiration == date(2026, 9, 25)
-    assert r.occ_nuevo == "S"
+    assert r.candidato.expiration == date(2026, 10, 9)
+    assert r.occ_nuevo == "C"
+
+
+def test_no_se_ofrece_un_vencimiento_que_nace_pidiendo_otro_roll():
+    """El arreglo del 15/09. Un vencimiento a 16 días, con el disparador en 20, cumple la condición
+    para rolear en el instante en que se abre. Ese día pasó de verdad: AAL se roleó a 2 OCT (17
+    días) y cinco segundos después el mismo tick propuso rolearla otra vez. Los dos saltos
+    cobraron $0.17 + $0.19 donde ir directo pagaba $0.38."""
+    cadena = _cadena([
+        _contrato(VIEJA, ask=0.65, bid=0.60, occ="V"),
+        _contrato(date(2026, 9, 25), bid=5.00, ask=5.10, occ="CORTO"),   # 16 días: NO se ofrece
+        _contrato(date(2026, 10, 16), bid=1.00, ask=1.10, occ="M"),      # 37 días
+    ])
+    r = roll_engine.evaluar_posicion(POSICION, cadena, hoy=HOY, rolls_hechos=0, cfg=_cfg())
+    assert isinstance(r, Propuesta)
+    assert r.occ_nuevo == "M", "aunque el corto pague MUCHO más, no se ofrece"
+    assert all(c["expiration"] != "2026-09-25" for c in r.menu)
+
+
+def test_si_lo_unico_que_paga_esta_dentro_de_la_ventana_no_se_propone():
+    cadena = _cadena([
+        _contrato(VIEJA, ask=0.65, bid=0.60, occ="V"),
+        _contrato(date(2026, 9, 25), bid=5.00, ask=5.10, occ="CORTO"),
+    ])
+    r = roll_engine.evaluar_posicion(POSICION, cadena, hoy=HOY, rolls_hechos=0, cfg=_cfg())
+    assert isinstance(r, Descarte)
+    assert "20 días" in r.motivo
 
 
 def test_usa_el_ask_para_recomprar_y_el_bid_para_vender():

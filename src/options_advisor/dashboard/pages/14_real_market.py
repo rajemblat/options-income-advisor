@@ -359,19 +359,45 @@ if _exp["maximo"] > 0:
 _rolls = repo.get_roll_proposals(conn, status="pendiente")
 _rolls_aprobados = repo.get_roll_proposals(conn, status="aprobada")
 
-if _rolls_aprobados:
-    st.info(f"⏳ {len(_rolls_aprobados)} roll(s) aprobado(s) esperando salir. El robot los manda en "
-            "su próximo tick (hasta 3 minutos), con el mercado abierto.", icon="⏳")
+# Las aprobadas se quedan EN PANTALLA, trabadas. Antes desaparecían, y el 15/09 eso hizo que el
+# usuario apretara tres veces creyendo que apretaba una: había dos tarjetas de AAL $13 casi iguales,
+# apretó una, la página se recargó, seguía habiendo una tarjeta de AAL $13 y volvió a apretar.
+# Un botón que mueve plata real no puede dejar dudas de si respondió.
+for _ra in _rolls_aprobados:
+    _hora = str(_ra["approved_at"] or "")[11:16]
+    st.markdown(
+        f"<div style='background:{GOOD}14; border:1px solid {GOOD}; border-left:5px solid {GOOD}; "
+        f"border-radius:0.5rem; padding:0.55rem 0.9rem; margin:0.3rem 0;'>"
+        f"<span style='color:{GOOD}; font-weight:700;'>✅ Aprobado{' a las ' + _hora if _hora else ''}"
+        f"</span> <span style='color:{TEXT_MUTED}; font-size:0.85rem;'>&mdash; "
+        f"{_ra['symbol']} &#36;{_ra['strike']:,.2f} &times; {_ra['contracts']} · "
+        f"{_ra['expiration_vieja']} → {_ra['expiration_nueva']} · crédito "
+        f"&#36;{_ra['credito_neto'] * 100 * _ra['contracts']:,.2f}. Sale en el próximo tick (hasta "
+        f"3 minutos). No hace falta volver a apretar nada.</span></div>",
+        unsafe_allow_html=True,
+    )
 
 for _rp in _rolls:
     _menu = repo.candidatos_del_roll(conn, _rp["id"])
     _spot = _rp["spot"]
+    # Cuántas veces se roleó YA esta posición, contando toda la cadena. Si no es la primera, la
+    # tarjeta cambia de color y pide una confirmación extra: el 15/09 el usuario aprobó un segundo
+    # roll de la misma posición sin darse cuenta de que era el segundo, porque la tarjeta era
+    # idéntica a la primera.
+    _ya_rolada = repo.contar_rolls_de(conn, _rp["open_order_id"])
+    _aviso_repetido = (
+        f"<div style='color:{BAD}; font-size:0.8rem; font-weight:700; margin-top:0.2rem;'>"
+        f"⚠️ OJO: esta posición YA se roleó {_ya_rolada} vez/veces. Este sería el roll "
+        f"número {_ya_rolada + 1}.</div>" if _ya_rolada else ""
+    )
     st.markdown(
         f"<div style='background:{AMARILLO}14; border:1px solid {AMARILLO}; "
         f"border-left:5px solid {AMARILLO}; border-radius:0.5rem; padding:0.7rem 0.95rem; "
         f"margin:0.4rem 0 0.2rem;'>"
         f"<div style='color:{AMARILLO}; font-size:0.62rem; font-weight:700; text-transform:uppercase; "
-        f"letter-spacing:0.06em;'>Hay que rolear &mdash; elegí el vencimiento</div>"
+        f"letter-spacing:0.06em;'>Hay que rolear &mdash; elegí el vencimiento &nbsp;·&nbsp; "
+        f"posición #{_rp['open_order_id']}</div>"
+        f"{_aviso_repetido}"
         f"<div style='color:{AMARILLO}; font-size:1.25rem; font-weight:800; margin-top:0.15rem;'>"
         f"{_rp['symbol']} put &#36;{_rp['strike']:,.2f} &times; {_rp['contracts']}"
         f"<span style='font-size:0.85rem; font-weight:600; opacity:0.85;'> &nbsp;&middot;&nbsp; vence "
@@ -423,9 +449,16 @@ for _rp in _rolls:
         f"{_rp['contracts']} contrato(s). Va como UNA sola orden combinada, a ese precio exacto."
     )
 
+    # Si ya se roleó, no alcanza con un clic: hay que tildar antes. Un segundo roll casi nunca es
+    # lo que conviene —se paga el spread otra vez— así que tiene que costar más que el primero.
+    _confirmo = True
+    if _ya_rolada:
+        _confirmo = st.checkbox(
+            f"Confirmo que quiero rolear **por {_ya_rolada + 1}ª vez** la posición "
+            f"#{_rp['open_order_id']}", key=f"roll_conf_{_rp['id']}")
     _r1, _r2, _r3 = st.columns([1.3, 1, 2.2])
     if _r1.button("✅ Ejecutar este roll", key=f"roll_ok_{_rp['id']}", type="primary",
-                  use_container_width=True, disabled=kill,
+                  use_container_width=True, disabled=kill or not _confirmo,
                   help="Guarda tu decisión. La orden la manda el robot en su próximo tick — el "
                        "dashboard nunca toca el broker."):
         repo.elegir_candidato_del_roll(conn, _rp["id"], _elegido)

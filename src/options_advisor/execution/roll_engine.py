@@ -141,11 +141,21 @@ def evaluar_posicion(
     if costo_recompra <= 0:
         return Descarte(posicion, "no hay ask para recomprar el put que tenés (sin liquidez ahora)")
 
+    # Los vencimientos que nacen DENTRO de la ventana de disparo no se ofrecen (usuario
+    # 2026-09-15). Rolear a 17 días cuando el disparador es a 20 significa que la posición nueva ya
+    # cumple la condición para otro roll en el instante en que se abre — y eso fue exactamente lo
+    # que pasó ese día: AAL se roleó a 2 OCT a las 12:12 y a las 12:12:14, cinco segundos después,
+    # el mismo tick propuso rolearla de nuevo. Dos saltos cobraron $0.17 + $0.19 donde ir directo
+    # pagaba $0.38: el spread se pagó dos veces por nada.
+    piso_dte = int(getattr(cfg, "dte_trigger", 20) or 20)
+
     candidatos: list[CandidatoRoll] = []
     datos: dict[date, tuple[str, float]] = {}       # vencimiento → (símbolo OCC, prima)
     for c in puts:
         if c.expiration <= posicion.expiration:
             continue
+        if (c.expiration - hoy).days <= piso_dte:
+            continue                       # nacería ya pidiendo otro roll
         if not c.occ_symbol:
             continue
         prima = float(c.bid or 0.0)
@@ -160,6 +170,9 @@ def evaluar_posicion(
 
     mejor, explicacion = elegir_roll(candidatos, cfg)
     if mejor is None:
+        if not candidatos:
+            explicacion += (f" (solo se ofrecen vencimientos a más de {piso_dte} días: uno más "
+                            "corto nacería pidiendo otro roll)")
         return Descarte(posicion, explicacion)
 
     # EL MENÚ. Todo lo que paga crédito dentro del tope de días, ordenado por crédito POR DÍA —
