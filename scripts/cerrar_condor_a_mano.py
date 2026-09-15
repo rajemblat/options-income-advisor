@@ -46,7 +46,7 @@ def _d(x) -> str:
     return "—" if x is None else f"${x:,.2f}"
 
 
-def _autopsia(row, cfg) -> None:
+def _autopsia(row, cfg, cierre_real: float | None = None) -> None:
     """Por qué el robot NO había cerrado: la última marca contra los dos umbrales.
 
     `last_unrealized_pnl` es lo que el motor anotó en su último tick. Ojo con una sutileza que
@@ -72,6 +72,9 @@ def _autopsia(row, cfg) -> None:
     print("\n   ¿Por qué no cerró solo?")
     print(f"   · Crédito de entrada: {_d(credito)}")
     print(f"   · Última marca del robot: {_d(marca)}  (a las {cuando}, al mid)")
+    if cierre_real is not None and cuando != "nunca":
+        print("     (si esa hora es posterior a tu cierre en Schwab, el robot venía marcando una "
+              "posición que ya no existía: para el libro seguía abierta)")
     print(f"   · Objetivo para cerrar: {pct:.0%} del crédito = {_d(objetivo)}"
           + ("  (ventana temprana)" if temprano else ""))
     print(f"   · Stop: {_d(-cfg.stop_loss_dollars)}")
@@ -81,9 +84,24 @@ def _autopsia(row, cfg) -> None:
         print("       journalctl --user -u lokshn-robot --since today | grep -i condor | tail -40")
         return
     if marca >= objetivo:
-        print("   → La marca YA estaba en el objetivo. Si no cerró, el problema no es la regla: "
-              "es el envío. Mirá el log:")
-        print("       journalctl --user -u lokshn-robot --since today | grep -i condor | tail -40")
+        # OJO con esta comparación: NO dice que el robot debería haber cerrado.
+        #
+        # La primera versión de este script (2026-09-15) decía justamente eso — "la marca ya estaba
+        # en el objetivo, entonces el problema es el envío" — y era falso. La marca guardada es al
+        # MID; la regla se mide al precio EJECUTABLE, que siempre es peor. Ese mismo día el mid
+        # marcaba $70 con el objetivo en $69.75, y salir de verdad costó $95: $60 reales, $9.75 por
+        # debajo. El robot miró el número correcto. El que estaba mal era este mensaje.
+        print(f"   → La marca AL MID ({_d(marca)}) pasa el objetivo, pero eso no alcanza: la regla "
+              "se mide al precio EJECUTABLE (recomprar los cortos al ask, vender las alas al bid), "
+              "que siempre es peor que el mid.")
+        if cierre_real is not None:
+            print(f"   → Y acá está la prueba: saliste con {_d(cierre_real)}, "
+                  f"{_d(round(objetivo - cierre_real, 2))} por debajo del objetivo. Al mid llegaba; "
+                  "al precio de verdad, no. El robot decidió bien.")
+        else:
+            print("   → Casi siempre es eso: al mid llega y al precio real no. Si querés descartar "
+                  "un problema de envío, mirá el log:")
+            print("       journalctl --user -u lokshn-robot --since today | grep -i condor | tail -40")
         return
     falta = round(objetivo - marca, 2)
     print(f"   → No llegó al objetivo: le faltaban {_d(falta)} en la última marca, y eso es AL MID. "
@@ -153,7 +171,7 @@ def main() -> int:
     print(f"   {'GANANCIA' if ganancia >= 0 else 'PÉRDIDA '}:                  {_d(ganancia)}"
           + (f"   ({ganancia / credito:.0%} del crédito)" if credito else ""))
 
-    _autopsia(fila, cfg)
+    _autopsia(fila, cfg, cierre_real=ganancia)
 
     # 'manual' y no 'profit_target': el historial tiene que poder distinguir lo que decidió el robot
     # de lo que decidiste vos. Y además la racha de stop-loss del día no se toca con un cierre tuyo.
