@@ -104,6 +104,14 @@ def posicion_desde_fila(fila) -> Posicion | None:
         return None
 
 
+def _rolada_hoy(fila, hoy: date) -> bool:
+    """¿Esta posición nació HOY de un roll? Tolerante a filas viejas sin la columna."""
+    try:
+        return bool(fila["roll_of"]) and str(fila["log_date"])[:10] == hoy.isoformat()
+    except (KeyError, IndexError, TypeError):
+        return False
+
+
 def _mismo_strike(a: float, b: float) -> bool:
     return abs(float(a) - float(b)) < _EPS_STRIKE
 
@@ -228,6 +236,13 @@ def detectar_rolls(conn, broker, cfg, *, hoy: date | None = None,
             continue
         if repo.hay_roll_pendiente_para(conn, posicion.open_order_id):
             continue          # ya hay una esperando: no se amontonan tarjetas iguales
+        if _rolada_hoy(fila, hoy):
+            # Rolear dos veces el mismo día es pagar el spread dos veces. El 15/09 AAL se roleó a
+            # las 12:12 y de nuevo a las 12:18 — el segundo salto cobró $0.19 donde ir directo
+            # pagaba $0.38. Si mañana sigue haciendo falta, mañana se propone.
+            resumen["descartes"].append(
+                (posicion.symbol, "ya se roleó hoy; si sigue correspondiendo, mañana se propone"))
+            continue
 
         dte_viejo = (posicion.expiration - hoy).days
         # El filtro barato PRIMERO: si ni siquiera está en ventana, no se pide la cadena.

@@ -460,6 +460,54 @@ if _rolls_hechos:
                 unsafe_allow_html=True,
             )
 
+# ═══════════════ CONSULTAS DE GANANCIA DEL CONDOR (usuario 2026-09-15) ═══════════════
+# "Que me consulte al 30% 35% y 40% si quiero cerrar o dejar abierto."
+#
+# El robot pregunta en los escalones de abajo y cierra solo en el de arriba. Esta pantalla no manda
+# nada: "Cerrar ahora" deja el pedido de cierre manual —el mismo camino probado desde agosto— y el
+# motor lo ejecuta en su próximo tick.
+_consultas = repo.consultas_condor_pendientes(conn)
+for _cs in _consultas:
+    _pos = conn.execute("SELECT * FROM real_condor_positions WHERE id = ?",
+                        (_cs["position_id"],)).fetchone()
+    if _pos is None or _pos["status"] == "closed":
+        continue
+    _pct_ahora = (_cs["pnl"] / _cs["credito"] * 100.0) if _cs["credito"] else 0.0
+    st.markdown(
+        f"<div style='background:{GOOD}14; border:1px solid {GOOD}; border-left:5px solid {GOOD}; "
+        f"border-radius:0.5rem; padding:0.7rem 0.95rem; margin:0.4rem 0 0.2rem;'>"
+        f"<div style='color:{GOOD}; font-size:0.62rem; font-weight:700; text-transform:uppercase; "
+        f"letter-spacing:0.06em;'>El condor llegó al {_cs['escalon'] * 100:.0f}% &mdash; "
+        f"¿cerrás o lo dejás correr?</div>"
+        f"<div style='color:{GOOD}; font-size:1.25rem; font-weight:800; margin-top:0.15rem;'>"
+        f"&#36;{_cs['pnl']:,.2f} de ganancia"
+        f"<span style='font-size:0.85rem; font-weight:600; opacity:0.85;'> &nbsp;&middot;&nbsp; "
+        f"{_pct_ahora:.0f}% del crédito de &#36;{_cs['credito']:,.2f}</span></div>"
+        f"<div style='color:{TEXT_MUTED}; font-size:0.72rem; margin-top:0.25rem;'>"
+        f"{_pos['underlying']} {_pos['long_put_strike']:.0f}/{_pos['short_put_strike']:.0f} &mdash; "
+        f"{_pos['short_call_strike']:.0f}/{_pos['long_call_strike']:.0f} &middot; posición "
+        f"#{_pos['id']}. Es la ganancia al precio de SALIDA, no al mid: es lo que cobrás si cerrás "
+        f"ahora. Si no hacés nada, al {settings.intraday_condor.profit_target_pct:.0%} cierra solo."
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
+    _k1, _k2, _k3 = st.columns([1.2, 1.2, 2.2])
+    if _k1.button("💰 Cerrar ahora", key=f"cs_cerrar_{_cs['id']}", type="primary",
+                  use_container_width=True,
+                  help="Deja el pedido; el robot recompra el condor en su próximo tick."):
+        repo.resolver_consulta_condor(conn, _cs["id"], "cerrar")
+        repo.request_real_condor_manual_close(conn, _cs["position_id"])
+        st.toast("Pedido de cierre anotado — sale en el próximo tick.", icon="💰")
+        st.rerun()
+    if _k2.button("⏳ Dejar correr", key=f"cs_dejar_{_cs['id']}", use_container_width=True,
+                  help="No vuelve a preguntar en este escalón. El stop y el cierre automático "
+                       "siguen vigentes."):
+        repo.resolver_consulta_condor(conn, _cs["id"], "dejar")
+        st.rerun()
+    _k3.caption(f"Si lo dejás correr, el stop sigue en "
+                f"−${settings.intraday_condor.stop_loss_dollars:,.0f} y al "
+                f"{settings.intraday_condor.profit_target_pct:.0%} cierra solo.")
+
 st.divider()
 
 # ------------------------- Acciones: START / desarmar / kill (minimalista, con doble confirmación) -------------------------

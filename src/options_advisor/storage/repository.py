@@ -1869,6 +1869,76 @@ def is_real_condor_manual_close_requested(conn: sqlite3.Connection, position_id:
     return bool(row and row["manual_close_requested"])
 
 
+# ═══════════ CONSULTAS DE GANANCIA DEL CONDOR (usuario 2026-09-15) ═══════════
+# "Que me consulte al 30% 35% y 40% si quiero cerrar o dejar abierto."
+#
+# Al 40% cierra solo; en los escalones de abajo pregunta. El robot nunca deja de tener una salida:
+# la consulta agrega una decisión temprana, no reemplaza la red.
+
+
+def registrar_consulta_condor(
+    conn: sqlite3.Connection, *, position_id: int, escalon: float, credito: float, pnl: float,
+    now: datetime | None = None,
+) -> int | None:
+    """Deja el cartel de un escalón. Devuelve el id, o None si ya se había preguntado.
+
+    El `INSERT OR IGNORE` contra el índice único es lo que impide que el tick de cada minuto
+    genere cuarenta carteles iguales de la misma posición — el mismo problema de volumen que los
+    mil mails del 11/09. Y vale también si el usuario ya contestó: contestada una vez, no se
+    vuelve a preguntar en ese escalón."""
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO condor_consultas "
+        "(position_id, escalon, created_at, credito, pnl, status) "
+        "VALUES (?, ?, ?, ?, ?, 'pendiente')",
+        (int(position_id), round(float(escalon), 4), (now or datetime.now()).isoformat(),
+         float(credito), float(pnl)),
+    )
+    conn.commit()
+    return cur.lastrowid if cur.rowcount else None
+
+
+def consultas_condor_pendientes(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM condor_consultas WHERE status = 'pendiente' ORDER BY id DESC"
+    ).fetchall()
+
+
+def consultas_condor_de(conn: sqlite3.Connection, position_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM condor_consultas WHERE position_id = ? ORDER BY escalon",
+        (int(position_id),),
+    ).fetchall()
+
+
+def resolver_consulta_condor(
+    conn: sqlite3.Connection, consulta_id: int, decision: str, now: datetime | None = None,
+) -> None:
+    """'cerrar' o 'dejar'. Solo anota la decisión: cerrar de verdad lo hace el motor, por el
+    mismo camino ya probado del cierre manual del dashboard."""
+    if decision not in ("cerrar", "dejar"):
+        raise ValueError(f"decisión inválida: {decision!r}")
+    conn.execute(
+        "UPDATE condor_consultas SET status = ?, resolved_at = ? WHERE id = ? AND status = 'pendiente'",
+        (decision, (now or datetime.now()).isoformat(), int(consulta_id)),
+    )
+    conn.commit()
+
+
+def superar_consultas_de_condor(
+    conn: sqlite3.Connection, position_id: int, now: datetime | None = None,
+) -> int:
+    """La posición se cerró por otro camino (el 40%, el stop, el vencimiento): las preguntas que
+    quedaron sin contestar dejan de tener sentido. No es un error, y por eso tienen estado propio
+    en vez de quedar 'pendientes' para siempre ensuciando la pantalla."""
+    cur = conn.execute(
+        "UPDATE condor_consultas SET status = 'superada', resolved_at = ? "
+        "WHERE position_id = ? AND status = 'pendiente'",
+        ((now or datetime.now()).isoformat(), int(position_id)),
+    )
+    conn.commit()
+    return cur.rowcount
+
+
 def close_real_condor_position(
     conn: sqlite3.Connection, position_id: int, close_date: date, close_value: float | None, close_reason: str,
     realized_pnl: float | None, close_ts: datetime | None = None, close_schwab_order_id: str | None = None,
@@ -1884,6 +1954,7 @@ def close_real_condor_position(
          close_ts.isoformat() if close_ts else None, close_schwab_order_id, position_id),
     )
     conn.commit()
+    superar_consultas_de_condor(conn, position_id, now=close_ts)
 
 
 def get_real_condor_performance_stats(conn: sqlite3.Connection, today: date | None = None) -> dict:
@@ -2539,10 +2610,41 @@ def caducar_rolls_viejos(conn: sqlite3.Connection, hoy: date, now: datetime | No
     return cur.rowcount
 
 
+def cadena_de_la_posicion(conn: sqlite3.Connection, open_order_id: int) -> list[int]:
+    """Esta posición y todas las que la precedieron, siguiendo `roll_of` hacia atrás.
+
+    Una posición rolada no es una posición nueva: es la misma apuesta con otra fecha. El libro, en
+    cambio, le da una fila nueva con un id nuevo, y ahí se pierde el hilo si nadie lo sigue.
+
+    El `vistos` no es paranoia gratuita: si alguna vez una fila quedara apuntándose a sí misma, sin
+    esto el bucle no termina nunca y se cuelga el tick del roll."""
+    ids: list[int] = []
+    vistos: set[int] = set()
+    actual = int(open_order_id or 0)
+    while actual and actual not in vistos:
+        vistos.add(actual)
+        ids.append(actual)
+        fila = conn.execute("SELECT roll_of FROM live_order_log WHERE id = ?", (actual,)).fetchone()
+        try:
+            actual = int(fila["roll_of"]) if fila is not None and fila["roll_of"] else 0
+        except (KeyError, IndexError, TypeError, ValueError):
+            actual = 0      # base vieja, sin la columna: la cadena termina acá
+    return ids
+
+
 def contar_rolls_de(conn: sqlite3.Connection, open_order_id: int) -> int:
-    """Cuántas veces se roleó ya esta posición — para el tope `max_rolls`."""
+    """Cuántas veces se roleó ya esta posición, CONTANDO TODA LA CADENA — para el tope `max_rolls`.
+
+    Antes contaba solo la fila actual, y así el tope no servía para nada: cada roll crea una fila
+    nueva, el contador arrancaba de cero y la misma posición se podía rolear para siempre, de a un
+    salto por vez. Pasó de verdad el 15/09 — AAL se roleó dos veces en seis minutos (18 SEP → 2 OCT
+    → 16 OCT) pagando el spread dos veces, y el tope de 2 nunca se enteró."""
+    cadena = cadena_de_la_posicion(conn, open_order_id)
+    if not cadena:
+        return 0
+    marcas = ", ".join("?" for _ in cadena)
     row = conn.execute(
-        "SELECT COUNT(*) FROM roll_proposals WHERE open_order_id = ? AND status = 'enviada'",
-        (open_order_id,),
+        f"SELECT COUNT(*) FROM roll_proposals WHERE status = 'enviada' AND open_order_id IN ({marcas})",
+        cadena,
     ).fetchone()
     return row[0] if row else 0

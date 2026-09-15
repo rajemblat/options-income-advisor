@@ -312,3 +312,37 @@ def test_el_descarte_llega_con_motivo(conn):
     res = roll_engine.detectar_rolls(conn, BrokerFalso(cadena=cadena), _cfg(), hoy=HOY)
     assert res["propuestas"] == []
     assert res["descartes"] and "débito" in res["descartes"][0][1]
+
+
+# ───────── una posición recién rolada descansa hasta mañana (2026-09-15) ─────────
+
+
+def test_no_se_rolea_dos_veces_el_mismo_dia(conn):
+    """Rolear dos veces en un día es pagar el spread dos veces. El 15/09 AAL se roleó a las 12:12
+    y de nuevo a las 12:18: el segundo salto cobró $0.19 donde ir directo pagaba $0.38."""
+    cur = conn.execute(
+        "INSERT INTO live_order_log (log_date, log_ts, symbol, action, strike, expiration, "
+        "approved, final_contracts, dry_run, sent, order_status, fill_price, filled_contracts, "
+        "roll_of) VALUES (?, ?, 'AAL', 'SELL_TO_OPEN', 13.0, ?, 1, 2, 0, 1, 'FILLED', 1.2, 2, 99)",
+        (HOY.isoformat(), f"{HOY.isoformat()}T12:12:00", VIEJA.isoformat()),
+    )
+    conn.commit()
+    broker = BrokerFalso(cadena=CADENA_BASE)
+    res = roll_engine.detectar_rolls(conn, broker, _cfg(), hoy=HOY)
+    assert res["propuestas"] == []
+    assert any("ya se roleó hoy" in m for _, m in res["descartes"])
+    assert broker.llamadas == 0, "ni siquiera le pide la cadena a Schwab"
+
+
+def test_la_de_ayer_si_se_puede_volver_a_rolear(conn):
+    from datetime import timedelta
+    ayer = (HOY - timedelta(days=1)).isoformat()
+    conn.execute(
+        "INSERT INTO live_order_log (log_date, log_ts, symbol, action, strike, expiration, "
+        "approved, final_contracts, dry_run, sent, order_status, fill_price, filled_contracts, "
+        "roll_of) VALUES (?, ?, 'AAL', 'SELL_TO_OPEN', 13.0, ?, 1, 2, 0, 1, 'FILLED', 1.2, 2, 99)",
+        (ayer, f"{ayer}T12:12:00", VIEJA.isoformat()),
+    )
+    conn.commit()
+    res = roll_engine.detectar_rolls(conn, BrokerFalso(cadena=CADENA_BASE), _cfg(), hoy=HOY)
+    assert len(res["propuestas"]) == 1

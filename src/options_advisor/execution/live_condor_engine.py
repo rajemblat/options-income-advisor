@@ -513,6 +513,36 @@ def _reconcile_and_manage_open(conn, broker, account_hash, chain, spot, as_of: d
             logger.exception("Condor-real: fallo gestionando la posición id=%s (se continúa)", row["id"])
 
 
+def _consultar_escalones(conn, row, cfg, pnl, age_minutes) -> None:
+    """Deja un cartel cuando la ganancia cruza un escalón de consulta (usuario 2026-09-15).
+
+    Se mide con el MISMO número con el que se decide cerrar: la ganancia al precio EJECUTABLE, no
+    al mid. Preguntar con un número más lindo que el que se va a cobrar sería peor que no preguntar
+    — el 15/09 el mid marcaba $82.50 y salir de verdad dejaba $60.
+
+    Dentro de la ventana temprana no se consulta: ahí manda `profit_target_early_pct`, que cierra
+    solo. Preguntar por algo que se va a cerrar igual no le sirve a nadie.
+
+    No cierra nada ni manda nada. Solo deja la pregunta."""
+    escalones = sorted({round(float(p), 4) for p in (getattr(cfg, "consult_profit_pcts", None) or [])
+                        if float(p) > 0})
+    if not escalones or pnl is None:
+        return
+    if age_minutes is not None and age_minutes <= getattr(cfg, "early_window_minutes", 0):
+        return
+    credito = row["entry_net_credit"] or 0.0
+    if credito <= 0:
+        return
+    for escalon in escalones:
+        if pnl < escalon * credito:
+            break     # crecientes: si no llegó a éste, a los de arriba tampoco
+        nueva = repo.registrar_consulta_condor(
+            conn, position_id=row["id"], escalon=escalon, credito=credito, pnl=pnl)
+        if nueva:
+            logger.warning("Condor-real: id=%s cruzó el %.0f%% ($%.2f de $%.2f) — te dejé la "
+                           "consulta en el dashboard", row["id"], escalon * 100, pnl, credito)
+
+
 def _manual_close_requested(row) -> bool:
     """¿El usuario pidió cerrar ESTA posición desde el dashboard? Tolerante a filas sin la columna
     (bases viejas antes de la migración, y fixtures de tests que arman la fila a mano)."""
@@ -852,6 +882,14 @@ def _manage_open_position(conn, broker, account_hash, chain, spot, as_of: date, 
         logger.warning("Condor-real: cierre MANUAL pedido para id=%s (P&L no realizado $%.2f)",
                        row["id"], unrealized)
     if not do_close:
+        # Los escalones de consulta van ACÁ: solo cuando ya se decidió que NO corresponde cerrar.
+        # Si correspondiera, preguntar sería absurdo — la salida automática manda.
+        try:
+            _consultar_escalones(conn, row, cfg,
+                                 unrealized if unrealized_estricto is None else unrealized_estricto,
+                                 age_minutes)
+        except Exception:  # noqa: BLE001 — una consulta fallida no puede frenar la gestión
+            logger.exception("Condor-real: no se pudo registrar la consulta de id=%s", row["id"])
         repo.mark_real_condor_position(conn, row["id"], datetime.now(), unrealized)
         return
 

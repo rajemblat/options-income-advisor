@@ -146,3 +146,59 @@ def test_solo_cuentan_los_rolls_que_de_verdad_salieron(conn):
     repo.cerrar_roll(conn, p3, status="enviada", nota="ok", schwab_order_id="9")
     assert repo.contar_rolls_de(conn, 7) == 1
     assert repo.contar_rolls_de(conn, 8) == 0
+
+
+# ───────── el tope de rolls sigue la CADENA (arreglado 2026-09-15) ─────────
+#
+# El 15/09, con plata real: AAL se roleó 18 SEP → 2 OCT a las 12:12 y 2 OCT → 16 OCT a las 12:18.
+# Dos rolls en seis minutos, pagando el spread dos veces (~$8), y el tope de 2 nunca se enteró —
+# porque cada roll crea una fila NUEVA en el libro y el contador arrancaba de cero en cada salto.
+
+
+def _apertura(conn, *, roll_of=None, log_date="2026-09-15") -> int:
+    cur = conn.execute(
+        "INSERT INTO live_order_log (log_date, log_ts, symbol, action, strike, expiration, "
+        "approved, final_contracts, dry_run, sent, order_status, filled_contracts, roll_of) "
+        "VALUES (?, ?, 'AAL', 'SELL_TO_OPEN', 13.0, '2026-10-16', 1, 4, 0, 1, 'FILLED', 4, ?)",
+        (log_date, f"{log_date}T12:00:00", roll_of),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def _roll_enviado(conn, open_order_id):
+    pid = _proponer(conn, open_order_id=open_order_id)
+    repo.cerrar_roll(conn, pid, status="enviada", nota="ok", schwab_order_id="X")
+
+
+def test_la_cadena_llega_hasta_la_posicion_original(conn):
+    a = _apertura(conn)
+    b = _apertura(conn, roll_of=a)
+    c = _apertura(conn, roll_of=b)
+    assert repo.cadena_de_la_posicion(conn, c) == [c, b, a]
+    assert repo.cadena_de_la_posicion(conn, a) == [a]
+
+
+def test_el_tope_cuenta_los_rolls_de_toda_la_cadena(conn):
+    a = _apertura(conn)
+    _roll_enviado(conn, a)
+    b = _apertura(conn, roll_of=a)          # la que nació de ese roll
+    assert repo.contar_rolls_de(conn, b) == 1, "el salto anterior TIENE que contar"
+    _roll_enviado(conn, b)
+    c = _apertura(conn, roll_of=b)
+    assert repo.contar_rolls_de(conn, c) == 2, "con max_rolls=2, acá ya se frena"
+
+
+def test_una_cadena_que_se_apunta_a_si_misma_no_cuelga_el_tick(conn):
+    """Si una fila quedara apuntándose a sí misma, sin el corte el bucle no termina nunca."""
+    a = _apertura(conn)
+    conn.execute("UPDATE live_order_log SET roll_of = ? WHERE id = ?", (a, a))
+    conn.commit()
+    assert repo.cadena_de_la_posicion(conn, a) == [a]
+
+
+def test_una_posicion_que_no_vino_de_un_roll_no_arrastra_nada(conn):
+    a = _apertura(conn)
+    _roll_enviado(conn, a)
+    otra = _apertura(conn)                  # nada que ver con la anterior
+    assert repo.contar_rolls_de(conn, otra) == 0
