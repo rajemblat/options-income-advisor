@@ -28,11 +28,12 @@ NUNCA va a estar armado, y marcarlo en rojo entrenaría a ignorar los rojos.
 
 from __future__ import annotations
 
+import json
 import platform
 import sqlite3
 import subprocess
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -52,12 +53,30 @@ from options_advisor.storage import repository as repo  # noqa: E402
 
 OK, MAL, OJO, TODO_TUYO = "🟢", "🔴", "🟡", "👉"
 
+# Con --guardar, el resultado queda acá y el dashboard lo muestra arriba de Real Market.
+#
+# Por qué un archivo y no un mail (usuario 2026-09-15: "me gustaría que todas las mañanas 30 min
+# antes que abra el mercado hagas esta revisión"): el mail del servidor está bloqueado por
+# DigitalOcean, y una tarea que corriera desde afuera no alcanza al servidor por red. El único que
+# siempre puede ver al servidor es el servidor. Así que la revisión corre acá, deja el resultado
+# acá, y aparece donde el usuario ya mira todos los días.
+RESULTADO_PATH = PROJECT_ROOT / "data" / "logs" / "revision_matinal.json"
+
 _problemas: list[str] = []
 _pendientes: list[str] = []
+_lineas: list[str] = []      # todo lo que se imprimió, para poder guardarlo tal cual
 
 
 def _l(estado: str, titulo: str, detalle: str = "") -> None:
-    print(f"{estado}  {titulo}" + (f" — {detalle}" if detalle else ""))
+    linea = f"{estado}  {titulo}" + (f" — {detalle}" if detalle else "")
+    _lineas.append(linea)
+    print(linea)
+
+
+def _p(texto: str = "") -> None:
+    """print() que además guarda, para que el archivo diga exactamente lo mismo que la pantalla."""
+    _lineas.append(texto)
+    print(texto)
 
 
 def _check(ok: bool, titulo: str, detalle_ok: str = "", detalle_mal: str = "") -> bool:
@@ -88,7 +107,7 @@ def _servicio_activo(unidad: str) -> bool:
         return False
 
 
-def main() -> int:
+def main(guardar: bool = False) -> int:
     settings = load_settings()
     lt = settings.live_trading
     cond = settings.intraday_condor
@@ -99,7 +118,7 @@ def main() -> int:
     print(f"\n╔═ ¿LISTO PARA OPERAR? · {hoy} · {nombre_de_esta_maquina()} ═╗\n")
 
     # 1. LA MÁQUINA ────────────────────────────────────────────────────────────
-    print("— La máquina —")
+    _p("— La máquina —")
     esperado = getattr(lt, "real_machine_hostname", "") or None
     _check(es_la_maquina_real(esperado), "Esta es la máquina que opera en REAL",
            f"designada: {esperado or '(sin candado)'}",
@@ -107,7 +126,8 @@ def main() -> int:
            "acá NO se va a operar en real")
 
     # 2. SCHWAB ───────────────────────────────────────────────────────────────
-    print("\n— Schwab —")
+    _p("")
+    _p("— Schwab —")
     seg = read_refresh_token_seconds_left()
     if seg is None:
         _check(False, "Token de Schwab", "", "no hay tokens guardados — corré scripts/schwab_login.py")
@@ -136,13 +156,15 @@ def main() -> int:
         _check(False, "La cuenta RESPONDE", "", f"{type(exc).__name__}: {exc}")
 
     # 3. LOS SERVICIOS ────────────────────────────────────────────────────────
-    print("\n— Los servicios —")
+    _p("")
+    _p("— Los servicios —")
     for unidad, que_es in (("lokshn-robot", "el robot"), ("lokshn-dashboard", "el dashboard")):
         _check(_servicio_activo(unidad), f"{que_es.capitalize()} está corriendo", unidad,
                f"apagado — `systemctl --user restart {unidad}`")
 
     # 4. LOS MAESTROS ─────────────────────────────────────────────────────────
-    print("\n— Los maestros —")
+    _p("")
+    _p("— Los maestros —")
     _check(lt.enabled, "Trading real ENCENDIDO", "", "live_trading.enabled está en false")
     _check(not lt.dry_run, "Sin dry-run", "manda órdenes de verdad",
            "dry_run=true: arma las órdenes y NO las manda")
@@ -152,7 +174,8 @@ def main() -> int:
            "hay una pausa maestra activa")
 
     # 5. LOS NAKED ────────────────────────────────────────────────────────────
-    print("\n— Naked puts —")
+    _p("")
+    _p("— Naked puts —")
     _recordatorio(repo.is_live_armed(conn, hoy), "Armado de hoy", "listo",
                   "apretá «START del día» en Real Market (se resetea cada medianoche)")
     _, marca_naked = repo.live_rearm_mark(conn, hoy)
@@ -164,7 +187,8 @@ def main() -> int:
            "la whitelist está vacía: no va a mirar ningún símbolo")
 
     # 6. EL CONDOR ────────────────────────────────────────────────────────────
-    print("\n— Iron Condor —")
+    _p("")
+    _p("— Iron Condor —")
     _check(cond.enabled and getattr(cond, "live_enabled", False), "Condor real encendido", "",
            f"enabled={cond.enabled} live_enabled={getattr(cond, 'live_enabled', False)}")
     _recordatorio(repo.is_condor_live_armed(conn, hoy), "Autorización de hoy", "lista",
@@ -188,7 +212,8 @@ def main() -> int:
     # Lo que más le importa al usuario y lo que más caro salió cuando falló: el 02/09 un condor sin
     # stop ejecutable costó $420. El stop NO lo pone el broker — lo ejecuta el robot en cada tick,
     # así que sin visión del mercado no hay stop, por más que el número esté configurado.
-    print("\n— El STOP del iron (lo ejecuta el robot, no el broker) —")
+    _p("")
+    _p("— El STOP del iron (lo ejecuta el robot, no el broker) —")
     stop = getattr(cond, "stop_loss_dollars", 0) or 0
     _check(stop > 0, "Stop configurado", f"${stop:,.0f} por condor",
            "stop_loss_dollars en 0: el condor quedaría SIN stop")
@@ -197,7 +222,8 @@ def main() -> int:
            f"{porque} — sin esto no abre, justamente para no quedar sin protección")
 
     # 8. LO ABIERTO ───────────────────────────────────────────────────────────
-    print("\n— Lo que hay abierto —")
+    _p("")
+    _p("— Lo que hay abierto —")
     puts = repo.get_open_real_put_positions(conn)
     condors = repo.get_open_real_condor_positions(conn)
     _l(OK, "Naked puts vivos", f"{len(puts)}")
@@ -220,9 +246,32 @@ def main() -> int:
         print(f"\n{TODO_TUYO} Te toca a vos, mañana a la mañana:\n")
         for p in _pendientes:
             print(f"   · {p}")
-    print()
+    _p("")
+
+    if guardar:
+        _guardar_resultado()
     return 1 if _problemas else 0
 
 
+def _guardar_resultado() -> None:
+    """Deja el resultado donde el dashboard lo pueda leer. Nunca rompe: si no se puede escribir, la
+    revisión ya cumplió su parte imprimiendo — perder el archivo no puede hacer fallar el chequeo."""
+    try:
+        RESULTADO_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = RESULTADO_PATH.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({
+                "fecha": date.today().isoformat(),
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "ok": not _problemas,
+                "problemas": _problemas,
+                "pendientes": _pendientes,
+                "lineas": _lineas,
+            }, fh, ensure_ascii=False, indent=2)
+        tmp.replace(RESULTADO_PATH)
+    except Exception:
+        print("(no se pudo guardar el resultado de la revisión; el chequeo igual corrió)")
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(guardar="--guardar" in sys.argv))

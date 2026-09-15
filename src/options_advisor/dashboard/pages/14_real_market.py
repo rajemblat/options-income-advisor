@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import datetime as _dt   # para formatear la fecha/hora de apertura (usuario 2026-08-19)
 from datetime import date, timedelta as _timedelta
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -224,6 +226,36 @@ st.markdown(
     + "</div>",
     unsafe_allow_html=True,
 )
+
+# ═══════════ REVISIÓN DE LAS 9:00 (usuario 2026-09-15) ═══════════
+# "Me gustaría que todas las mañanas 30 min antes que abra el mercado hagas esta revisión."
+#
+# La corre el servidor solo (deploy/instalar_revision_matinal.sh) y deja el resultado en un archivo.
+# Acá se muestra. No se recalcula en la pantalla a propósito: lo que se ve tiene que ser EL chequeo
+# que corrió a las 9:00, con su hora — no uno nuevo que podría dar distinto y dejar sin saber cuál
+# valía. Si la revisión no corrió, se dice; un panel en blanco se confunde con "todo bien".
+_rev_path = Path(__file__).resolve().parents[3].parent / "data" / "logs" / "revision_matinal.json"
+try:
+    _rev = json.loads(_rev_path.read_text(encoding="utf-8")) if _rev_path.exists() else None
+except Exception:
+    _rev = None
+
+if _rev and _rev.get("fecha") == today.isoformat():
+    _hora = (_rev.get("ts") or "")[11:16]
+    if _rev.get("ok"):
+        st.success(f"✅ **Revisión de las {_hora} — todo en orden.** "
+                   + ("Falta que vos: " + " · ".join(_rev.get("pendientes") or [])
+                      if _rev.get("pendientes") else "No falta nada."), icon="✅")
+    else:
+        st.error(f"🔴 **Revisión de las {_hora} — hay {len(_rev['problemas'])} problema(s) "
+                 "que impiden operar hoy:**\n\n"
+                 + "\n".join(f"- {p}" for p in _rev["problemas"]), icon="🔴")
+    with st.expander(f"Ver la revisión completa de las {_hora}"):
+        st.code("\n".join(_rev.get("lineas") or []), language=None)
+elif _rev:
+    st.warning(f"⏳ La última revisión automática es del **{_rev.get('fecha')}**, no de hoy. "
+               "Si el mercado abre hoy, conviene correrla a mano: "
+               "`systemctl --user start lokshn-revision.service`", icon="⏳")
 
 # ═══════════ RÉCORD DE EXPOSICIÓN DE LOS NAKED (usuario 2026-09-14) ═══════════
 # "Me puedes poner un cartel rojo en los naked donde siempre se quede la última exposición máxima
