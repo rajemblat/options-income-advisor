@@ -319,7 +319,12 @@ intraday_condor:
   timeframe_minutes: 1
   short_delta_max: 0.15            # vender put/call a delta <= 0.15
   wing_width: 10.0                 # alas de 10 puntos
-  profit_target_pct: 0.35          # pasada la ventana temprana: cerrar al 35% del crédito
+  # CIERRE AUTOMÁTICO pasada la ventana temprana (usuario 2026-09-15: "que cierre también en 40%
+  # cuando tiene más de 30 min de abierto"). Antes 0.35 — pero el aprendizaje lo había subido solo a
+  # 0.45, y ese fue el número que se aplicó el 15/09: el condor #12 del SPX se quedó a $9.75 del
+  # objetivo, el SPX llegó al call corto y el usuario tuvo que cerrar a mano con $60. Por eso ahora
+  # está en `learning_frozen`: 40% quiere decir 40%.
+  profit_target_pct: 0.40
                                    # (usuario 2026-08-20: "35% de ganancia está para cerrar").
                                    # Venía en 0.50. Se compara contra el crédito NETO de entrada:
                                    # cierra cuando el P&L no realizado >= 0.35 * entry_net_credit.
@@ -337,6 +342,10 @@ intraday_condor:
   # Pendiente de decidir con el usuario: usar la salida rápida SOLO con el mercado inestable, y
   # medir el objetivo al precio real de salida.
   profit_target_early_pct: 0.30
+  # Escalones donde el robot CONSULTA en vez de cerrar (usuario 2026-09-15). Al tocar cada uno deja
+  # un cartel en Real Market con dos botones: cerrar ahora, o dejar correr. Si no contestás, al 40%
+  # cierra solo igual — la consulta agrega una decisión, no quita la red.
+  consult_profit_pcts: [0.30, 0.35]
   early_window_minutes: 30.0       # "temprano/rápido" = primeros 30 minutos de la posición
   stop_loss_dollars: 100.0         # cerrar con -$100 de pérdida
   dte: 0                           # 0DTE
@@ -369,6 +378,9 @@ intraday_condor:
   # sin este freno lo volvería a hacer en unos días y este cambio se perdería en silencio.
   learning_frozen:
     - calm_range_pct
+    # Agregado el 2026-09-15: el aprendizaje lo había movido de 0.35 a 0.45 sin avisar, y esos diez
+    # puntos fueron la diferencia entre cobrar solo esa mañana o terminar cerrando a mano.
+    - profit_target_pct
   # VENTANA DE ENTRADA — EN HORA DE NUEVA YORK (cambiado 2026-08-27).
   # `evaluate_condor_signal` convierte la hora de la última barra a America/New_York antes de
   # comparar (ver `iron_condor.hora_de_mercado`). Estos dos valores son, entonces, hora del mercado.

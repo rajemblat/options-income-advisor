@@ -413,6 +413,17 @@ class IntradayCondorSettings(BaseModel):
     # es que sobre ESTA perilla aprendía en la dirección de no operar nunca y nada lo avisaba, así
     # que un número elegido por el usuario se revertía solo a los pocos días. Congelarla deja la
     # decisión donde corresponde.
+    # ESCALONES DE CONSULTA (usuario 2026-09-15: "que me consulte al 30% 35% y 40% si quiero
+    # cerrar o dejar abierto"). Al llegar a cada uno de estos porcentajes del crédito, el robot NO
+    # cierra: deja un cartel en el dashboard y espera tu decisión. `profit_target_pct` sigue siendo
+    # el cierre AUTOMÁTICO, y es la red: si no contestás ninguna consulta, la ganancia se cobra igual.
+    #
+    # Por qué hace falta la red: el 15/09 el SPX llegó al call corto con la posición en +$60 y el
+    # usuario tuvo que cerrar a mano. Una consulta sin respuesta no puede terminar en una posición
+    # 0DTE abierta hasta el vencimiento.
+    #
+    # No aplican dentro de la ventana temprana: ahí manda `profit_target_early_pct`, que cierra solo.
+    consult_profit_pcts: list[float] = []
     learning_frozen: list[str] = []
     # Ventana horaria de entrada (ET) — temprano, con tiempo para que corra el 0DTE.
     # Ventana de entrada en HORA DE NUEVA YORK (cambiado 2026-08-27). Antes se comparaba en UTC.

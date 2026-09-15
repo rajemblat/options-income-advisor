@@ -397,22 +397,29 @@ for _rp in _rolls:
         except (ValueError, TypeError):
             _f = str(c["expiration"])
         return (f"{_f}  ·  +{c['dias_agregados']} días  ·  crédito "
-                f"${c['credito_total'] * contratos:,.2f}  ·  "
-                f"${c['credito_por_dia'] * 100:,.2f} por día"
+                f"\\${c['credito_total'] * contratos:,.2f}  ·  "
+                f"\\${c['credito_por_dia'] * 100 * contratos:,.2f} por día"
                 + ("   ⭐ el que más rinde por día" if c.get("recomendado") else ""))
 
+    # Ordenado por DÍAS, del más corto al más largo (usuario 2026-09-15: "debería ponerlo ordenado
+    # por la cantidad de días"). Antes salía ordenado por crédito por día, que es la vara con la que
+    # el robot elige — pero para leer el menú y comparar plazos, el orden por fecha es el natural.
+    # El ⭐ sigue marcando el que más rinde, y es el que viene preseleccionado.
+    _menu = sorted(_menu, key=lambda c: int(c["dte"]))
     _opciones = [str(c["expiration"]) for c in _menu]
+    _idx = next((i for i, c in enumerate(_menu) if c.get("recomendado")), 0)
     _elegido = st.radio(
-        f"Vencimientos que pagan crédito (hasta {settings.roll.max_dte} días) — los que darían "
-        "débito no se muestran",
-        _opciones, index=0, key=f"roll_opt_{_rp['id']}",
+        f"Vencimientos que pagan crédito (hasta {settings.roll.max_dte} días) — importes por los "
+        f"{_rp['contracts']} contrato(s); los que darían débito no se muestran",
+        _opciones, index=_idx, key=f"roll_opt_{_rp['id']}",
         format_func=lambda e, m=_menu: _etiqueta(next(c for c in m if str(c["expiration"]) == e)),
     )
     _sel = next(c for c in _menu if str(c["expiration"]) == _elegido)
     st.caption(
-        f"El strike se mantiene en ${_rp['strike']:,.2f}. Se recompra a ${_rp['costo_recompra']:.2f} "
-        f"y se vende a ${_sel['prima_nueva']:.2f}: crédito neto **${_sel['credito_neto']:.2f}** por "
-        f"acción, **${_sel['credito_total'] * _rp['contracts']:,.2f}** en total por los "
+        f"El strike se mantiene en \\${_rp['strike']:,.2f}. Se recompra a "
+        f"\\${_rp['costo_recompra']:.2f} y se vende a \\${_sel['prima_nueva']:.2f}: crédito neto "
+        f"**\\${_sel['credito_neto']:.2f}** por acción, "
+        f"**\\${_sel['credito_total'] * _rp['contracts']:,.2f}** en total por los "
         f"{_rp['contracts']} contrato(s). Va como UNA sola orden combinada, a ese precio exacto."
     )
 

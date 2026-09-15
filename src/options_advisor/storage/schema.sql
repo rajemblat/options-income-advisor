@@ -587,5 +587,33 @@ CREATE TABLE IF NOT EXISTS roll_proposals (
     credito_real REAL,                     -- lo que se cobró de verdad al llenar
     result_note TEXT
 );
+-- ══════════ CONSULTAS DE GANANCIA DEL CONDOR (usuario 2026-09-15) ══════════
+-- "Que me consulte al 30% 35% y 40% si quiero cerrar o dejar abierto."
+--
+-- Una fila por (posición, escalón). El índice UNIQUE es el que importa: sin él, el tick de cada
+-- minuto generaría una consulta nueva de la misma posición en el mismo escalón y el usuario vería
+-- cuarenta carteles iguales — el mismo problema de volumen que los mil mails del 11/09.
+--
+-- 'dejar' también se guarda, y por eso el estado no se borra: decir "dejala correr" en el 30% tiene
+-- que seguir valiendo en el tick siguiente, o la pregunta vuelve para siempre.
+CREATE TABLE IF NOT EXISTS condor_consultas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_id INTEGER NOT NULL,
+    escalon REAL NOT NULL,              -- 0.30, 0.35…  el % del crédito que disparó la consulta
+    created_at TEXT NOT NULL,
+    credito REAL NOT NULL,              -- crédito de entrada, para poder mostrar el cartel solo
+    pnl REAL NOT NULL,                  -- ganancia AL PRECIO EJECUTABLE cuando se preguntó
+    -- pendiente → cerrar | dejar | superada
+    --
+    -- 'superada' = la posición se cerró por otro camino (el 40% automático, el stop, el
+    -- vencimiento) mientras la consulta seguía sin contestar. No es un error: es que la pregunta
+    -- dejó de tener sentido.
+    status TEXT NOT NULL DEFAULT 'pendiente',
+    resolved_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_condor_consultas_unica
+    ON condor_consultas(position_id, escalon);
+CREATE INDEX IF NOT EXISTS idx_condor_consultas_status ON condor_consultas(status);
+
 CREATE INDEX IF NOT EXISTS idx_roll_proposals_status ON roll_proposals(status);
 CREATE INDEX IF NOT EXISTS idx_roll_proposals_open ON roll_proposals(open_order_id);
